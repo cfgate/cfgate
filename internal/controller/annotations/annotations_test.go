@@ -402,6 +402,7 @@ func TestParseOriginConfig(t *testing.T) {
 		wantSSLVerify   bool
 		wantTimeout     time.Duration
 		wantHTTP2       bool
+		wantH2c         bool
 	}{
 		{
 			name:            "all defaults",
@@ -411,6 +412,7 @@ func TestParseOriginConfig(t *testing.T) {
 			wantSSLVerify:   true,
 			wantTimeout:     30 * time.Second,
 			wantHTTP2:       false,
+			wantH2c:         false,
 		},
 		{
 			name: "explicit values",
@@ -425,6 +427,7 @@ func TestParseOriginConfig(t *testing.T) {
 			wantSSLVerify:   false,
 			wantTimeout:     time.Minute,
 			wantHTTP2:       true,
+			wantH2c:         false,
 		},
 		{
 			name:            "default protocol for tcp",
@@ -434,6 +437,19 @@ func TestParseOriginConfig(t *testing.T) {
 			wantSSLVerify:   true,
 			wantTimeout:     30 * time.Second,
 			wantHTTP2:       false,
+			wantH2c:         false,
+		},
+		{
+			name: "h2c enabled",
+			annotations: map[string]string{
+				AnnotationOriginH2c: "true",
+			},
+			defaultProtocol: "http",
+			wantProtocol:    "http",
+			wantSSLVerify:   true,
+			wantTimeout:     30 * time.Second,
+			wantHTTP2:       false,
+			wantH2c:         true,
 		},
 	}
 
@@ -453,6 +469,9 @@ func TestParseOriginConfig(t *testing.T) {
 			}
 			if config.HTTP2 != tt.wantHTTP2 {
 				t.Errorf("ParseOriginConfig().HTTP2 = %v, want %v", config.HTTP2, tt.wantHTTP2)
+			}
+			if config.H2c != tt.wantH2c {
+				t.Errorf("ParseOriginConfig().H2c = %v, want %v", config.H2c, tt.wantH2c)
 			}
 		})
 	}
@@ -534,6 +553,7 @@ func TestConstants(t *testing.T) {
 		AnnotationOriginServerName,
 		AnnotationOriginCAPool,
 		AnnotationOriginHTTP2,
+		AnnotationOriginH2c,
 	}
 
 	for _, ann := range annotations {

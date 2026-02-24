@@ -345,6 +345,13 @@ spec:
                       origin.
                     pattern: ^[0-9]+(s|m|h)$
                     type: string
+                  h2cOrigin:
+                    default: false
+                    description: |-
+                      H2cOrigin enables HTTP/2 cleartext (h2c) for origin connections.
+                      Use this for origins that speak HTTP/2 without TLS (e.g., gRPC services).
+                      Mutually exclusive with http2Origin (TLS-based HTTP/2).
+                    type: boolean
                   http2Origin:
                     default: false
                     description: HTTP2Origin enables HTTP/2 for origin connections.

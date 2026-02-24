@@ -74,6 +74,7 @@ type OriginRequestConfig struct {
 	ProxyPort              int    `yaml:"proxyPort,omitempty"`
 	ProxyType              string `yaml:"proxyType,omitempty"`
 	HTTP2Origin            bool   `yaml:"http2Origin,omitempty"`
+	H2cOrigin              bool   `yaml:"h2cOrigin,omitempty"`
 }
 
 // WarpRoutingConfig contains WARP routing settings.
@@ -98,11 +99,13 @@ func NewTunnelConfig(tunnel *cfgatev1alpha1.CloudflareTunnel, tunnelID string) *
 	// Set default origin settings
 	if tunnel.Spec.OriginDefaults.ConnectTimeout != "" ||
 		tunnel.Spec.OriginDefaults.NoTLSVerify ||
-		tunnel.Spec.OriginDefaults.HTTP2Origin {
+		tunnel.Spec.OriginDefaults.HTTP2Origin ||
+		tunnel.Spec.OriginDefaults.H2cOrigin {
 		config.OriginRequest = &OriginRequestConfig{
 			ConnectTimeout: tunnel.Spec.OriginDefaults.ConnectTimeout,
 			NoTLSVerify:    tunnel.Spec.OriginDefaults.NoTLSVerify,
 			HTTP2Origin:    tunnel.Spec.OriginDefaults.HTTP2Origin,
+			H2cOrigin:      tunnel.Spec.OriginDefaults.H2cOrigin,
 		}
 	}
 
@@ -206,6 +209,7 @@ func BuildOriginConfig(defaults *cfgatev1alpha1.OriginDefaults, annotations map[
 		config.ConnectTimeout = defaults.ConnectTimeout
 		config.NoTLSVerify = defaults.NoTLSVerify
 		config.HTTP2Origin = defaults.HTTP2Origin
+		config.H2cOrigin = defaults.H2cOrigin
 	}
 
 	// Apply annotation overrides
@@ -228,6 +232,9 @@ func BuildOriginConfig(defaults *cfgatev1alpha1.OriginDefaults, annotations map[
 		if v, ok := annotations["cfgate.io/origin-http2"]; ok && v == "true" {
 			config.HTTP2Origin = true
 		}
+		if v, ok := annotations["cfgate.io/origin-h2c"]; ok && v == "true" {
+			config.H2cOrigin = true
+		}
 	}
 
 	// Return nil if no settings configured
@@ -236,7 +243,8 @@ func BuildOriginConfig(defaults *cfgatev1alpha1.OriginDefaults, annotations map[
 		config.HTTPHostHeader == "" &&
 		config.OriginServerName == "" &&
 		config.CAPool == "" &&
-		!config.HTTP2Origin {
+		!config.HTTP2Origin &&
+		!config.H2cOrigin {
 		return nil
 	}
 

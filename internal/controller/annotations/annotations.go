@@ -102,6 +102,11 @@ const (
 	// Values: "true", "false"
 	// Default: "false"
 	AnnotationOriginHTTP2 = AnnotationPrefix + "origin-http2"
+
+	// AnnotationOriginH2c enables HTTP/2 cleartext (h2c) to origin.
+	// Values: "true", "false"
+	// Default: "false"
+	AnnotationOriginH2c = AnnotationPrefix + "origin-h2c"
 )
 
 // Validation constants.
@@ -375,6 +380,9 @@ type OriginConfig struct {
 
 	// HTTP2 enables HTTP/2 to origin.
 	HTTP2 bool
+
+	// H2c enables HTTP/2 cleartext (h2c) to origin.
+	H2c bool
 }
 
 // ParseOriginConfig extracts origin configuration from route annotations.
@@ -388,6 +396,7 @@ func ParseOriginConfig(obj client.Object, defaultProtocol string) OriginConfig {
 		ServerName:     GetAnnotation(obj, AnnotationOriginServerName),
 		CAPool:         GetAnnotation(obj, AnnotationOriginCAPool),
 		HTTP2:          GetAnnotationBool(obj, AnnotationOriginHTTP2, false),
+		H2c:            GetAnnotationBool(obj, AnnotationOriginH2c, false),
 	}
 
 	// Apply default protocol if not specified

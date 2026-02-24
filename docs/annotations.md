@@ -15,6 +15,7 @@ Per-route configuration applied to HTTPRoute, TCPRoute, UDPRoute, and GRPCRoute 
 | `cfgate.io/origin-server-name` | Hostname string | *none* | TLS SNI server name |
 | `cfgate.io/origin-ca-pool` | File path string | *none* | CA certificate pool path |
 | `cfgate.io/origin-http2` | `true`, `false` | `false` | HTTP/2 to origin |
+| `cfgate.io/origin-h2c` | `true`, `false` | `false` | HTTP/2 cleartext (h2c) to origin |
 | `cfgate.io/ttl` | `1`-`86400` | `1` (auto) | DNS record TTL in seconds |
 | `cfgate.io/cloudflare-proxied` | `true`, `false` | `true` | Cloudflare proxy (orange cloud) |
 | `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | References a CloudflareAccessPolicy |
@@ -172,6 +173,40 @@ Enables HTTP/2 for the connection between cloudflared and the origin server.
 metadata:
   annotations:
     cfgate.io/origin-http2: "true"
+```
+
+---
+
+#### `cfgate.io/origin-h2c`
+
+Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the origin server. Use this for backends that speak HTTP/2 without TLS, such as gRPC services, Envoy sidecars, or other h2c-speaking backends.
+
+**Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
+
+**Default:** `false`
+
+**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
+
+Mutually exclusive with `cfgate.io/origin-http2` (TLS-based HTTP/2). Requires the cfgate cloudflared fork with h2cOrigin support.
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grpc-backend
+  namespace: default
+  annotations:
+    cfgate.io/origin-h2c: "true"
+spec:
+  parentRefs:
+    - name: cloudflare-tunnel
+      namespace: cfgate-system
+  hostnames:
+    - grpc.example.com
+  rules:
+    - backendRefs:
+        - name: grpc-service
+          port: 50051
 ```
 
 ---

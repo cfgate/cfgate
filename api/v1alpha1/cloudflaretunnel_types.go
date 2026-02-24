@@ -195,6 +195,12 @@ type OriginDefaults struct {
 	// +kubebuilder:default=false
 	HTTP2Origin bool `json:"http2Origin,omitempty"`
 
+	// H2cOrigin enables HTTP/2 cleartext (h2c) for origin connections.
+	// Use this for origins that speak HTTP/2 without TLS (e.g., gRPC services).
+	// Mutually exclusive with http2Origin (TLS-based HTTP/2).
+	// +kubebuilder:default=false
+	H2cOrigin bool `json:"h2cOrigin,omitempty"`
+
 	// CAPoolSecretRef references a Secret containing CA certificates for origin verification.
 	// +optional
 	CAPoolSecretRef *CAPoolSecretRef `json:"caPoolSecretRef,omitempty"`

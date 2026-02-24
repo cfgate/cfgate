@@ -249,7 +249,7 @@ func buildProbes(metricsPort int32) (liveness, readiness *corev1.Probe) {
 	liveness = &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
-				Path: "/ready",
+				Path: "/healthcheck",
 				Port: intstr.FromInt32(metricsPort),
 			},
 		},
