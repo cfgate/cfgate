@@ -362,6 +362,9 @@ spec:
                       connections.
                     type: boolean
                 type: object
+                x-kubernetes-validations:
+                - message: http2Origin and h2cOrigin are mutually exclusive
+                  rule: '!(self.http2Origin && self.h2cOrigin)'
               tunnel:
                 description: Tunnel defines the tunnel identity configuration.
                 properties:

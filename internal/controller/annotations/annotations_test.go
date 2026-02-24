@@ -373,6 +373,37 @@ func TestValidateRouteAnnotations(t *testing.T) {
 			wantErrors:      1,
 			wantWarnings:    0,
 		},
+		{
+			name: "h2c and http2 mutually exclusive",
+			annotations: map[string]string{
+				AnnotationOriginH2c:   "true",
+				AnnotationOriginHTTP2: "true",
+			},
+			requireHostname: false,
+			wantValid:       false,
+			wantErrors:      1,
+			wantWarnings:    0,
+		},
+		{
+			name: "h2c alone is valid",
+			annotations: map[string]string{
+				AnnotationOriginH2c: "true",
+			},
+			requireHostname: false,
+			wantValid:       true,
+			wantErrors:      0,
+			wantWarnings:    0,
+		},
+		{
+			name: "http2 alone is valid",
+			annotations: map[string]string{
+				AnnotationOriginHTTP2: "true",
+			},
+			requireHostname: false,
+			wantValid:       true,
+			wantErrors:      0,
+			wantWarnings:    0,
+		},
 	}
 
 	for _, tt := range tests {

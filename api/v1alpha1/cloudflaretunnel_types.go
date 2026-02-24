@@ -181,6 +181,8 @@ type MetricsConfig struct {
 // OriginDefaults configures how cloudflared connects to backend services in the cluster.
 // These settings apply to all ingress rules unless overridden by route-specific annotations.
 // Use NoTLSVerify with caution in production environments.
+//
+// +kubebuilder:validation:XValidation:rule="!(self.http2Origin && self.h2cOrigin)",message="http2Origin and h2cOrigin are mutually exclusive"
 type OriginDefaults struct {
 	// ConnectTimeout is the timeout for connecting to the origin.
 	// +kubebuilder:default="30s"

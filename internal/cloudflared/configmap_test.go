@@ -345,6 +345,20 @@ func TestValidate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "h2c and http2 mutually exclusive",
+			config: &TunnelConfig{
+				TunnelID: "test-id",
+				Ingress: []IngressRule{
+					{Service: "http_status:404"},
+				},
+				OriginRequest: &OriginRequestConfig{
+					H2cOrigin:   true,
+					HTTP2Origin: true,
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

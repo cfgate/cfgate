@@ -187,7 +187,7 @@ Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the or
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
-Mutually exclusive with `cfgate.io/origin-http2` (TLS-based HTTP/2). Requires the cfgate cloudflared fork with h2cOrigin support.
+Mutually exclusive with `cfgate.io/origin-http2`.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1

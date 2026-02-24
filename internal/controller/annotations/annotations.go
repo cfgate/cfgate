@@ -336,6 +336,14 @@ func ValidateRouteAnnotations(obj client.Object, requireHostname bool) Validatio
 		}
 	}
 
+	// Validate mutual exclusivity of origin transport annotations
+	if isTruthyAnnotation(GetAnnotation(obj, AnnotationOriginH2c)) &&
+		isTruthyAnnotation(GetAnnotation(obj, AnnotationOriginHTTP2)) {
+		result.Valid = false
+		result.Errors = append(result.Errors, fmt.Sprintf(
+			"%s and %s are mutually exclusive", AnnotationOriginH2c, AnnotationOriginHTTP2))
+	}
+
 	// Validate hostname
 	hostname := GetAnnotation(obj, AnnotationHostname)
 	if requireHostname {
@@ -405,6 +413,15 @@ func ParseOriginConfig(obj client.Object, defaultProtocol string) OriginConfig {
 	}
 
 	return config
+}
+
+// isTruthyAnnotation reports whether a string annotation value represents true.
+func isTruthyAnnotation(val string) bool {
+	switch strings.ToLower(val) {
+	case "true", "1", "yes":
+		return true
+	}
+	return false
 }
 
 // --- DNS Configuration ---

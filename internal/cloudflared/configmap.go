@@ -165,6 +165,10 @@ func (c *TunnelConfig) Validate() error {
 		return errors.New("tunnel ID is required")
 	}
 
+	if c.OriginRequest != nil && c.OriginRequest.HTTP2Origin && c.OriginRequest.H2cOrigin {
+		return errors.New("http2Origin and h2cOrigin are mutually exclusive")
+	}
+
 	if len(c.Ingress) == 0 {
 		return errors.New("at least one ingress rule is required")
 	}
