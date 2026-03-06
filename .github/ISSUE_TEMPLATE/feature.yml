@@ -1,0 +1,39 @@
+name: Feature
+description: Feature request or improvement to an existing system.
+labels: ["type/feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the feature or improvement. Include current state if modifying an existing system.
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be built or changed.
+    validations:
+      required: true
+  - type: textarea
+    id: current-state
+    attributes:
+      label: Current State
+      description: What exists today, if anything. Leave blank for new features.
+  - type: textarea
+    id: remaining-work
+    attributes:
+      label: Remaining Work
+      description: Checklist of tasks to complete this feature.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: relevant-files
+    attributes:
+      label: Relevant Files
+      description: Paths to files involved.
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Context, design considerations, or related issues.

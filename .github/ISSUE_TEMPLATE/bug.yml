@@ -1,0 +1,36 @@
+name: Bug Report
+description: Something is broken or behaving unexpectedly.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened and what was expected.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: How to trigger the bug.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Kubernetes version, cfgate version, cloudflare-go version.
+      value: |
+        - Kubernetes:
+        - cfgate:
+        - cloudflare-go:
+  - type: textarea
+    id: relevant-files
+    attributes:
+      label: Relevant Files
+      description: Paths to files involved.
