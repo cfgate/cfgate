@@ -313,18 +313,55 @@ func (s *DNSService) FindRecordByName(ctx context.Context, zoneID, name, recordT
 	return result, nil
 }
 
-// ListManagedRecords lists all DNS records managed by cfgate.
-func (s *DNSService) ListManagedRecords(ctx context.Context, zoneID, ownerID string) ([]DNSRecord, error) {
+// ListManagedRecords lists DNS records managed by cfgate for the given owner.
+// When ownershipPrefix is non-empty and ownerID is non-empty, non-TXT records
+// matched only by comment ("managed by cfgate") are cross-referenced against
+// TXT ownership records. If a TXT record exists for the hostname but belongs to
+// a different owner, the non-TXT record is excluded. This prevents one
+// CloudflareDNS resource's cleanup from deleting another resource's records.
+func (s *DNSService) ListManagedRecords(ctx context.Context, zoneID, ownerID, ownershipPrefix string) ([]DNSRecord, error) {
 	records, err := s.client.ListDNSRecords(ctx, zoneID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list DNS records: %w", err)
 	}
 
+	// Build TXT ownership index: hostname -> ownerID from all cfgate TXT records
+	// in the zone, regardless of owner. Used to cross-reference non-TXT records.
+	txtOwnerByHostname := make(map[string]string)
+	if ownerID != "" && ownershipPrefix != "" {
+		prefix := ownershipPrefix + "."
+		for _, record := range records {
+			if record.Type == "TXT" && strings.HasPrefix(record.Content, "heritage=cfgate") && strings.HasPrefix(record.Name, prefix) {
+				hostname := strings.TrimPrefix(record.Name, prefix)
+				meta, _ := ParseOwnershipRecord(record.Content)
+				if meta != nil && meta.OwnerID != "" {
+					txtOwnerByHostname[hostname] = meta.OwnerID
+				}
+			}
+		}
+	}
+
 	var managed []DNSRecord
 	for _, record := range records {
-		if IsOwnedByCfgate(&record, ownerID) {
-			managed = append(managed, record)
+		if !IsOwnedByCfgate(&record, ownerID) {
+			continue
 		}
+
+		// Cross-reference: non-TXT records matched by comment fallback need TXT
+		// verification to prevent cross-resource deletion. If a TXT ownership
+		// record exists for this hostname but belongs to a different owner, skip.
+		if ownerID != "" && ownershipPrefix != "" && isLegacyCommentOwnership(&record) {
+			if txtOwner, hasTXT := txtOwnerByHostname[record.Name]; hasTXT && txtOwner != ownerID {
+				s.log.V(1).Info("skipping record owned by different resource",
+					"record", record.Name,
+					"txtOwner", txtOwner,
+					"requestedOwner", ownerID,
+				)
+				continue
+			}
+		}
+
+		managed = append(managed, record)
 	}
 
 	return managed, nil
