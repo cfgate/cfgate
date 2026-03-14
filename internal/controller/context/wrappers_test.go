@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"testing"
 
-	"k8s.io/apimachinery/pkg/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
 )
 
-func boolPtr(b bool) *bool     { return &b }
+func boolPtr(b bool) *bool       { return &b }
 func stringPtr(s string) *string { return &s }
 
 // ---------------------------------------------------------------------------
@@ -783,10 +783,10 @@ func TestGetTargetRefs(t *testing.T) {
 	refC := cfgatev1alpha1.PolicyTargetReference{Kind: "HTTPRoute", Name: "c"}
 
 	tests := []struct {
-		name      string
-		targetRef *cfgatev1alpha1.PolicyTargetReference
+		name       string
+		targetRef  *cfgatev1alpha1.PolicyTargetReference
 		targetRefs []cfgatev1alpha1.PolicyTargetReference
-		wantLen   int
+		wantLen    int
 	}{
 		{"only targetRef set", &refA, nil, 1},
 		{"only targetRefs set", nil, []cfgatev1alpha1.PolicyTargetReference{refB, refC}, 2},
@@ -1095,10 +1095,10 @@ func TestRequiresServiceTokens(t *testing.T) {
 
 func TestHasCrossNamespaceTargets(t *testing.T) {
 	tests := []struct {
-		name           string
-		policyNS       string
-		targetNSs      []string
-		want           bool
+		name      string
+		policyNS  string
+		targetNSs []string
+		want      bool
 	}{
 		{
 			name:      "all same namespace",

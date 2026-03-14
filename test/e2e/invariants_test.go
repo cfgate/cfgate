@@ -7,14 +7,15 @@
 // Spec: ~/.atlas/integrator/specs/cfgate/e2e-invariant-spec-2026-02-09.md
 //
 // Invariant categories:
-//   I1: CloudflareTunnel Ready       (INV-T1..T9)
-//   I2: CloudflareDNS Ready          (INV-D1..D8)
-//   I3: CloudflareAccessPolicy Ready (INV-A1..A8, INV-ST1..ST4)
-//   I4: Gateway Status               (INV-GW1..GW4)
-//   I5: HTTPRoute Parent Status      (INV-HR1..HR3)
-//   I6: GatewayClass                 (INV-GC1..GC2)
-//   I7: Cross-CRD Consistency        (INV-X1..X3)
-//   I8: Deletion                     (INV-DEL1..DEL4)
+//
+//	I1: CloudflareTunnel Ready       (INV-T1..T9)
+//	I2: CloudflareDNS Ready          (INV-D1..D8)
+//	I3: CloudflareAccessPolicy Ready (INV-A1..A8, INV-ST1..ST4)
+//	I4: Gateway Status               (INV-GW1..GW4)
+//	I5: HTTPRoute Parent Status      (INV-HR1..HR3)
+//	I6: GatewayClass                 (INV-GC1..GC2)
+//	I7: Cross-CRD Consistency        (INV-X1..X3)
+//	I8: Deletion                     (INV-DEL1..DEL4)
 //
 // WARP/0.2.0 future invariants are documented in the spec but not tested here.
 package e2e_test

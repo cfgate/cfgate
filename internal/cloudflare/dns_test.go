@@ -573,11 +573,11 @@ func TestDNSRecordCache(t *testing.T) {
 
 func TestPolicyChecker(t *testing.T) {
 	tests := []struct {
-		name         string
-		policy       DNSPolicy
-		wantCreate   bool
-		wantUpdate   bool
-		wantDelete   bool
+		name       string
+		policy     DNSPolicy
+		wantCreate bool
+		wantUpdate bool
+		wantDelete bool
 	}{
 		{"sync", PolicySync, true, true, true},
 		{"upsert-only", PolicyUpsertOnly, true, true, false},
