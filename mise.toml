@@ -59,6 +59,15 @@ run = "sh tasks/manifests.sh"
 # Testing
 #
 
+[tasks.test]
+alias = "t"
+description = "Run unit tests"
+run = "sh tasks/test.sh"
+
+[tasks."test:cover"]
+description = "Run unit tests with coverage report"
+run = "sh tasks/test-cover.sh"
+
 [tasks.e2e]
 description = "Run E2E tests against live Cloudflare API"
 env = { E2E_USE_EXISTING_CLUSTER = "true" }

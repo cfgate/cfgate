@@ -52,6 +52,17 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_VERSION }}
 
+  test:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+      - name: Unit tests
+        run: sh tasks/test.sh
+
   build:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
