@@ -169,7 +169,7 @@ TCPRoute and UDPRoute controllers are registered but not yet implemented (planne
 | [Annotations](docs/annotations.md) | Complete annotation reference |
 | [Service Mesh](docs/service-mesh.md) | Istio, Envoy Gateway, and Kiali integration |
 | [Troubleshooting](docs/troubleshooting.md) | Diagnostic steps and solutions |
-| [Testing](docs/TESTING.md) | E2E test strategy |
+| [Testing](docs/TESTING.md) | Unit and E2E test strategy |
 | [Contributing](CONTRIBUTING.md) | Development setup and workflow |
 | [Changelog](CHANGELOG.md) | Release history |
 
@@ -220,7 +220,7 @@ mise tasks
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup, secrets configuration, and contribution guidelines.
 
-See [docs/TESTING.md](docs/TESTING.md) for E2E test strategy, environment variables, and test execution.
+See [docs/TESTING.md](docs/TESTING.md) for test strategy, environment variables, and test execution.
 
 ## License
 
