@@ -1,26 +1,48 @@
 # Testing
 
-cfgate uses an E2E-only test strategy. All tests run against the live Cloudflare API. There are no unit tests, integration tests, mocks, or fixtures.
+cfgate tests across two tiers: unit tests for pure functions and E2E tests against the live Cloudflare API.
 
 ## Philosophy
 
-- **Real API only.** Every test creates and verifies actual Cloudflare resources (tunnels, DNS records, Access applications, service tokens).
-- **E2E-only coverage.** Controller reconciliation patterns are incompatible with VCR/cassette approaches (attempted and removed). The controller runs in-process during tests against a real kind cluster.
-- **API state verification.** Tests verify that Kubernetes CRD state and Cloudflare API state converge correctly.
-- **104 specs across 7 test files.** Full lifecycle coverage for all CRDs, annotations, cross-resource interactions, CEL validation, structural invariants, and edge cases.
+- **Real API for E2E.** Every E2E test creates and verifies actual Cloudflare resources (tunnels, DNS records, Access applications, service tokens). No mocks, no fixtures, no VCR. Controller reconciliation patterns are incompatible with cassette approaches (attempted and removed).
+- **Pure-function unit tests.** Drift detection, status composition, annotation parsing, context transformation, caching, predicates, feature detection, and cloudflared builders are tested in isolation with table-driven Ginkgo specs.
+- **API state verification.** E2E tests verify that Kubernetes CRD state and Cloudflare API state converge correctly.
 
-## Environment Variables
+## Unit Tests
+
+1,056 specs across 7 packages, all run with `-race`:
+
+| Package | Specs | What it covers |
+|---------|-------|----------------|
+| `cloudflare` | 309 | Access drift detection (20-field comparison, 14 rule types), DNS record diff, error classification |
+| `cloudflared` | 153 | ConfigMap builder (catch-all, ingress rules, annotations), Deployment builder (replicas, image, metrics) |
+| `controller` | 58 | 5 event filtering predicates (generation, deletion, annotation changes) |
+| `controller/annotations` | 171 | 14 annotation keys, ParseNamespacedName, truthy parsing, default values |
+| `controller/context` | 183 | CRD-to-controller wrappers (40 pure transformation functions) |
+| `controller/features` | 54 | Runtime CRD detection (TCPRoute, UDPRoute, GRPCRoute, ReferenceGrant) |
+| `controller/status` | 128 | MergeConditions, 3 Ready composers (Tunnel, DNS, Access), condition helpers |
+
+```bash
+mise run test          # unit tests
+mise run test:cover    # unit tests with coverage (out/unit.coverprofile)
+```
+
+## E2E Tests
+
+E2E specs run against a real kind cluster with the controller in-process, hitting the live Cloudflare API.
+
+### Environment Variables
 
 All variables are injected via `mise` from `secrets.enc.yaml` and `.env`. See [CONTRIBUTING.md](../CONTRIBUTING.md) for secrets setup.
 
-### Required
+#### Required
 
 | Variable | Purpose |
 |----------|---------|
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token with required permissions |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for tunnel and Access operations |
 
-### Required for DNS and Access Tests
+#### Required for DNS and Access Tests
 
 | Variable | Purpose |
 |----------|---------|
@@ -30,7 +52,7 @@ Tests construct hostnames as `e2e-{type}-{node}-{line}.{CLOUDFLARE_ZONE_NAME}`. 
 
 > **Note:** `CLOUDFLARE_ZONE_NAME` is a test-only variable. The cfgate controller does not use it. Zones are configured per CloudflareDNS resource via `spec.zones[]`.
 
-### Optional
+#### Optional
 
 | Variable | Purpose |
 |----------|---------|
@@ -41,7 +63,7 @@ Tests construct hostnames as `e2e-{type}-{node}-{line}.{CLOUDFLARE_ZONE_NAME}`. 
 | `E2E_USE_EXISTING_CLUSTER` | Set to `true` to use existing kubeconfig cluster instead of creating kind |
 | `E2E_PROCS` | Ginkgo parallel process count (default: 4) |
 
-### API Token Permissions
+#### API Token Permissions
 
 The test token needs the same permissions as a production token:
 
@@ -52,9 +74,9 @@ The test token needs the same permissions as a production token:
 | Account | Access: Service Tokens: Edit | Service token rule tests |
 | Zone | DNS: Edit | DNS record sync tests |
 
-## Running Tests
+### Running Tests
 
-### Prerequisites
+#### Prerequisites
 
 1. Install toolchain:
 
@@ -77,7 +99,7 @@ export E2E_USE_EXISTING_CLUSTER=true
 
 The test suite installs CRDs and Gateway API resources automatically if not already present.
 
-### Run E2E Tests
+#### Run E2E Tests
 
 ```bash
 mise run e2e
@@ -90,7 +112,7 @@ This runs the full suite with:
 - Coverage profile to `out/coverage.out`
 - Progress polling after 15s silence
 
-### Run Specific Tests
+#### Run Specific Tests
 
 Use the `e2e:filter` task (alias `fe2e`) to run a subset with `--focus`:
 
@@ -117,7 +139,7 @@ mise run fe2e "CEL Validation"
 
 The filter argument is a Ginkgo `--focus` regex. It is required.
 
-### Adjust Parallelism
+#### Adjust Parallelism
 
 ```bash
 # Single process (useful for debugging ordering issues)
@@ -127,7 +149,7 @@ E2E_PROCS=1 mise run e2e
 E2E_PROCS=8 mise run e2e
 ```
 
-### Cleanup Orphaned Resources
+#### Cleanup Orphaned Resources
 
 If tests fail or `E2E_SKIP_CLEANUP=true` was set, resources may be left in Cloudflare. The cleanup utility removes them:
 
@@ -143,7 +165,7 @@ This scans for and deletes:
 
 Run cleanup before E2E tests to ensure a clean slate if previous runs left orphans.
 
-## Test Structure
+### Test Structure
 
 ```
 test/e2e/
@@ -152,13 +174,13 @@ test/e2e/
   tunnel_test.go        # CloudflareTunnel lifecycle (17 specs)
   dns_test.go           # CloudflareDNS sync, policies, ownership (19 specs)
   access_test.go        # CloudflareAccessPolicy rules and applications (26 specs)
-  annotations_test.go   # HTTPRoute annotation parsing and propagation (15 specs)
+  annotations_test.go   # HTTPRoute annotation parsing and propagation (16 specs)
   combined_test.go      # Multi-CRD interaction and cross-resource tests (7 specs)
   invariants_test.go    # Structural invariants across all CRDs (10 specs, 45 assertions)
-  validation_test.go    # CEL validation rules, no Cloudflare API needed (10 specs)
+  validation_test.go    # CEL validation rules, no Cloudflare API needed (12 specs)
 ```
 
-### Test Naming Convention
+#### Test Naming Convention
 
 Resources created during tests follow the pattern:
 
@@ -168,9 +190,9 @@ e2e-{type}-{node}-{line}
 
 The `{line}` component is the Ginkgo spec's source line number, making names deterministic and reproducible across runs. This ensures parallel test nodes do not collide and orphaned resources are identifiable.
 
-## Test Patterns
+### Test Patterns
 
-### SpecTimeout
+#### SpecTimeout
 
 Every spec that calls the Cloudflare API uses `SpecTimeout` to prevent hangs:
 
@@ -186,7 +208,7 @@ Typical timeouts:
 - Access operations: 3-5 minutes
 - Validation-only specs: no timeout needed (no API calls)
 
-### Conflict Retry (Eventually + Get/Update)
+#### Conflict Retry (Eventually + Get/Update)
 
 When updating a resource that the controller may also be reconciling, wrap the Get/Update in `Eventually` to retry on 409 Conflict:
 
@@ -216,7 +238,7 @@ Eventually(func(g Gomega) {
 
 Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller will race you.
 
-### Wait Helpers
+#### Wait Helpers
 
 `helpers_test.go` provides typed wait functions for all resources:
 
@@ -234,7 +256,7 @@ Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller 
 | `waitForAccessApplicationDeletedFromCloudflare` | Access app removed from Cloudflare API |
 | `waitForServiceTokenSecretCreated` | Service token Secret created in K8s |
 
-### Resource Creators
+#### Resource Creators
 
 `helpers_test.go` provides typed factory functions that create resources with sensible defaults:
 
@@ -249,7 +271,7 @@ Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller 
 | `createHTTPRoute` | HTTPRoute with hostname and backend |
 | `createTestService` | ClusterIP Service for backends |
 
-### Invariant Tests
+#### Invariant Tests
 
 Invariant tests (`invariants_test.go`) verify structural properties that MUST hold whenever a resource reaches a known state. Unlike scenario tests ("do X, expect Y"), invariant tests verify "whenever state S holds, properties P1..Pn MUST hold" regardless of how the resource reached that state.
 
@@ -268,7 +290,7 @@ Eight test contexts cover 45 assertions:
 
 The invariant test context is `Ordered`; specs share a tunnel, GatewayClass, and Gateway. A failure in an early spec cascades to skip all subsequent specs in the context.
 
-## Skipped Tests
+### Skipped Tests
 
 Some tests are skipped when optional environment variables are missing:
 
@@ -279,7 +301,7 @@ Some tests are skipped when optional environment variables are missing:
 | `CLOUDFLARE_TEST_EMAIL` | Email-based Access rule tests |
 | `CLOUDFLARE_TEST_GROUP` | GSuite group-based Access rule tests |
 
-## Test Output
+### Test Output
 
 After running `mise run e2e`:
 
