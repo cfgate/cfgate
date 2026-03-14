@@ -1,6 +1,8 @@
 package annotations
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -608,5 +610,494 @@ func TestConstants(t *testing.T) {
 	}
 	if MaxLabelLength != 63 {
 		t.Errorf("MaxLabelLength = %d, want 63", MaxLabelLength)
+	}
+}
+
+// --- New Test Functions (T1-A Wave 1 Expansion) ---
+
+func TestParseNamespacedName(t *testing.T) {
+	tests := []struct {
+		name      string
+		ref       string
+		defaultNS string
+		wantNS    string
+		wantName  string
+		wantErr   error
+	}{
+		{
+			name:      "simple name uses default namespace",
+			ref:       "my-tunnel",
+			defaultNS: "default",
+			wantNS:    "default",
+			wantName:  "my-tunnel",
+		},
+		{
+			name:      "namespace/name format",
+			ref:       "prod/my-tunnel",
+			defaultNS: "default",
+			wantNS:    "prod",
+			wantName:  "my-tunnel",
+		},
+		{
+			name:      "empty ref",
+			ref:       "",
+			defaultNS: "default",
+			wantErr:   ErrInvalidNamespacedName,
+		},
+		{
+			name:      "multiple slashes",
+			ref:       "a/b/c",
+			defaultNS: "default",
+			wantErr:   ErrInvalidNamespacedName,
+		},
+		{
+			name:      "four segments",
+			ref:       "a/b/c/d",
+			defaultNS: "default",
+			wantErr:   ErrInvalidNamespacedName,
+		},
+		{
+			name:      "empty namespace segment",
+			ref:       "/name",
+			defaultNS: "default",
+			wantErr:   ErrEmptyNamespacedNameSegment,
+		},
+		{
+			name:      "empty name segment",
+			ref:       "namespace/",
+			defaultNS: "default",
+			wantErr:   ErrEmptyNamespacedNameSegment,
+		},
+		{
+			name:      "lone slash",
+			ref:       "/",
+			defaultNS: "default",
+			wantErr:   ErrEmptyNamespacedNameSegment,
+		},
+		{
+			name:      "empty default namespace",
+			ref:       "my-tunnel",
+			defaultNS: "",
+			wantNS:    "",
+			wantName:  "my-tunnel",
+		},
+		{
+			name:      "custom default namespace",
+			ref:       "my-tunnel",
+			defaultNS: "cfgate-system",
+			wantNS:    "cfgate-system",
+			wantName:  "my-tunnel",
+		},
+		{
+			name:      "dots in name",
+			ref:       "ns/my.tunnel.name",
+			defaultNS: "default",
+			wantNS:    "ns",
+			wantName:  "my.tunnel.name",
+		},
+		{
+			name:      "hyphens in name",
+			ref:       "ns/my-tunnel-name",
+			defaultNS: "default",
+			wantNS:    "ns",
+			wantName:  "my-tunnel-name",
+		},
+		{
+			name:      "spaces in name passed through",
+			ref:       "ns/my tunnel",
+			defaultNS: "default",
+			wantNS:    "ns",
+			wantName:  "my tunnel",
+		},
+		{
+			name:      "single character name",
+			ref:       "a",
+			defaultNS: "default",
+			wantNS:    "default",
+			wantName:  "a",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ns, name, err := ParseNamespacedName(tt.ref, tt.defaultNS)
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("ParseNamespacedName(%q, %q) expected error, got nil", tt.ref, tt.defaultNS)
+				}
+				if !errors.Is(err, tt.wantErr) {
+					t.Errorf("ParseNamespacedName(%q, %q) error = %v, want %v", tt.ref, tt.defaultNS, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseNamespacedName(%q, %q) unexpected error: %v", tt.ref, tt.defaultNS, err)
+			}
+			if ns != tt.wantNS {
+				t.Errorf("ParseNamespacedName(%q, %q) namespace = %q, want %q", tt.ref, tt.defaultNS, ns, tt.wantNS)
+			}
+			if name != tt.wantName {
+				t.Errorf("ParseNamespacedName(%q, %q) name = %q, want %q", tt.ref, tt.defaultNS, name, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestIsTruthyAnnotation(t *testing.T) {
+	tests := []struct {
+		name string
+		val  string
+		want bool
+	}{
+		{"true", "true", true},
+		{"True", "True", true},
+		{"TRUE", "TRUE", true},
+		{"1", "1", true},
+		{"yes", "yes", true},
+		{"Yes", "Yes", true},
+		{"YES", "YES", true},
+		{"false", "false", false},
+		{"0", "0", false},
+		{"no", "no", false},
+		{"empty string", "", false},
+		{"invalid string", "invalid", false},
+		{"numeric 2", "2", false},
+		{"leading space", " true", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isTruthyAnnotation(tt.val)
+			if got != tt.want {
+				t.Errorf("isTruthyAnnotation(%q) = %v, want %v", tt.val, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseOriginConfigExtendedFields(t *testing.T) {
+	tests := []struct {
+		name               string
+		annotations        map[string]string
+		defaultProtocol    string
+		wantProtocol       string
+		wantSSLVerify      bool
+		wantTimeout        time.Duration
+		wantHTTPHostHeader string
+		wantServerName     string
+		wantCAPool         string
+		wantHTTP2          bool
+		wantH2c            bool
+	}{
+		{
+			name:               "HTTPHostHeader",
+			annotations:        map[string]string{AnnotationOriginHTTPHostHeader: "custom.host"},
+			defaultProtocol:    "http",
+			wantProtocol:       "http",
+			wantSSLVerify:      true,
+			wantTimeout:        30 * time.Second,
+			wantHTTPHostHeader: "custom.host",
+		},
+		{
+			name:            "ServerName",
+			annotations:     map[string]string{AnnotationOriginServerName: "tls.example.com"},
+			defaultProtocol: "http",
+			wantProtocol:    "http",
+			wantSSLVerify:   true,
+			wantTimeout:     30 * time.Second,
+			wantServerName:  "tls.example.com",
+		},
+		{
+			name:            "CAPool",
+			annotations:     map[string]string{AnnotationOriginCAPool: "/etc/ssl/ca.pem"},
+			defaultProtocol: "http",
+			wantProtocol:    "http",
+			wantSSLVerify:   true,
+			wantTimeout:     30 * time.Second,
+			wantCAPool:      "/etc/ssl/ca.pem",
+		},
+		{
+			name: "all fields set",
+			annotations: map[string]string{
+				AnnotationOriginProtocol:       "https",
+				AnnotationOriginSSLVerify:      "false",
+				AnnotationOriginConnectTimeout: "1m",
+				AnnotationOriginHTTPHostHeader: "custom.host",
+				AnnotationOriginServerName:     "tls.example.com",
+				AnnotationOriginCAPool:         "/etc/ssl/ca.pem",
+				AnnotationOriginHTTP2:          "true",
+				AnnotationOriginH2c:            "false",
+			},
+			defaultProtocol:    "http",
+			wantProtocol:       "https",
+			wantSSLVerify:      false,
+			wantTimeout:        time.Minute,
+			wantHTTPHostHeader: "custom.host",
+			wantServerName:     "tls.example.com",
+			wantCAPool:         "/etc/ssl/ca.pem",
+			wantHTTP2:          true,
+		},
+		{
+			name:            "invalid duration uses default",
+			annotations:     map[string]string{AnnotationOriginConnectTimeout: "not-a-duration"},
+			defaultProtocol: "http",
+			wantProtocol:    "http",
+			wantSSLVerify:   true,
+			wantTimeout:     30 * time.Second,
+		},
+		{
+			name:            "empty protocol with udp default",
+			annotations:     map[string]string{},
+			defaultProtocol: "udp",
+			wantProtocol:    "udp",
+			wantSSLVerify:   true,
+			wantTimeout:     30 * time.Second,
+		},
+		{
+			name:            "explicit protocol overrides default",
+			annotations:     map[string]string{AnnotationOriginProtocol: "https"},
+			defaultProtocol: "tcp",
+			wantProtocol:    "https",
+			wantSSLVerify:   true,
+			wantTimeout:     30 * time.Second,
+		},
+		{
+			name:            "negative duration parsed",
+			annotations:     map[string]string{AnnotationOriginConnectTimeout: "-5s"},
+			defaultProtocol: "http",
+			wantProtocol:    "http",
+			wantSSLVerify:   true,
+			wantTimeout:     -5 * time.Second,
+		},
+		{
+			name:            "integer without unit uses default",
+			annotations:     map[string]string{AnnotationOriginConnectTimeout: "30"},
+			defaultProtocol: "http",
+			wantProtocol:    "http",
+			wantSSLVerify:   true,
+			wantTimeout:     30 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := newFakeObject(tt.annotations)
+			config := ParseOriginConfig(obj, tt.defaultProtocol)
+
+			if config.Protocol != tt.wantProtocol {
+				t.Errorf("Protocol = %q, want %q", config.Protocol, tt.wantProtocol)
+			}
+			if config.SSLVerify != tt.wantSSLVerify {
+				t.Errorf("SSLVerify = %v, want %v", config.SSLVerify, tt.wantSSLVerify)
+			}
+			if config.ConnectTimeout != tt.wantTimeout {
+				t.Errorf("ConnectTimeout = %v, want %v", config.ConnectTimeout, tt.wantTimeout)
+			}
+			if config.HTTPHostHeader != tt.wantHTTPHostHeader {
+				t.Errorf("HTTPHostHeader = %q, want %q", config.HTTPHostHeader, tt.wantHTTPHostHeader)
+			}
+			if config.ServerName != tt.wantServerName {
+				t.Errorf("ServerName = %q, want %q", config.ServerName, tt.wantServerName)
+			}
+			if config.CAPool != tt.wantCAPool {
+				t.Errorf("CAPool = %q, want %q", config.CAPool, tt.wantCAPool)
+			}
+			if config.HTTP2 != tt.wantHTTP2 {
+				t.Errorf("HTTP2 = %v, want %v", config.HTTP2, tt.wantHTTP2)
+			}
+			if config.H2c != tt.wantH2c {
+				t.Errorf("H2c = %v, want %v", config.H2c, tt.wantH2c)
+			}
+		})
+	}
+}
+
+func TestValidateRouteAnnotationsExtended(t *testing.T) {
+	tests := []struct {
+		name            string
+		annotations     map[string]string
+		requireHostname bool
+		wantValid       bool
+		wantErrors      int
+	}{
+		{
+			name: "h2c=true http2=false is valid",
+			annotations: map[string]string{
+				AnnotationOriginH2c:   "true",
+				AnnotationOriginHTTP2: "false",
+			},
+			wantValid: true,
+		},
+		{
+			name: "h2c=false http2=true is valid",
+			annotations: map[string]string{
+				AnnotationOriginH2c:   "false",
+				AnnotationOriginHTTP2: "true",
+			},
+			wantValid: true,
+		},
+		{
+			name: "h2c=1 http2=1 mutually exclusive",
+			annotations: map[string]string{
+				AnnotationOriginH2c:   "1",
+				AnnotationOriginHTTP2: "1",
+			},
+			wantValid:  false,
+			wantErrors: 1,
+		},
+		{
+			name: "h2c=yes http2=yes mutually exclusive",
+			annotations: map[string]string{
+				AnnotationOriginH2c:   "yes",
+				AnnotationOriginHTTP2: "yes",
+			},
+			wantValid:  false,
+			wantErrors: 1,
+		},
+		{
+			name: "mutual exclusivity plus invalid TTL",
+			annotations: map[string]string{
+				AnnotationOriginH2c:   "true",
+				AnnotationOriginHTTP2: "true",
+				AnnotationTTL:         "0",
+			},
+			wantValid:  false,
+			wantErrors: 2,
+		},
+		{
+			name: "three errors: exclusivity plus invalid protocol plus missing hostname",
+			annotations: map[string]string{
+				AnnotationOriginH2c:      "true",
+				AnnotationOriginHTTP2:    "true",
+				AnnotationOriginProtocol: "grpc",
+			},
+			requireHostname: true,
+			wantValid:       false,
+			wantErrors:      3,
+		},
+		{
+			name: "all valid annotations at once",
+			annotations: map[string]string{
+				AnnotationOriginProtocol: "https",
+				AnnotationTTL:           "300",
+				AnnotationHostname:      "app.example.com",
+				AnnotationOriginH2c:     "false",
+				AnnotationOriginHTTP2:   "true",
+			},
+			requireHostname: true,
+			wantValid:       true,
+		},
+		{
+			name: "non-cfgate annotations ignored",
+			annotations: map[string]string{
+				"kubernetes.io/ingress-class": "nginx",
+				"app.kubernetes.io/name":      "myapp",
+			},
+			wantValid: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := newFakeObject(tt.annotations)
+			result := ValidateRouteAnnotations(obj, tt.requireHostname)
+
+			if result.Valid != tt.wantValid {
+				t.Errorf("Valid = %v, want %v", result.Valid, tt.wantValid)
+			}
+			if len(result.Errors) != tt.wantErrors {
+				t.Errorf("got %d errors, want %d: %v", len(result.Errors), tt.wantErrors, result.Errors)
+			}
+		})
+	}
+}
+
+func TestGetAnnotationEdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		key         string
+		want        string
+	}{
+		{
+			name:        "very long value",
+			annotations: map[string]string{AnnotationOriginProtocol: strings.Repeat("a", 1000)},
+			key:         AnnotationOriginProtocol,
+			want:        strings.Repeat("a", 1000),
+		},
+		{
+			name:        "special characters in value",
+			annotations: map[string]string{AnnotationOriginHTTPHostHeader: "host.example.com:8080/path?query=1&foo=bar"},
+			key:         AnnotationOriginHTTPHostHeader,
+			want:        "host.example.com:8080/path?query=1&foo=bar",
+		},
+		{
+			name: "multiple annotations retrieve specific one",
+			annotations: map[string]string{
+				AnnotationTTL:            "300",
+				AnnotationOriginProtocol: "https",
+				AnnotationHostname:       "app.example.com",
+			},
+			key:  AnnotationOriginProtocol,
+			want: "https",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := newFakeObject(tt.annotations)
+			got := GetAnnotation(obj, tt.key)
+			if got != tt.want {
+				t.Errorf("GetAnnotation() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDNSConfigFallbacks(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		wantTTL     int
+		wantProxied bool
+	}{
+		{
+			name:        "invalid TTL string falls back to default",
+			annotations: map[string]string{AnnotationTTL: "invalid"},
+			wantTTL:     1,
+			wantProxied: true,
+		},
+		{
+			name:        "invalid proxied value falls back to default",
+			annotations: map[string]string{AnnotationCloudflareProxied: "maybe"},
+			wantTTL:     1,
+			wantProxied: true,
+		},
+		{
+			name:        "TTL zero parsed as integer",
+			annotations: map[string]string{AnnotationTTL: "0"},
+			wantTTL:     0,
+			wantProxied: true,
+		},
+		{
+			name:        "negative TTL parsed as integer",
+			annotations: map[string]string{AnnotationTTL: "-1"},
+			wantTTL:     -1,
+			wantProxied: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := newFakeObject(tt.annotations)
+			config := ParseDNSConfig(obj)
+
+			if config.TTL != tt.wantTTL {
+				t.Errorf("TTL = %d, want %d", config.TTL, tt.wantTTL)
+			}
+			if config.Proxied != tt.wantProxied {
+				t.Errorf("Proxied = %v, want %v", config.Proxied, tt.wantProxied)
+			}
+		})
 	}
 }
