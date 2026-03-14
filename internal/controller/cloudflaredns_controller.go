@@ -1177,6 +1177,11 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 		ownerID = fmt.Sprintf("%s/%s", dns.Namespace, dns.Name)
 	}
 
+	ownershipPrefix := dns.Spec.Ownership.TXTRecord.Prefix
+	if ownershipPrefix == "" {
+		ownershipPrefix = dnsDefaultOwnershipPrefix
+	}
+
 	if len(dns.Spec.Zones) == 0 {
 		logger.Info("cleanup: no zones configured, nothing to clean", "ownerID", ownerID)
 		return nil
@@ -1208,8 +1213,9 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 			logger.V(1).Info("cleanup: zone resolved", "zone", zoneConfig.Name, "zoneID", zoneID)
 		}
 
-		// List managed records
-		records, err := dnsService.ListManagedRecords(ctx, zoneID, ownerID)
+		// List managed records with TXT cross-reference to prevent
+		// deleting records owned by other CloudflareDNS resources.
+		records, err := dnsService.ListManagedRecords(ctx, zoneID, ownerID, ownershipPrefix)
 		if err != nil {
 			logger.Error(err, "failed to list managed records", "zone", zoneConfig.Name)
 			deleteErrors = append(deleteErrors, fmt.Sprintf("zone %s: list failed: %v", zoneConfig.Name, err))
