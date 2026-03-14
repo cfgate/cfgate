@@ -30,22 +30,22 @@ mise run lint
 | `lint:fix` | `fix` | Run golangci-lint with auto-fix |
 | `format` | `fmt` | Format and vet code |
 | `manifests` | `dist` | Generate release manifests to `dist/` |
+| `test` | `t` | Run unit tests |
+| `test:cover` | *none* | Run unit tests with coverage report |
 | `e2e` | *none* | Run E2E tests against live Cloudflare API |
+| `e2e:filter` | `fe2e` | Run E2E tests with a Ginkgo `--focus` filter |
 | `e2e:cleanup` | `clean` | Clean orphaned E2E resources from Cloudflare |
 | `cluster:create` | *none* | Create dedicated cfgate dev cluster |
 | `cluster:delete` | *none* | Delete cfgate dev cluster |
 | `cluster:status` | *none* | Check cfgate dev cluster status |
 | `local:install` | *none* | Install Gateway API and cfgate CRDs |
 | `local:deploy` | *none* | Deploy controller to current cluster (kustomize) |
-| `local:helm` | *none* | Deploy controller via local Helm chart |
 | `local:undeploy` | *none* | Remove controller from current cluster |
 | `local:uninstall` | *none* | Uninstall CRDs from current cluster |
 | `run` | *none* | Run controller locally (outside cluster) |
 | `docker:build` | `db` | Build Docker image |
 | `docker:push` | `dp` | Push Docker image to registry |
 | `docker:buildx` | *none* | Build multi-arch image (amd64 + arm64) |
-| `helm:lint` | *none* | Lint Helm chart |
-| `helm:template` | *none* | Render Helm chart templates (dry run) |
 
 ## Secrets Configuration
 
@@ -122,9 +122,11 @@ Scope zone permissions to the zone matching `CLOUDFLARE_ZONE_NAME`.
 See [docs/TESTING.md](docs/TESTING.md) for the full testing guide.
 
 ```bash
-mise run cluster:create
-mise run e2e
-mise run e2e:cleanup
+mise run test              # unit tests
+mise run test:cover        # unit tests with coverage
+mise run cluster:create    # required for E2E
+mise run e2e               # E2E against live Cloudflare API
+mise run e2e:cleanup       # clean orphaned E2E resources
 ```
 
 ## Development Workflow
