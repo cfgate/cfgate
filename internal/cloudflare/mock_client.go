@@ -44,32 +44,32 @@ type MockClient struct {
 	GetAccountByNameFunc func(ctx context.Context, name string) (*Account, error)
 
 	// Access Application operations
-	CreateAccessApplicationFunc    func(ctx context.Context, accountID string, params CreateApplicationParams) (*AccessApplication, error)
+	CreateAccessApplicationFunc    func(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error)
 	GetAccessApplicationFunc       func(ctx context.Context, accountID, appID string) (*AccessApplication, error)
-	UpdateAccessApplicationFunc    func(ctx context.Context, accountID, appID string, params UpdateApplicationParams) (*AccessApplication, error)
+	UpdateAccessApplicationFunc    func(ctx context.Context, accountID, appID string, params ApplicationParams) (*AccessApplication, error)
 	DeleteAccessApplicationFunc    func(ctx context.Context, accountID, appID string) error
 	ListAccessApplicationsFunc     func(ctx context.Context, accountID string) ([]AccessApplication, error)
 	GetAccessApplicationByNameFunc func(ctx context.Context, accountID, name string) (*AccessApplication, error)
 
 	// Access Policy operations
-	CreateAccessPolicyFunc func(ctx context.Context, accountID, appID string, params CreatePolicyParams) (*AccessPolicy, error)
+	CreateAccessPolicyFunc func(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error)
 	GetAccessPolicyFunc    func(ctx context.Context, accountID, appID, policyID string) (*AccessPolicy, error)
-	UpdateAccessPolicyFunc func(ctx context.Context, accountID, appID, policyID string, params UpdatePolicyParams) (*AccessPolicy, error)
+	UpdateAccessPolicyFunc func(ctx context.Context, accountID, appID, policyID string, params PolicyParams) (*AccessPolicy, error)
 	DeleteAccessPolicyFunc func(ctx context.Context, accountID, appID, policyID string) error
 	ListAccessPoliciesFunc func(ctx context.Context, accountID, appID string) ([]AccessPolicy, error)
 
 	// Access Group operations
-	CreateAccessGroupFunc    func(ctx context.Context, accountID string, params CreateGroupParams) (*AccessGroup, error)
+	CreateAccessGroupFunc    func(ctx context.Context, accountID string, params GroupParams) (*AccessGroup, error)
 	GetAccessGroupFunc       func(ctx context.Context, accountID, groupID string) (*AccessGroup, error)
-	UpdateAccessGroupFunc    func(ctx context.Context, accountID, groupID string, params UpdateGroupParams) (*AccessGroup, error)
+	UpdateAccessGroupFunc    func(ctx context.Context, accountID, groupID string, params GroupParams) (*AccessGroup, error)
 	DeleteAccessGroupFunc    func(ctx context.Context, accountID, groupID string) error
 	ListAccessGroupsFunc     func(ctx context.Context, accountID string) ([]AccessGroup, error)
 	GetAccessGroupByNameFunc func(ctx context.Context, accountID, name string) (*AccessGroup, error)
 
 	// Service Token operations
-	CreateServiceTokenFunc  func(ctx context.Context, accountID string, params CreateServiceTokenParams) (*ServiceTokenWithSecret, error)
+	CreateServiceTokenFunc  func(ctx context.Context, accountID string, params ServiceTokenParams) (*ServiceTokenWithSecret, error)
 	GetServiceTokenFunc     func(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
-	UpdateServiceTokenFunc  func(ctx context.Context, accountID, tokenID string, params UpdateServiceTokenParams) (*ServiceToken, error)
+	UpdateServiceTokenFunc  func(ctx context.Context, accountID, tokenID string, params ServiceTokenParams) (*ServiceToken, error)
 	DeleteServiceTokenFunc  func(ctx context.Context, accountID, tokenID string) error
 	ListServiceTokensFunc   func(ctx context.Context, accountID string) ([]ServiceToken, error)
 	RotateServiceTokenFunc  func(ctx context.Context, accountID, tokenID string) (*ServiceTokenWithSecret, error)
@@ -84,7 +84,7 @@ type MockClient struct {
 
 	// mTLS Certificate Settings
 	GetMTLSCertificateSettingsFunc    func(ctx context.Context, accountID string) ([]CertificateSettings, error)
-	UpdateMTLSCertificateSettingsFunc func(ctx context.Context, accountID string, settings []CertificateSettingsParam) ([]CertificateSettings, error)
+	UpdateMTLSCertificateSettingsFunc func(ctx context.Context, accountID string, settings []CertificateSettings) ([]CertificateSettings, error)
 }
 
 // NewMockClient returns a MockClient with all function fields nil.
@@ -224,7 +224,7 @@ func (m *MockClient) GetAccountByName(ctx context.Context, name string) (*Accoun
 
 // Access Application operations
 
-func (m *MockClient) CreateAccessApplication(ctx context.Context, accountID string, params CreateApplicationParams) (*AccessApplication, error) {
+func (m *MockClient) CreateAccessApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error) {
 	if m.CreateAccessApplicationFunc != nil {
 		return m.CreateAccessApplicationFunc(ctx, accountID, params)
 	}
@@ -238,7 +238,7 @@ func (m *MockClient) GetAccessApplication(ctx context.Context, accountID, appID 
 	return nil, nil
 }
 
-func (m *MockClient) UpdateAccessApplication(ctx context.Context, accountID, appID string, params UpdateApplicationParams) (*AccessApplication, error) {
+func (m *MockClient) UpdateAccessApplication(ctx context.Context, accountID, appID string, params ApplicationParams) (*AccessApplication, error) {
 	if m.UpdateAccessApplicationFunc != nil {
 		return m.UpdateAccessApplicationFunc(ctx, accountID, appID, params)
 	}
@@ -268,7 +268,7 @@ func (m *MockClient) GetAccessApplicationByName(ctx context.Context, accountID, 
 
 // Access Policy operations
 
-func (m *MockClient) CreateAccessPolicy(ctx context.Context, accountID, appID string, params CreatePolicyParams) (*AccessPolicy, error) {
+func (m *MockClient) CreateAccessPolicy(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error) {
 	if m.CreateAccessPolicyFunc != nil {
 		return m.CreateAccessPolicyFunc(ctx, accountID, appID, params)
 	}
@@ -282,7 +282,7 @@ func (m *MockClient) GetAccessPolicy(ctx context.Context, accountID, appID, poli
 	return nil, nil
 }
 
-func (m *MockClient) UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, params UpdatePolicyParams) (*AccessPolicy, error) {
+func (m *MockClient) UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, params PolicyParams) (*AccessPolicy, error) {
 	if m.UpdateAccessPolicyFunc != nil {
 		return m.UpdateAccessPolicyFunc(ctx, accountID, appID, policyID, params)
 	}
@@ -305,7 +305,7 @@ func (m *MockClient) ListAccessPolicies(ctx context.Context, accountID, appID st
 
 // Access Group operations
 
-func (m *MockClient) CreateAccessGroup(ctx context.Context, accountID string, params CreateGroupParams) (*AccessGroup, error) {
+func (m *MockClient) CreateAccessGroup(ctx context.Context, accountID string, params GroupParams) (*AccessGroup, error) {
 	if m.CreateAccessGroupFunc != nil {
 		return m.CreateAccessGroupFunc(ctx, accountID, params)
 	}
@@ -319,7 +319,7 @@ func (m *MockClient) GetAccessGroup(ctx context.Context, accountID, groupID stri
 	return nil, nil
 }
 
-func (m *MockClient) UpdateAccessGroup(ctx context.Context, accountID, groupID string, params UpdateGroupParams) (*AccessGroup, error) {
+func (m *MockClient) UpdateAccessGroup(ctx context.Context, accountID, groupID string, params GroupParams) (*AccessGroup, error) {
 	if m.UpdateAccessGroupFunc != nil {
 		return m.UpdateAccessGroupFunc(ctx, accountID, groupID, params)
 	}
@@ -349,7 +349,7 @@ func (m *MockClient) GetAccessGroupByName(ctx context.Context, accountID, name s
 
 // Service Token operations
 
-func (m *MockClient) CreateServiceToken(ctx context.Context, accountID string, params CreateServiceTokenParams) (*ServiceTokenWithSecret, error) {
+func (m *MockClient) CreateServiceToken(ctx context.Context, accountID string, params ServiceTokenParams) (*ServiceTokenWithSecret, error) {
 	if m.CreateServiceTokenFunc != nil {
 		return m.CreateServiceTokenFunc(ctx, accountID, params)
 	}
@@ -363,7 +363,7 @@ func (m *MockClient) GetServiceToken(ctx context.Context, accountID, tokenID str
 	return nil, nil
 }
 
-func (m *MockClient) UpdateServiceToken(ctx context.Context, accountID, tokenID string, params UpdateServiceTokenParams) (*ServiceToken, error) {
+func (m *MockClient) UpdateServiceToken(ctx context.Context, accountID, tokenID string, params ServiceTokenParams) (*ServiceToken, error) {
 	if m.UpdateServiceTokenFunc != nil {
 		return m.UpdateServiceTokenFunc(ctx, accountID, tokenID, params)
 	}
@@ -444,7 +444,7 @@ func (m *MockClient) GetMTLSCertificateSettings(ctx context.Context, accountID s
 	return nil, nil
 }
 
-func (m *MockClient) UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettingsParam) ([]CertificateSettings, error) {
+func (m *MockClient) UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettings) ([]CertificateSettings, error) {
 	if m.UpdateMTLSCertificateSettingsFunc != nil {
 		return m.UpdateMTLSCertificateSettingsFunc(ctx, accountID, settings)
 	}

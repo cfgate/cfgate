@@ -84,13 +84,13 @@ type AccountOps interface {
 // including creation, retrieval, update, deletion, and name-based lookup.
 type AccessAppOps interface {
 	// CreateAccessApplication creates a new Access application.
-	CreateAccessApplication(ctx context.Context, accountID string, params CreateApplicationParams) (*AccessApplication, error)
+	CreateAccessApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error)
 
 	// GetAccessApplication retrieves an Access application by ID.
 	GetAccessApplication(ctx context.Context, accountID, appID string) (*AccessApplication, error)
 
 	// UpdateAccessApplication updates an existing Access application.
-	UpdateAccessApplication(ctx context.Context, accountID, appID string, params UpdateApplicationParams) (*AccessApplication, error)
+	UpdateAccessApplication(ctx context.Context, accountID, appID string, params ApplicationParams) (*AccessApplication, error)
 
 	// DeleteAccessApplication deletes an Access application.
 	DeleteAccessApplication(ctx context.Context, accountID, appID string) error
@@ -107,13 +107,13 @@ type AccessAppOps interface {
 // scoped to an application, including creation, retrieval, update, and deletion.
 type AccessPolicyOps interface {
 	// CreateAccessPolicy creates a new Access policy for an application.
-	CreateAccessPolicy(ctx context.Context, accountID, appID string, params CreatePolicyParams) (*AccessPolicy, error)
+	CreateAccessPolicy(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error)
 
 	// GetAccessPolicy retrieves an Access policy by ID.
 	GetAccessPolicy(ctx context.Context, accountID, appID, policyID string) (*AccessPolicy, error)
 
 	// UpdateAccessPolicy updates an existing Access policy.
-	UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, params UpdatePolicyParams) (*AccessPolicy, error)
+	UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, params PolicyParams) (*AccessPolicy, error)
 
 	// DeleteAccessPolicy deletes an Access policy.
 	DeleteAccessPolicy(ctx context.Context, accountID, appID, policyID string) error
@@ -126,13 +126,13 @@ type AccessPolicyOps interface {
 // including creation, retrieval, update, deletion, and name-based lookup.
 type AccessGroupOps interface {
 	// CreateAccessGroup creates a new Access group.
-	CreateAccessGroup(ctx context.Context, accountID string, params CreateGroupParams) (*AccessGroup, error)
+	CreateAccessGroup(ctx context.Context, accountID string, params GroupParams) (*AccessGroup, error)
 
 	// GetAccessGroup retrieves an Access group by ID.
 	GetAccessGroup(ctx context.Context, accountID, groupID string) (*AccessGroup, error)
 
 	// UpdateAccessGroup updates an existing Access group.
-	UpdateAccessGroup(ctx context.Context, accountID, groupID string, params UpdateGroupParams) (*AccessGroup, error)
+	UpdateAccessGroup(ctx context.Context, accountID, groupID string, params GroupParams) (*AccessGroup, error)
 
 	// DeleteAccessGroup deletes an Access group.
 	DeleteAccessGroup(ctx context.Context, accountID, groupID string) error
@@ -150,13 +150,13 @@ type AccessGroupOps interface {
 type ServiceTokenOps interface {
 	// CreateServiceToken creates a new service token.
 	// The returned token includes the client secret, which is only available at creation time.
-	CreateServiceToken(ctx context.Context, accountID string, params CreateServiceTokenParams) (*ServiceTokenWithSecret, error)
+	CreateServiceToken(ctx context.Context, accountID string, params ServiceTokenParams) (*ServiceTokenWithSecret, error)
 
 	// GetServiceToken retrieves a service token by ID.
 	GetServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
 
 	// UpdateServiceToken updates an existing service token.
-	UpdateServiceToken(ctx context.Context, accountID, tokenID string, params UpdateServiceTokenParams) (*ServiceToken, error)
+	UpdateServiceToken(ctx context.Context, accountID, tokenID string, params ServiceTokenParams) (*ServiceToken, error)
 
 	// DeleteServiceToken deletes a service token.
 	DeleteServiceToken(ctx context.Context, accountID, tokenID string) error
@@ -194,7 +194,7 @@ type MTLSOps interface {
 	GetMTLSCertificateSettings(ctx context.Context, accountID string) ([]CertificateSettings, error)
 
 	// UpdateMTLSCertificateSettings updates mTLS certificate settings.
-	UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettingsParam) ([]CertificateSettings, error)
+	UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettings) ([]CertificateSettings, error)
 }
 
 // Client defines the Cloudflare API operations composed from domain interfaces.
