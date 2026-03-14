@@ -1,9 +1,11 @@
 package cloudflare
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -745,12 +747,10 @@ func accessApplicationNeedsUpdate(existing *AccessApplication, desired *CreateAp
 	if existing.HttpOnlyCookieAttribute != desiredHttpOnly {
 		return true
 	}
-	if len(existing.AllowedIdps) != 0 || len(desired.AllowedIdps) != 0 {
-		if !reflect.DeepEqual(existing.AllowedIdps, desired.AllowedIdps) {
-			return true
-		}
+	if !stringSlicesEqual(existing.AllowedIdps, desired.AllowedIdps) {
+		return true
 	}
-	if !reflect.DeepEqual(existing.CORSHeaders, desired.CORSHeaders) {
+	if !corsHeadersEqual(existing.CORSHeaders, desired.CORSHeaders) {
 		return true
 	}
 	return false
@@ -876,16 +876,166 @@ func accessPolicyEqual(existing *AccessPolicy, desired *CreatePolicyParams) bool
 	if existing.ApprovalRequired != desired.ApprovalRequired {
 		return false
 	}
-	if !reflect.DeepEqual(existing.Include, desired.Include) {
+	if !accessRulesEqual(existing.Include, desired.Include) {
 		return false
 	}
-	if !reflect.DeepEqual(existing.Exclude, desired.Exclude) {
+	if !accessRulesEqual(existing.Exclude, desired.Exclude) {
 		return false
 	}
-	if !reflect.DeepEqual(existing.Require, desired.Require) {
+	if !accessRulesEqual(existing.Require, desired.Require) {
 		return false
 	}
-	if !reflect.DeepEqual(existing.ApprovalGroups, desired.ApprovalGroups) {
+	if !approvalGroupsEqual(existing.ApprovalGroups, desired.ApprovalGroups) {
+		return false
+	}
+	return true
+}
+
+// stringSlicesEqual compares two string slices without regard to order.
+// Returns true if both slices contain the same elements regardless of position.
+// Treats nil and empty slices as equal.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	sa := make([]string, len(a))
+	copy(sa, a)
+	sb := make([]string, len(b))
+	copy(sb, b)
+	slices.Sort(sa)
+	slices.Sort(sb)
+	return slices.Equal(sa, sb)
+}
+
+// accessRuleKey returns a canonical sort key for an AccessRuleParam.
+// Only one field should be set per rule; the key encodes the active field type and value.
+func accessRuleKey(r AccessRuleParam) string {
+	switch {
+	case r.IPRange != nil:
+		return "ip:" + *r.IPRange
+	case r.IPListID != nil:
+		return "iplist:" + *r.IPListID
+	case r.Country != nil:
+		return "country:" + *r.Country
+	case r.Everyone != nil:
+		return "everyone"
+	case r.ServiceTokenID != nil:
+		return "servicetoken:" + *r.ServiceTokenID
+	case r.AnyValidServiceToken != nil:
+		return "anyservicetoken"
+	case r.Email != nil:
+		return "email:" + *r.Email
+	case r.EmailListID != nil:
+		return "emaillist:" + *r.EmailListID
+	case r.EmailDomain != nil:
+		return "emaildomain:" + *r.EmailDomain
+	case r.OIDCClaim != nil:
+		return "oidc:" + r.OIDCClaim.IdentityProviderID + ":" + r.OIDCClaim.ClaimName + ":" + r.OIDCClaim.ClaimValue
+	case r.GSuiteGroup != nil:
+		return "gsuite:" + r.GSuiteGroup.IdentityProviderID + ":" + r.GSuiteGroup.Email
+	case r.Certificate != nil:
+		return "cert"
+	case r.CommonName != nil:
+		return "cn:" + *r.CommonName
+	case r.GroupID != nil:
+		return "group:" + *r.GroupID
+	default:
+		return ""
+	}
+}
+
+// accessRulesEqual compares two AccessRuleParam slices without regard to order.
+// Rules are sorted by canonical key before comparison to prevent spurious drift
+// when the Cloudflare API returns rules in a different order than submitted.
+func accessRulesEqual(a, b []AccessRuleParam) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	sa := make([]AccessRuleParam, len(a))
+	copy(sa, a)
+	sb := make([]AccessRuleParam, len(b))
+	copy(sb, b)
+	cmpKey := func(x, y AccessRuleParam) int {
+		return cmp.Compare(accessRuleKey(x), accessRuleKey(y))
+	}
+	slices.SortFunc(sa, cmpKey)
+	slices.SortFunc(sb, cmpKey)
+	return reflect.DeepEqual(sa, sb)
+}
+
+// approvalGroupsEqual compares two ApprovalGroupParam slices without regard to order.
+// Inner EmailAddresses slices are also compared order-insensitively.
+func approvalGroupsEqual(a, b []ApprovalGroupParam) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	sortKey := func(g ApprovalGroupParam) string {
+		return fmt.Sprintf("%s:%d", g.EmailListUUID, g.ApprovalsNeeded)
+	}
+	sa := make([]ApprovalGroupParam, len(a))
+	copy(sa, a)
+	sb := make([]ApprovalGroupParam, len(b))
+	copy(sb, b)
+	slices.SortFunc(sa, func(x, y ApprovalGroupParam) int {
+		return cmp.Compare(sortKey(x), sortKey(y))
+	})
+	slices.SortFunc(sb, func(x, y ApprovalGroupParam) int {
+		return cmp.Compare(sortKey(x), sortKey(y))
+	})
+	for i := range sa {
+		if sa[i].EmailListUUID != sb[i].EmailListUUID {
+			return false
+		}
+		if sa[i].ApprovalsNeeded != sb[i].ApprovalsNeeded {
+			return false
+		}
+		if !stringSlicesEqual(sa[i].EmailAddresses, sb[i].EmailAddresses) {
+			return false
+		}
+	}
+	return true
+}
+
+// corsHeadersEqual compares two CORSHeadersParam values, comparing inner string
+// slices without regard to order. Handles nil for both operands.
+func corsHeadersEqual(a, b *CORSHeadersParam) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	if a.AllowAllHeaders != b.AllowAllHeaders {
+		return false
+	}
+	if a.AllowAllMethods != b.AllowAllMethods {
+		return false
+	}
+	if a.AllowAllOrigins != b.AllowAllOrigins {
+		return false
+	}
+	if a.AllowCredentials != b.AllowCredentials {
+		return false
+	}
+	if a.MaxAge != b.MaxAge {
+		return false
+	}
+	if !stringSlicesEqual(a.AllowedHeaders, b.AllowedHeaders) {
+		return false
+	}
+	if !stringSlicesEqual(a.AllowedMethods, b.AllowedMethods) {
+		return false
+	}
+	if !stringSlicesEqual(a.AllowedOrigins, b.AllowedOrigins) {
 		return false
 	}
 	return true
