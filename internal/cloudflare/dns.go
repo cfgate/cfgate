@@ -527,21 +527,22 @@ func ParseOwnershipRecord(content string) (*OwnershipMetadata, error) {
 }
 
 // IsDuplicateRecordError returns true if the error indicates a duplicate record.
+// Checks Cloudflare DNS error codes 81053 (already exists) and 81058 (identical exists).
 func IsDuplicateRecordError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "81053") || strings.Contains(errStr, "81058")
+	return hasErrorCode(err, ErrCodeRecordAlreadyExists) || hasErrorCode(err, ErrCodeIdenticalRecordExists)
 }
 
 // IsRecordNotFoundError returns true if the error indicates a record was not found.
+// Checks both the HTTP status (404) and the Cloudflare DNS error code (81044).
 func IsRecordNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "81044") ||
-		strings.Contains(errStr, "not found") ||
-		strings.Contains(errStr, "404")
+	if isNotFound(err) {
+		return true
+	}
+	return hasErrorCode(err, ErrCodeRecordNotFound)
 }
