@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
@@ -68,13 +67,33 @@ func NewClient(apiToken string, opts ...ClientOption) (Client, error) {
 	return c, nil
 }
 
+// isNotFound reports whether err is a Cloudflare API 404 response.
+func isNotFound(err error) bool {
+	var apiErr *cf.Error
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound
+}
+
+// hasErrorCode reports whether err is a Cloudflare API error containing the given error code.
+func hasErrorCode(err error, code int64) bool {
+	var apiErr *cf.Error
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	for _, e := range apiErr.Errors {
+		if e.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 // GetTunnel retrieves a tunnel by ID.
 func (c *clientImpl) GetTunnel(ctx context.Context, accountID, tunnelID string) (*Tunnel, error) {
 	tunnel, err := c.api.ZeroTrust.Tunnels.Cloudflared.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredGetParams{
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get tunnel: %w", err)
@@ -141,7 +160,7 @@ func (c *clientImpl) DeleteTunnel(ctx context.Context, accountID, tunnelID strin
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete tunnel: %w", err)
@@ -157,8 +176,7 @@ func (c *clientImpl) DeleteTunnelConnections(ctx context.Context, accountID, tun
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		// Ignore "not found" errors for connections
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil
 		}
 		return fmt.Errorf("failed to delete tunnel connections: %w", err)
@@ -426,7 +444,7 @@ func (c *clientImpl) DeleteDNSRecord(ctx context.Context, zoneID, recordID strin
 		ZoneID: cf.F(zoneID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete DNS record: %w", err)
@@ -726,7 +744,7 @@ func (c *clientImpl) GetAccessApplication(ctx context.Context, accountID, appID 
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get access application: %w", err)
@@ -794,7 +812,7 @@ func (c *clientImpl) DeleteAccessApplication(ctx context.Context, accountID, app
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete access application: %w", err)
@@ -884,7 +902,7 @@ func (c *clientImpl) GetAccessPolicy(ctx context.Context, accountID, appID, poli
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get access policy: %w", err)
@@ -931,7 +949,7 @@ func (c *clientImpl) DeleteAccessPolicy(ctx context.Context, accountID, appID, p
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete access policy: %w", err)
@@ -984,7 +1002,7 @@ func (c *clientImpl) GetAccessGroup(ctx context.Context, accountID, groupID stri
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get access group: %w", err)
@@ -1013,7 +1031,7 @@ func (c *clientImpl) DeleteAccessGroup(ctx context.Context, accountID, groupID s
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete access group: %w", err)
@@ -1131,7 +1149,7 @@ func (c *clientImpl) DeleteServiceToken(ctx context.Context, accountID, tokenID 
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete service token: %w", err)
@@ -1236,7 +1254,7 @@ func (c *clientImpl) GetMTLSCertificate(ctx context.Context, accountID, certID s
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get mTLS certificate: %w", err)
@@ -1277,7 +1295,7 @@ func (c *clientImpl) DeleteMTLSCertificate(ctx context.Context, accountID, certI
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "404") {
+		if isNotFound(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete mTLS certificate: %w", err)
