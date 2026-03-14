@@ -7,7 +7,7 @@ import (
 func boolPtr(b bool) *bool   { return &b }
 func strPtr(s string) *string { return &s }
 
-func makeMatchingAppPair() (*AccessApplication, *CreateApplicationParams) {
+func makeMatchingAppPair() (*AccessApplication, *ApplicationParams) {
 	httpOnly := true
 	return &AccessApplication{
 			Name:                        "Test App",
@@ -30,7 +30,7 @@ func makeMatchingAppPair() (*AccessApplication, *CreateApplicationParams) {
 			PathCookieAttribute:         false,
 			ServiceAuth401Redirect:      false,
 			ReadServiceTokensFromHeader: "",
-		}, &CreateApplicationParams{
+		}, &ApplicationParams{
 			Name:                        "Test App",
 			Domain:                      "app.example.com",
 			Type:                        "self_hosted",
@@ -54,7 +54,7 @@ func makeMatchingAppPair() (*AccessApplication, *CreateApplicationParams) {
 		}
 }
 
-func makeMatchingPolicyPair() (*AccessPolicy, *CreatePolicyParams) {
+func makeMatchingPolicyPair() (*AccessPolicy, *PolicyParams) {
 	return &AccessPolicy{
 			Name:                         "allow-engineering",
 			Decision:                     "allow",
@@ -67,7 +67,7 @@ func makeMatchingPolicyPair() (*AccessPolicy, *CreatePolicyParams) {
 			PurposeJustificationPrompt:   "",
 			ApprovalRequired:             false,
 			ApprovalGroups:               nil,
-		}, &CreatePolicyParams{
+		}, &PolicyParams{
 			Name:                         "allow-engineering",
 			Decision:                     "allow",
 			Precedence:                   1,
@@ -85,12 +85,12 @@ func makeMatchingPolicyPair() (*AccessPolicy, *CreatePolicyParams) {
 func TestAccessApplicationNeedsUpdate(t *testing.T) {
 	tests := []struct {
 		name   string
-		modify func(*AccessApplication, *CreateApplicationParams)
+		modify func(*AccessApplication, *ApplicationParams)
 		want   bool
 	}{
 		{
 			name:   "all fields match",
-			modify: func(_ *AccessApplication, _ *CreateApplicationParams) {},
+			modify: func(_ *AccessApplication, _ *ApplicationParams) {},
 			want:   false,
 		},
 
@@ -98,102 +98,102 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 
 		{
 			name:   "Name drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.Name = "Different" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.Name = "Different" },
 			want:   true,
 		},
 		{
 			name:   "Domain drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.Domain = "other.example.com" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.Domain = "other.example.com" },
 			want:   true,
 		},
 		{
 			name:   "Type drift explicit",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.Type = "ssh" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.Type = "ssh" },
 			want:   true,
 		},
 		{
 			name:   "SessionDuration drift explicit",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.SessionDuration = "12h" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.SessionDuration = "12h" },
 			want:   true,
 		},
 		{
 			name:   "SkipInterstitial drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.SkipInterstitial = true },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.SkipInterstitial = true },
 			want:   true,
 		},
 		{
 			name:   "EnableBindingCookie drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.EnableBindingCookie = true },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.EnableBindingCookie = true },
 			want:   true,
 		},
 		{
 			name:   "AutoRedirectToIdentity drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.AutoRedirectToIdentity = true },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.AutoRedirectToIdentity = true },
 			want:   true,
 		},
 		{
 			name:   "AppLauncherVisible drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.AppLauncherVisible = true },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.AppLauncherVisible = true },
 			want:   true,
 		},
 		{
 			name:   "LogoURL drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.LogoURL = "https://logo.example.com/icon.png" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.LogoURL = "https://logo.example.com/icon.png" },
 			want:   true,
 		},
 		{
 			name:   "CustomDenyMessage drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.CustomDenyMessage = "Access denied" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.CustomDenyMessage = "Access denied" },
 			want:   true,
 		},
 		{
 			name:   "CustomDenyURL drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.CustomDenyURL = "https://deny.example.com" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.CustomDenyURL = "https://deny.example.com" },
 			want:   true,
 		},
 		{
 			name:   "CustomNonIdentityDenyURL drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.CustomNonIdentityDenyURL = "https://noid.example.com" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.CustomNonIdentityDenyURL = "https://noid.example.com" },
 			want:   true,
 		},
 		{
 			name:   "OptionsPreflightBypass drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.OptionsPreflightBypass = true },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.OptionsPreflightBypass = true },
 			want:   true,
 		},
 		{
 			name:   "PathCookieAttribute drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.PathCookieAttribute = true },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.PathCookieAttribute = true },
 			want:   true,
 		},
 		{
 			name:   "ServiceAuth401Redirect drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.ServiceAuth401Redirect = true },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.ServiceAuth401Redirect = true },
 			want:   true,
 		},
 		{
 			name:   "ReadServiceTokensFromHeader drift",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.ReadServiceTokensFromHeader = "X-Custom-Token" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.ReadServiceTokensFromHeader = "X-Custom-Token" },
 			want:   true,
 		},
 		{
 			name:   "SameSiteCookieAttribute drift explicit",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.SameSiteCookieAttribute = "strict" },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.SameSiteCookieAttribute = "strict" },
 			want:   true,
 		},
 		{
 			name:   "HttpOnlyCookieAttribute drift to false",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.HttpOnlyCookieAttribute = boolPtr(false) },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.HttpOnlyCookieAttribute = boolPtr(false) },
 			want:   true,
 		},
 		{
 			name:   "AllowedIdps drift different values",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) { p.AllowedIdps = []string{"idp-3"} },
+			modify: func(_ *AccessApplication, p *ApplicationParams) { p.AllowedIdps = []string{"idp-3"} },
 			want:   true,
 		},
 		{
 			name: "CORSHeaders drift nil to non-nil",
-			modify: func(_ *AccessApplication, p *CreateApplicationParams) {
+			modify: func(_ *AccessApplication, p *ApplicationParams) {
 				p.CORSHeaders = &CORSHeadersParam{AllowAllOrigins: true}
 			},
 			want: true,
@@ -203,7 +203,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 
 		{
 			name: "Type empty defaults to self_hosted matches existing",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.Type = "self_hosted"
 				p.Type = ""
 			},
@@ -211,7 +211,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "Type empty defaults to self_hosted differs from ssh",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.Type = "ssh"
 				p.Type = ""
 			},
@@ -219,7 +219,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "SessionDuration empty defaults to 24h matches existing",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.SessionDuration = "24h"
 				p.SessionDuration = ""
 			},
@@ -227,7 +227,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "SessionDuration empty defaults to 24h differs from 12h",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.SessionDuration = "12h"
 				p.SessionDuration = ""
 			},
@@ -235,7 +235,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "SameSite empty defaults to lax matches existing",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.SameSiteCookieAttribute = "lax"
 				p.SameSiteCookieAttribute = ""
 			},
@@ -243,7 +243,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "SameSite empty defaults to lax differs from strict",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.SameSiteCookieAttribute = "strict"
 				p.SameSiteCookieAttribute = ""
 			},
@@ -251,7 +251,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "HttpOnly nil defaults to true matches existing true",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.HttpOnlyCookieAttribute = true
 				p.HttpOnlyCookieAttribute = nil
 			},
@@ -259,7 +259,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "HttpOnly nil defaults to true differs from existing false",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.HttpOnlyCookieAttribute = false
 				p.HttpOnlyCookieAttribute = nil
 			},
@@ -267,7 +267,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "HttpOnly explicit false matches existing false",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.HttpOnlyCookieAttribute = false
 				p.HttpOnlyCookieAttribute = boolPtr(false)
 			},
@@ -278,7 +278,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 
 		{
 			name: "AllowedIdps both nil",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.AllowedIdps = nil
 				p.AllowedIdps = nil
 			},
@@ -286,7 +286,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "AllowedIdps nil vs empty",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.AllowedIdps = nil
 				p.AllowedIdps = []string{}
 			},
@@ -294,7 +294,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "AllowedIdps empty vs nil",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.AllowedIdps = []string{}
 				p.AllowedIdps = nil
 			},
@@ -302,7 +302,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "AllowedIdps same elements different order",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.AllowedIdps = []string{"idp-a", "idp-b", "idp-c"}
 				p.AllowedIdps = []string{"idp-c", "idp-a", "idp-b"}
 			},
@@ -310,7 +310,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "AllowedIdps subset is drift",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.AllowedIdps = []string{"idp-1", "idp-2"}
 				p.AllowedIdps = []string{"idp-1"}
 			},
@@ -321,7 +321,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 
 		{
 			name: "CORSHeaders both nil",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = nil
 				p.CORSHeaders = nil
 			},
@@ -329,7 +329,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders nil vs empty struct",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = nil
 				p.CORSHeaders = &CORSHeadersParam{}
 			},
@@ -337,7 +337,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders empty struct vs nil",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{}
 				p.CORSHeaders = nil
 			},
@@ -345,7 +345,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders matching non-nil",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{AllowAllOrigins: true, MaxAge: 3600}
 				p.CORSHeaders = &CORSHeadersParam{AllowAllOrigins: true, MaxAge: 3600}
 			},
@@ -353,7 +353,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders bool field differs",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{AllowAllOrigins: true}
 				p.CORSHeaders = &CORSHeadersParam{AllowAllOrigins: false}
 			},
@@ -361,7 +361,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders MaxAge differs",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{MaxAge: 3600}
 				p.CORSHeaders = &CORSHeadersParam{MaxAge: 7200}
 			},
@@ -369,7 +369,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders AllowedOrigins order insensitive",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{AllowedOrigins: []string{"https://a.com", "https://b.com"}}
 				p.CORSHeaders = &CORSHeadersParam{AllowedOrigins: []string{"https://b.com", "https://a.com"}}
 			},
@@ -377,7 +377,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders AllowedOrigins different values is drift",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{AllowedOrigins: []string{"https://a.com"}}
 				p.CORSHeaders = &CORSHeadersParam{AllowedOrigins: []string{"https://b.com"}}
 			},
@@ -385,7 +385,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders AllowedMethods order insensitive",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{AllowedMethods: []string{"GET", "POST", "PUT"}}
 				p.CORSHeaders = &CORSHeadersParam{AllowedMethods: []string{"PUT", "GET", "POST"}}
 			},
@@ -393,7 +393,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "CORSHeaders AllowedHeaders order insensitive",
-			modify: func(a *AccessApplication, p *CreateApplicationParams) {
+			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.CORSHeaders = &CORSHeadersParam{AllowedHeaders: []string{"Content-Type", "Authorization"}}
 				p.CORSHeaders = &CORSHeadersParam{AllowedHeaders: []string{"Authorization", "Content-Type"}}
 			},
@@ -416,12 +416,12 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 func TestAccessPolicyEqual(t *testing.T) {
 	tests := []struct {
 		name   string
-		modify func(*AccessPolicy, *CreatePolicyParams)
+		modify func(*AccessPolicy, *PolicyParams)
 		want   bool
 	}{
 		{
 			name:   "all fields match",
-			modify: func(_ *AccessPolicy, _ *CreatePolicyParams) {},
+			modify: func(_ *AccessPolicy, _ *PolicyParams) {},
 			want:   true,
 		},
 
@@ -429,27 +429,27 @@ func TestAccessPolicyEqual(t *testing.T) {
 
 		{
 			name:   "Name drift",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) { d.Name = "different" },
+			modify: func(_ *AccessPolicy, d *PolicyParams) { d.Name = "different" },
 			want:   false,
 		},
 		{
 			name:   "Decision drift",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) { d.Decision = "deny" },
+			modify: func(_ *AccessPolicy, d *PolicyParams) { d.Decision = "deny" },
 			want:   false,
 		},
 		{
 			name:   "Precedence drift",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) { d.Precedence = 2 },
+			modify: func(_ *AccessPolicy, d *PolicyParams) { d.Precedence = 2 },
 			want:   false,
 		},
 		{
 			name:   "SessionDuration drift",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) { d.SessionDuration = "12h" },
+			modify: func(_ *AccessPolicy, d *PolicyParams) { d.SessionDuration = "12h" },
 			want:   false,
 		},
 		{
 			name: "SessionDuration empty vs set detects drift",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.SessionDuration = ""
 				d.SessionDuration = "24h"
 			},
@@ -457,17 +457,17 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name:   "PurposeJustificationRequired drift",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) { d.PurposeJustificationRequired = true },
+			modify: func(_ *AccessPolicy, d *PolicyParams) { d.PurposeJustificationRequired = true },
 			want:   false,
 		},
 		{
 			name:   "PurposeJustificationPrompt drift",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) { d.PurposeJustificationPrompt = "Why?" },
+			modify: func(_ *AccessPolicy, d *PolicyParams) { d.PurposeJustificationPrompt = "Why?" },
 			want:   false,
 		},
 		{
 			name:   "ApprovalRequired drift",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) { d.ApprovalRequired = true },
+			modify: func(_ *AccessPolicy, d *PolicyParams) { d.ApprovalRequired = true },
 			want:   false,
 		},
 
@@ -475,14 +475,14 @@ func TestAccessPolicyEqual(t *testing.T) {
 
 		{
 			name: "Include drift different rule",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(_ *AccessPolicy, d *PolicyParams) {
 				d.Include = []AccessRuleParam{{IPRange: strPtr("10.0.0.0/8")}}
 			},
 			want: false,
 		},
 		{
 			name: "Include drift added rule",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				extra := AccessRuleParam{IPRange: strPtr("10.0.0.0/8")}
 				p.Include = append(p.Include, extra)
 			},
@@ -490,28 +490,28 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Include drift removed all rules",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(_ *AccessPolicy, d *PolicyParams) {
 				d.Include = nil
 			},
 			want: false,
 		},
 		{
 			name: "Exclude drift nil to non-nil",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(_ *AccessPolicy, d *PolicyParams) {
 				d.Exclude = []AccessRuleParam{{Country: strPtr("US")}}
 			},
 			want: false,
 		},
 		{
 			name: "Require drift nil to non-nil",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(_ *AccessPolicy, d *PolicyParams) {
 				d.Require = []AccessRuleParam{{Certificate: boolPtr(true)}}
 			},
 			want: false,
 		},
 		{
 			name: "ApprovalGroups drift nil to non-nil",
-			modify: func(_ *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(_ *AccessPolicy, d *PolicyParams) {
 				d.ApprovalGroups = []ApprovalGroupParam{
 					{EmailAddresses: []string{"a@b.com"}, ApprovalsNeeded: 1},
 				}
@@ -523,7 +523,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 
 		{
 			name: "Include nil vs nil",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = nil
 				d.Include = nil
 			},
@@ -531,7 +531,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Include nil vs empty",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = nil
 				d.Include = []AccessRuleParam{}
 			},
@@ -539,7 +539,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Exclude nil vs empty",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Exclude = nil
 				d.Exclude = []AccessRuleParam{}
 			},
@@ -547,7 +547,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "ApprovalGroups nil vs empty",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.ApprovalGroups = nil
 				d.ApprovalGroups = []ApprovalGroupParam{}
 			},
@@ -558,7 +558,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 
 		{
 			name: "Include same rules different order",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				ruleA := AccessRuleParam{IPRange: strPtr("10.0.0.0/8")}
 				ruleB := AccessRuleParam{Email: strPtr("a@b.com")}
 				p.Include = []AccessRuleParam{ruleA, ruleB}
@@ -568,7 +568,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Exclude same rules different order",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				ruleA := AccessRuleParam{Country: strPtr("US")}
 				ruleB := AccessRuleParam{Country: strPtr("GB")}
 				p.Exclude = []AccessRuleParam{ruleA, ruleB}
@@ -578,7 +578,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "ApprovalGroups same groups different order",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				groupA := ApprovalGroupParam{EmailAddresses: []string{"a@b.com"}, ApprovalsNeeded: 1}
 				groupB := ApprovalGroupParam{EmailAddresses: []string{"c@d.com"}, ApprovalsNeeded: 2}
 				p.ApprovalGroups = []ApprovalGroupParam{groupA, groupB}
@@ -588,7 +588,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "ApprovalGroups inner EmailAddresses order insensitive",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.ApprovalGroups = []ApprovalGroupParam{
 					{EmailAddresses: []string{"a@b.com", "c@d.com"}, ApprovalsNeeded: 1},
 				}
@@ -603,7 +603,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 
 		{
 			name: "IPRange rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{IPRange: strPtr("10.0.0.0/8")}}
 				d.Include = []AccessRuleParam{{IPRange: strPtr("10.0.0.0/8")}}
 			},
@@ -611,7 +611,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "IPListID rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{IPListID: strPtr("list-1")}}
 				d.Include = []AccessRuleParam{{IPListID: strPtr("list-1")}}
 			},
@@ -619,7 +619,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Country rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{Country: strPtr("US")}}
 				d.Include = []AccessRuleParam{{Country: strPtr("US")}}
 			},
@@ -627,7 +627,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Everyone rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{Everyone: boolPtr(true)}}
 				d.Include = []AccessRuleParam{{Everyone: boolPtr(true)}}
 			},
@@ -635,7 +635,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "ServiceTokenID rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{ServiceTokenID: strPtr("tok-1")}}
 				d.Include = []AccessRuleParam{{ServiceTokenID: strPtr("tok-1")}}
 			},
@@ -643,7 +643,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "AnyValidServiceToken rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{AnyValidServiceToken: boolPtr(true)}}
 				d.Include = []AccessRuleParam{{AnyValidServiceToken: boolPtr(true)}}
 			},
@@ -651,7 +651,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Email rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{Email: strPtr("user@example.com")}}
 				d.Include = []AccessRuleParam{{Email: strPtr("user@example.com")}}
 			},
@@ -659,7 +659,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "EmailListID rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{EmailListID: strPtr("elist-1")}}
 				d.Include = []AccessRuleParam{{EmailListID: strPtr("elist-1")}}
 			},
@@ -667,7 +667,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "EmailDomain rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{EmailDomain: strPtr("example.com")}}
 				d.Include = []AccessRuleParam{{EmailDomain: strPtr("example.com")}}
 			},
@@ -675,7 +675,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "OIDCClaim rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{OIDCClaim: &OIDCClaimParam{
 					IdentityProviderID: "idp-1", ClaimName: "role", ClaimValue: "admin",
 				}}}
@@ -687,7 +687,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "GSuiteGroup rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{GSuiteGroup: &GSuiteGroupParam{
 					IdentityProviderID: "idp-1", Email: "eng@company.com",
 				}}}
@@ -699,7 +699,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Certificate rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{Certificate: boolPtr(true)}}
 				d.Include = []AccessRuleParam{{Certificate: boolPtr(true)}}
 			},
@@ -707,7 +707,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "CommonName rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{CommonName: strPtr("*.example.com")}}
 				d.Include = []AccessRuleParam{{CommonName: strPtr("*.example.com")}}
 			},
@@ -715,7 +715,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "GroupID rule match",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{GroupID: strPtr("grp-1")}}
 				d.Include = []AccessRuleParam{{GroupID: strPtr("grp-1")}}
 			},
@@ -726,7 +726,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 
 		{
 			name: "IPRange rule differ",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{IPRange: strPtr("10.0.0.0/8")}}
 				d.Include = []AccessRuleParam{{IPRange: strPtr("192.168.0.0/16")}}
 			},
@@ -734,7 +734,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "Country rule differ",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{Country: strPtr("US")}}
 				d.Include = []AccessRuleParam{{Country: strPtr("GB")}}
 			},
@@ -742,7 +742,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "ServiceTokenID rule differ",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{ServiceTokenID: strPtr("tok-1")}}
 				d.Include = []AccessRuleParam{{ServiceTokenID: strPtr("tok-2")}}
 			},
@@ -750,7 +750,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "OIDCClaim rule differ value",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{OIDCClaim: &OIDCClaimParam{
 					IdentityProviderID: "idp-1", ClaimName: "role", ClaimValue: "admin",
 				}}}
@@ -762,7 +762,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "GroupID rule differ",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{GroupID: strPtr("grp-1")}}
 				d.Include = []AccessRuleParam{{GroupID: strPtr("grp-2")}}
 			},
@@ -770,7 +770,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "different rule types is drift",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{{IPRange: strPtr("10.0.0.0/8")}}
 				d.Include = []AccessRuleParam{{Country: strPtr("US")}}
 			},
@@ -781,7 +781,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 
 		{
 			name: "mixed rule types same order",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				rules := []AccessRuleParam{
 					{IPRange: strPtr("10.0.0.0/8")},
 					{Email: strPtr("admin@example.com")},
@@ -796,7 +796,7 @@ func TestAccessPolicyEqual(t *testing.T) {
 		},
 		{
 			name: "mixed rule types different order",
-			modify: func(p *AccessPolicy, d *CreatePolicyParams) {
+			modify: func(p *AccessPolicy, d *PolicyParams) {
 				p.Include = []AccessRuleParam{
 					{IPRange: strPtr("10.0.0.0/8")},
 					{Email: strPtr("admin@example.com")},

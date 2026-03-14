@@ -661,7 +661,7 @@ func (r *CloudflareAccessPolicyReconciler) ensureApplication(
 	}
 
 	// Build application params
-	params := cloudflare.CreateApplicationParams{
+	params := cloudflare.ApplicationParams{
 		Name:                    policy.Spec.Application.Name,
 		Domain:                  domain,
 		Type:                    policy.Spec.Application.Type,
@@ -737,7 +737,7 @@ func (r *CloudflareAccessPolicyReconciler) syncPolicies(
 	log := log.FromContext(ctx)
 
 	// Convert CRD policies to API params
-	var params []cloudflare.CreatePolicyParams
+	var params []cloudflare.PolicyParams
 	for i, rule := range policy.Spec.Policies {
 		precedence := i + 1
 		if rule.Precedence != nil {
@@ -754,7 +754,7 @@ func (r *CloudflareAccessPolicyReconciler) syncPolicies(
 			}
 		}
 
-		params = append(params, cloudflare.CreatePolicyParams{
+		params = append(params, cloudflare.PolicyParams{
 			Name:                         rule.Name,
 			Decision:                     rule.Decision,
 			Precedence:                   precedence,
@@ -963,7 +963,7 @@ func (r *CloudflareAccessPolicyReconciler) ensureServiceTokens(
 			"secretRef", tokenConfig.SecretRef.Name,
 		)
 
-		params := cloudflare.CreateServiceTokenParams{
+		params := cloudflare.ServiceTokenParams{
 			Name:     tokenConfig.Name,
 			Duration: tokenConfig.Duration,
 		}

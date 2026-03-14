@@ -122,8 +122,8 @@ type CORSHeadersParam struct {
 	MaxAge           int
 }
 
-// CreateApplicationParams contains parameters for creating an application.
-type CreateApplicationParams struct {
+// ApplicationParams contains parameters for creating or updating an Access application.
+type ApplicationParams struct {
 	// Name is the application display name.
 	Name string
 
@@ -149,69 +149,6 @@ type CreateApplicationParams struct {
 	HttpOnlyCookieAttribute *bool
 
 	// SameSiteCookieAttribute sets SameSite attribute. Defaults to "lax".
-	SameSiteCookieAttribute string
-
-	// SkipInterstitial skips login page for APIs.
-	SkipInterstitial bool
-
-	// LogoURL is the logo URL.
-	LogoURL string
-
-	// AppLauncherVisible shows in App Launcher.
-	AppLauncherVisible bool
-
-	// CustomDenyMessage is the denial message.
-	CustomDenyMessage string
-
-	// CustomDenyURL is the denial redirect.
-	CustomDenyURL string
-
-	// CORSHeaders configures CORS for the application.
-	CORSHeaders *CORSHeadersParam
-
-	// OptionsPreflightBypass bypasses Access for OPTIONS preflight.
-	OptionsPreflightBypass bool
-
-	// PathCookieAttribute scopes JWT cookie to application path.
-	PathCookieAttribute bool
-
-	// ServiceAuth401Redirect returns 401 instead of redirect for service auth.
-	ServiceAuth401Redirect bool
-
-	// CustomNonIdentityDenyURL is the denial URL for non-identity requests.
-	CustomNonIdentityDenyURL string
-
-	// ReadServiceTokensFromHeader reads service tokens from a single header.
-	ReadServiceTokensFromHeader string
-}
-
-// UpdateApplicationParams contains parameters for updating an application.
-type UpdateApplicationParams struct {
-	// Name is the application display name.
-	Name string
-
-	// Domain is the protected domain.
-	Domain string
-
-	// Type is the application type (self_hosted, saas, ssh, vnc, etc.).
-	Type string
-
-	// SessionDuration is the session lifetime.
-	SessionDuration string
-
-	// AllowedIdps is the list of allowed identity provider IDs.
-	AllowedIdps []string
-
-	// AutoRedirectToIdentity auto-redirects if single IdP.
-	AutoRedirectToIdentity bool
-
-	// EnableBindingCookie enables sticky sessions.
-	EnableBindingCookie bool
-
-	// HttpOnlyCookieAttribute sets HttpOnly flag.
-	HttpOnlyCookieAttribute *bool
-
-	// SameSiteCookieAttribute sets SameSite attribute.
 	SameSiteCookieAttribute string
 
 	// SkipInterstitial skips login page for APIs.
@@ -293,44 +230,8 @@ type AccessPolicy struct {
 	UpdatedAt time.Time
 }
 
-// CreatePolicyParams contains parameters for creating a policy.
-type CreatePolicyParams struct {
-	// Name is the policy display name.
-	Name string
-
-	// Decision is the policy action.
-	Decision string
-
-	// Precedence is the evaluation order.
-	Precedence int
-
-	// Include are rules that must match (ANY).
-	Include []AccessRuleParam
-
-	// Exclude are rules that exclude (ANY).
-	Exclude []AccessRuleParam
-
-	// Require are rules that must match (ALL).
-	Require []AccessRuleParam
-
-	// SessionDuration overrides application session duration.
-	SessionDuration string
-
-	// PurposeJustificationRequired requires purpose justification.
-	PurposeJustificationRequired bool
-
-	// PurposeJustificationPrompt is the justification prompt text.
-	PurposeJustificationPrompt string
-
-	// ApprovalRequired requires manager approval.
-	ApprovalRequired bool
-
-	// ApprovalGroups is the approval configuration.
-	ApprovalGroups []ApprovalGroupParam
-}
-
-// UpdatePolicyParams contains parameters for updating a policy.
-type UpdatePolicyParams struct {
+// PolicyParams contains parameters for creating or updating an Access policy.
+type PolicyParams struct {
 	// Name is the policy display name.
 	Name string
 
@@ -471,23 +372,8 @@ type AccessGroup struct {
 	UpdatedAt time.Time
 }
 
-// CreateGroupParams contains parameters for creating a group.
-type CreateGroupParams struct {
-	// Name is the group display name.
-	Name string
-
-	// Include are rules that must match (ANY).
-	Include []AccessRuleParam
-
-	// Exclude are rules that exclude (ANY).
-	Exclude []AccessRuleParam
-
-	// Require are rules that must match (ALL).
-	Require []AccessRuleParam
-}
-
-// UpdateGroupParams contains parameters for updating a group.
-type UpdateGroupParams struct {
+// GroupParams contains parameters for creating or updating an Access group.
+type GroupParams struct {
 	// Name is the group display name.
 	Name string
 
@@ -528,21 +414,12 @@ type ServiceTokenWithSecret struct {
 	ClientSecret string
 }
 
-// CreateServiceTokenParams contains parameters for creating a service token.
-type CreateServiceTokenParams struct {
+// ServiceTokenParams contains parameters for creating or updating a service token.
+type ServiceTokenParams struct {
 	// Name is the token display name.
 	Name string
 
 	// Duration is the token validity period in hours (e.g., "8760h" for 1 year).
-	Duration string
-}
-
-// UpdateServiceTokenParams contains parameters for updating a service token.
-type UpdateServiceTokenParams struct {
-	// Name is the token display name.
-	Name string
-
-	// Duration is the token validity period.
 	Duration string
 }
 
@@ -597,23 +474,11 @@ type CertificateSettings struct {
 	ClientCertificateForwarding bool
 }
 
-// CertificateSettingsParam is used for updating certificate settings.
-type CertificateSettingsParam struct {
-	// Hostname is the hostname for mTLS.
-	Hostname string
-
-	// ChinaNetwork enables China network mTLS.
-	ChinaNetwork bool
-
-	// ClientCertificateForwarding forwards client cert to origin.
-	ClientCertificateForwarding bool
-}
-
 // EnsureApplication ensures an application exists with the given configuration.
 // If an application with the name exists, it is adopted and updated if managed fields
 // have drifted. Otherwise, a new application is created.
 // Returns the application and whether it was created (vs adopted/updated).
-func (s *AccessService) EnsureApplication(ctx context.Context, accountID string, params CreateApplicationParams) (*AccessApplication, bool, error) {
+func (s *AccessService) EnsureApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, bool, error) {
 	s.log.Info("ensuring access application exists",
 		"accountID", accountID,
 		"domain", params.Domain,
@@ -643,7 +508,7 @@ func (s *AccessService) EnsureApplication(ctx context.Context, accountID string,
 				"applicationId", existing.ID,
 				"domain", existing.Domain,
 			)
-			updated, err := s.client.UpdateAccessApplication(ctx, accountID, existing.ID, UpdateApplicationParams(params))
+			updated, err := s.client.UpdateAccessApplication(ctx, accountID, existing.ID, params)
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to update application: %w", err)
 			}
@@ -676,7 +541,7 @@ func (s *AccessService) EnsureApplication(ctx context.Context, accountID string,
 //
 // Note: Type is compared for drift detection but cannot be changed via the
 // Cloudflare API. The caller should emit a warning when Type has drifted.
-func accessApplicationNeedsUpdate(existing *AccessApplication, desired *CreateApplicationParams) bool {
+func accessApplicationNeedsUpdate(existing *AccessApplication, desired *ApplicationParams) bool {
 	if existing.Name != desired.Name {
 		return true
 	}
@@ -760,7 +625,7 @@ func accessApplicationNeedsUpdate(existing *AccessApplication, desired *CreateAp
 // It deletes policies not in the desired set, updates existing policies if different,
 // and creates new policies for additions.
 // Returns the policy IDs after sync.
-func (s *AccessService) SyncPolicies(ctx context.Context, accountID, appID string, desired []CreatePolicyParams) ([]string, error) {
+func (s *AccessService) SyncPolicies(ctx context.Context, accountID, appID string, desired []PolicyParams) ([]string, error) {
 	// List existing policies
 	existing, err := s.client.ListAccessPolicies(ctx, accountID, appID)
 	if err != nil {
@@ -779,7 +644,7 @@ func (s *AccessService) SyncPolicies(ctx context.Context, accountID, appID strin
 		existingByName[existing[i].Name] = &existing[i]
 	}
 
-	desiredByName := make(map[string]CreatePolicyParams)
+	desiredByName := make(map[string]PolicyParams)
 	for _, p := range desired {
 		desiredByName[p.Name] = p
 	}
@@ -813,7 +678,7 @@ func (s *AccessService) SyncPolicies(ctx context.Context, accountID, appID strin
 					"policyName", name,
 					"operation", "update",
 				)
-				updated, err := s.client.UpdateAccessPolicy(ctx, accountID, appID, existingPolicy.ID, UpdatePolicyParams(params))
+				updated, err := s.client.UpdateAccessPolicy(ctx, accountID, appID, existingPolicy.ID, params)
 				if err != nil {
 					return nil, fmt.Errorf("failed to update policy %s: %w", name, err)
 				}
@@ -854,7 +719,7 @@ func (s *AccessService) SyncPolicies(ctx context.Context, accountID, appID strin
 // accessPolicyEqual compares desired vs existing access policy content.
 // Returns true if no update is needed. Uses deep comparison for rule slices
 // to avoid unnecessary Cloudflare API calls when policy content is unchanged.
-func accessPolicyEqual(existing *AccessPolicy, desired *CreatePolicyParams) bool {
+func accessPolicyEqual(existing *AccessPolicy, desired *PolicyParams) bool {
 	if existing.Name != desired.Name {
 		return false
 	}
@@ -1045,7 +910,7 @@ func corsHeadersEqual(a, b *CORSHeadersParam) bool {
 // If a token with the name exists and is not expired, it is returned (no secret available).
 // If expired, the token is rotated and the new secret is stored.
 // If not exists, a new token is created and the secret is stored.
-func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string, params CreateServiceTokenParams, secretWriter SecretWriter) (*ServiceToken, error) {
+func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string, params ServiceTokenParams, secretWriter SecretWriter) (*ServiceToken, error) {
 	s.log.Info("ensuring service token exists",
 		"accountID", accountID,
 		"tokenName", params.Name,
@@ -1206,9 +1071,9 @@ func (s *AccessService) EnsureMTLSCertificate(ctx context.Context, accountID str
 
 // UpdateMTLSHostnames updates mTLS hostname associations.
 func (s *AccessService) UpdateMTLSHostnames(ctx context.Context, accountID string, hostnames []string, enableForwarding bool) error {
-	settings := make([]CertificateSettingsParam, len(hostnames))
+	settings := make([]CertificateSettings, len(hostnames))
 	for i, hostname := range hostnames {
-		settings[i] = CertificateSettingsParam{
+		settings[i] = CertificateSettings{
 			Hostname:                    hostname,
 			ClientCertificateForwarding: enableForwarding,
 		}
