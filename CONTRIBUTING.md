@@ -4,8 +4,8 @@
 
 - [Go 1.25+](https://go.dev/dl/)
 - [mise](https://mise.jdx.dev/) (task runner and tool manager)
-- [Docker](https://docs.docker.com/get-docker/) (for container builds and kind clusters)
-- [sops](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (for secrets management)
+- [Docker](https://docs.docker.com/get-docker/) (container builds and kind clusters)
+- [sops](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (secrets management)
 - A Cloudflare account with API token (see [API Token Permissions](#api-token-permissions))
 
 ## Getting Started
@@ -13,15 +13,10 @@
 ```bash
 git clone https://github.com/cfgate/cfgate.git
 cd cfgate
-
 mise install
-
 mise tasks
-
 mise run codegen
-
 mise run build
-
 mise run lint
 ```
 
@@ -42,39 +37,38 @@ mise run lint
 | `cluster:status` | *none* | Check cfgate dev cluster status |
 | `local:install` | *none* | Install Gateway API and cfgate CRDs |
 | `local:deploy` | *none* | Deploy controller to current cluster (kustomize) |
+| `local:helm` | *none* | Deploy controller via local Helm chart |
 | `local:undeploy` | *none* | Remove controller from current cluster |
 | `local:uninstall` | *none* | Uninstall CRDs from current cluster |
 | `run` | *none* | Run controller locally (outside cluster) |
 | `docker:build` | `db` | Build Docker image |
 | `docker:push` | `dp` | Push Docker image to registry |
 | `docker:buildx` | *none* | Build multi-arch image (amd64 + arm64) |
+| `helm:lint` | *none* | Lint Helm chart |
+| `helm:template` | *none* | Render Helm chart templates (dry run) |
 
 ## Secrets Configuration
 
 cfgate uses [sops](https://github.com/getsops/sops) with [age](https://github.com/FiloSottile/age) encryption for local development secrets. mise reads `secrets.enc.yaml` automatically via `[env] _.file`.
 
-### Setting Up Your Own Secrets
+### Setting Up Secrets
 
-1. **Generate an age keypair:**
+1. Generate an age keypair:
 
 ```bash
 age-keygen -o ~/.config/sops/age/keys.txt
 ```
 
-This outputs your public key (starts with `age1...`). Save it. You need it for `.sops.yaml`.
+The output includes your public key (starts with `age1...`). Save it for the next step.
 
-2. **Configure sops to use your key:**
-
-Edit `.sops.yaml` in the repo root to use your public key:
+2. Configure sops to use your key by editing `.sops.yaml` in the repo root:
 
 ```yaml
 creation_rules:
   - age: age1your-public-key-here
 ```
 
-3. **Create `secrets.enc.yaml`:**
-
-Write plaintext credentials, then encrypt in-place:
+3. Create and encrypt `secrets.enc.yaml`:
 
 ```bash
 cat > secrets.enc.yaml <<'EOF'
@@ -97,7 +91,7 @@ sops -e -i secrets.enc.yaml
 
 | Key | Purpose |
 |-----|---------|
-| `CLOUDFLARE_ZONE_NAME` | Zone for DNS/Access E2E tests |
+| `CLOUDFLARE_ZONE_NAME` | Zone for DNS and Access E2E tests |
 | `CLOUDFLARE_IDP_ID` | Identity Provider ID for IdP-dependent tests |
 | `CLOUDFLARE_TEST_EMAIL` | Email for email rule tests |
 | `CLOUDFLARE_TEST_GROUP` | Group for GSuite group rule tests |
@@ -106,9 +100,7 @@ sops -e -i secrets.enc.yaml
 
 ```bash
 sops decrypt secrets.enc.yaml
-
 sops secrets.enc.yaml
-
 mise env | grep CLOUDFLARE
 ```
 
@@ -123,24 +115,15 @@ Create a token at [Cloudflare Dashboard > API Tokens](https://dash.cloudflare.co
 | Account | Access: Service Tokens: Edit | Service token tests |
 | Zone | DNS: Edit | DNS tests |
 
-Scope the zone permissions to the zone matching `CLOUDFLARE_ZONE_NAME`.
+Scope zone permissions to the zone matching `CLOUDFLARE_ZONE_NAME`.
 
 ## Testing
 
-See [docs/TESTING.md](docs/TESTING.md) for the full testing guide including:
-- E2E test strategy and philosophy
-- All environment variables
-- Running and filtering tests
-- Cleanup procedures
-- Test structure and naming conventions
-
-Quick start:
+See [docs/TESTING.md](docs/TESTING.md) for the full testing guide.
 
 ```bash
 mise run cluster:create
-
 mise run e2e
-
 mise run e2e:cleanup
 ```
 
@@ -148,21 +131,20 @@ mise run e2e:cleanup
 
 ### Making Changes
 
-1. Create a feature branch
+1. Create a feature branch from `dev`
 2. Make changes
 3. Regenerate CRDs if types changed: `mise run codegen`
 4. Lint: `mise run lint`
 5. Build: `mise run build`
 6. Test: `mise run e2e`
-7. Submit PR
+7. Submit PR against `dev`
 
 ### CRD Changes
 
-When modifying files in `api/v1alpha1/`:
+When modifying files in `api/v1alpha1/`, regenerate and reinstall:
 
 ```bash
 mise run codegen
-
 mise run local:install
 ```
 
@@ -172,48 +154,49 @@ mise run local:install
 mise run run
 ```
 
-The controller runs outside the cluster but connects via kubeconfig. Useful for debugging with breakpoints.
+The controller runs outside the cluster but connects via kubeconfig.
 
 ## Project Structure
 
 ```
 cfgate/
-  api/v1alpha1/           # CRD type definitions
+  api/v1alpha1/             CRD type definitions
   cmd/
-    manager/              # Controller entrypoint
-    cleanup/              # E2E resource cleanup utility
+    manager/                Controller entrypoint
+    cleanup/                E2E resource cleanup utility
   internal/
-    controller/           # Reconcilers (tunnel, dns, access, gateway, httproute)
-    controller/annotations/ # Annotation parsing and validation
-    controller/features/  # Feature gate detection
-    controller/status/    # Status condition helpers
-    cloudflare/           # Cloudflare API client abstraction
-    cloudflared/          # cloudflared config and deployment builders
+    controller/             Reconcilers (tunnel, dns, access, gateway, httproute)
+    controller/annotations/ Annotation parsing and validation
+    controller/context/     CRD-to-controller data wrappers
+    controller/features/    Runtime feature gate detection
+    controller/status/      Status condition composition
+    cloudflare/             Cloudflare API client abstraction
+    cloudflared/            cloudflared config and deployment builders
   config/
-    crd/                  # Generated CRD manifests
-    default/              # Kustomize overlay for deployment
-    manager/              # Controller deployment resources
-    rbac/                 # RBAC resources
-  test/e2e/               # E2E test suite
-  examples/               # Usage examples
-  docs/                   # Documentation
-  hack/                   # Build utilities
+    crd/                    Generated CRD manifests
+    default/                Kustomize overlay for deployment
+    manager/                Controller deployment resources
+    rbac/                   RBAC resources
+  test/e2e/                 E2E test suite
+  examples/                 Applyable YAML examples
+  docs/                     User-facing reference documentation
+  hack/                     Build utilities
 ```
 
 ## Related Repositories
 
 | Repository | Description |
-| ---------- | ----------- |
-| [cfgate/helm-chart](https://github.com/cfgate/helm-chart) | Helm chart |
+|------------|-------------|
+| [cfgate/helm-chart](https://github.com/cfgate/helm-chart) | Helm chart (OCI at `oci://ghcr.io/cfgate/charts/cfgate`) |
 | [cfgate/cfgate.io](https://github.com/cfgate/cfgate.io) | Project website |
 
 ## Commits
 
-We use conventional-ish prefixes: `feat:`, `fix:`, `chore:`, `ci:`, `docs:`, `test:`, `refactor:`, `perf:`, `infra:`, `build:`
+Conventional-style prefixes: `feat:`, `fix:`, `chore:`, `ci:`, `docs:`, `test:`, `refactor:`, `perf:`, `build:`
 
-No enforcement tooling. No scopes required. Write a clear subject line under 72 characters. If your change has a body, bullet points are preferred.
+Subject line in imperative mood, under 72 characters. Body explains why, not what. Bullet points for multi-line bodies.
 
-Scopes are optional and used when the change targets a specific subsystem:
+Scopes are optional; use when the change targets a specific subsystem:
 
 ```
 fix(controller): correct DNS record drift detection
@@ -224,32 +207,86 @@ For contributor PRs, the maintainer squash-merges with a clean conventional subj
 
 ## Changelog
 
-Release notes are generated via [git-cliff](https://git-cliff.org/) from commit history. Configuration is in `cliff.toml` at the project root. You do not need to update CHANGELOG.md manually.
+Release notes are generated via [git-cliff](https://git-cliff.org/) from commit history. Configuration is in `cliff.toml`. Do not edit CHANGELOG.md manually.
 
 ## Code Style
 
-- Follow existing patterns in the codebase
-- Run `mise run lint` before submitting (golangci-lint enforces style)
-- Run `mise run format` to auto-format
-- Use structured logging via `logr` (controller-runtime convention)
-- Doc comments on all exported types and functions
+### General
+
+Run `mise run lint` before submitting; golangci-lint enforces style. Run `mise run format` to auto-format.
+
+Follow existing patterns in the codebase. When in doubt, match the surrounding code.
+
+### Logging
+
+Use structured logging via `logr` (controller-runtime convention). Log at appropriate levels:
+
+- `log.Info()` for reconciler phase transitions and significant state changes
+- `log.V(1).Info()` for per-resource operational detail
+- `log.Error()` for errors that will cause requeue or degraded status
+
+### Comments
+
+Default to no comments. Code should be self-explanatory through naming and structure. Comment when:
+
+- The "why" is non-obvious (a workaround, an API quirk, a spec requirement)
+- The behavior has surprising side effects
+- A constant comes from an external specification
+
+```go
+// RFC 1035 section 2.3.4: DNS labels must not exceed 63 octets.
+const maxDNSLabelLength = 63
+```
+
+Do not comment what the code already says.
+
+### Doc Comments
+
+Every exported type, function, and method gets a doc comment. The first sentence is a summary used by godoc. Cover what the symbol does, input expectations, side effects, and error conditions.
+
+Write doc comments with future doc-gen tooling in mind: structured, factual, no marketing language.
+
+```go
+// TunnelService manages Cloudflare Tunnel lifecycle operations including
+// creation, configuration updates, and deletion. It uses idempotent
+// ensure semantics; calling Ensure on an existing tunnel updates its
+// configuration rather than creating a duplicate.
+type TunnelService struct { ... }
+```
+
+### Naming
+
+- Match json tags in user-facing references (`sessionDuration`, not `SessionDuration`)
+- Use descriptive names; avoid single-letter variables outside loop indices
+- Constants use `camelCase` for package-level, `SCREAMING_SNAKE` is not idiomatic Go
 
 ## Documentation
 
-### Where things live
+### Where Things Live
 
-- **README.md** is the hub document. Front-loaded CRD tables, feature matrix, annotation summary, Quick Start, and links to `docs/`. Keep it scannable; don't embed deep reference content here.
-- **docs/*.md** files are deep reference per topic: one file per CRD, one for annotations, one for troubleshooting, one for Gateway API concepts. These are the source of truth for user-facing field documentation.
-- **CONTRIBUTING.md** covers development workflow only (build, test, deploy, code style). Not user-facing.
-- **examples/** contains applyable YAML. Every example directory should work with `kubectl apply -k examples/<name>` against a cluster with cfgate installed. Treat examples as integration tests for documentation accuracy.
+**README.md** is the hub document: CRD tables, feature matrix, annotation summary, quickstart, and links to `docs/`. Keep it scannable.
 
-### When to update docs
+**docs/*.md** files are deep reference, one file per topic. These are the source of truth for user-facing field documentation.
 
-CRD type changes (`api/v1alpha1/*_types.go`) and annotation changes (`internal/controller/annotations/annotations.go`) are the two sources of truth. When you change either, update the corresponding `docs/` file the same way you'd run `mise run codegen`. It's part of the change, not a follow-up.
+**CONTRIBUTING.md** covers development workflow, code style, and writing conventions. Not user-facing.
 
-### Writing style
+**examples/** contains applyable YAML. Every example directory should work with `kubectl apply -k examples/<name>` against a cluster with cfgate installed.
 
-Match field names to json tags in Go types, not Go field names (`sessionDuration`, not `SessionDuration`). YAML snippets in docs must parse cleanly. When documenting a field, state what it does, valid values, and default, in that order. Skip explanation of why unless the behavior is surprising.
+### When to Update Docs
+
+CRD type changes (`api/v1alpha1/*_types.go`) and annotation changes (`internal/controller/annotations/annotations.go`) are the two sources of truth. When you change either, update the corresponding `docs/` file in the same commit. Treat it like running `mise run codegen`; it is part of the change, not a follow-up.
+
+### Writing Style
+
+Use complete sentences with natural compound structure. Technical reference tone; the voice of a well-written man page, not a keynote.
+
+**Prohibited in prose:** em-dashes, en-dashes, double-hyphens. Use semicolons, commas, or colons instead. Double-hyphens in CLI flags (`--leader-elect`), YAML comments, and code are fine.
+
+**Avoid:** superlatives ("powerful," "elegant," "seamless"), fragment-sentence drama ("One operator. Three concerns."), and long-then-short restatement. Say it once, clearly, and move on.
+
+When documenting a field, state what it does, valid values, and the default, in that order. Skip explanation of why unless the behavior is surprising.
+
+YAML snippets in docs must parse cleanly. Introduce code blocks with one sentence explaining when or why to use them, then let the code speak.
 
 ## License
 
