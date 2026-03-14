@@ -5,22 +5,9 @@ import (
 	"fmt"
 )
 
-// Client defines the low-level Cloudflare API operations.
-//
-// Client wraps cloudflare-go v6 SDK and handles error normalization, 404 patterns,
-// and SDK quirks. Controllers should use the high-level services (TunnelService,
-// DNSService, AccessService) rather than Client directly.
-//
-// Create a new client with NewClient:
-//
-//	client, err := cloudflare.NewClient(apiToken)
-//
-// The client implements idempotent 404 handling: methods that retrieve resources
-// (GetTunnel, GetZoneByName, etc.) return nil, nil when the resource doesn't exist
-// rather than an error.
-type Client interface {
-	// Tunnel operations
-
+// TunnelOps defines operations for managing Cloudflare Tunnel lifecycle,
+// including creation, configuration, token retrieval, and deletion.
+type TunnelOps interface {
 	// GetTunnel retrieves a tunnel by ID.
 	GetTunnel(ctx context.Context, accountID, tunnelID string) (*Tunnel, error)
 
@@ -46,9 +33,11 @@ type Client interface {
 	// UpdateTunnelConfiguration updates the tunnel's ingress configuration.
 	// This is an atomic replacement of the entire configuration.
 	UpdateTunnelConfiguration(ctx context.Context, accountID, tunnelID string, config TunnelConfiguration) error
+}
 
-	// DNS operations
-
+// DNSOps defines operations for managing Cloudflare DNS records,
+// including listing, creation, update, and deletion within a zone.
+type DNSOps interface {
 	// ListDNSRecords lists all DNS records in a zone.
 	ListDNSRecords(ctx context.Context, zoneID string) ([]DNSRecord, error)
 
@@ -63,25 +52,25 @@ type Client interface {
 
 	// DeleteDNSRecord deletes a DNS record.
 	DeleteDNSRecord(ctx context.Context, zoneID, recordID string) error
+}
 
-	// Zone operations
-
+// ZoneOps defines operations for querying Cloudflare DNS zones.
+type ZoneOps interface {
 	// ListZones lists all zones accessible with the current credentials.
 	ListZones(ctx context.Context) ([]Zone, error)
 
 	// GetZoneByName retrieves a zone by domain name.
 	// Returns nil if the zone does not exist.
 	GetZoneByName(ctx context.Context, name string) (*Zone, error)
+}
 
-	// Token validation
-
+// AccountOps defines operations for token validation and account lookup.
+type AccountOps interface {
 	// ValidateToken verifies the API token by attempting actual operations.
 	// Uses operational validation (ListZones + ListTunnels) to work with both
 	// User API Tokens and Account API Tokens.
 	// Returns an error if the token is invalid or missing permissions.
 	ValidateToken(ctx context.Context, accountID string) error
-
-	// Account operations
 
 	// ListAccounts lists all accounts accessible with the current credentials.
 	ListAccounts(ctx context.Context) ([]Account, error)
@@ -89,9 +78,11 @@ type Client interface {
 	// GetAccountByName retrieves an account by name.
 	// Returns nil if the account does not exist.
 	GetAccountByName(ctx context.Context, name string) (*Account, error)
+}
 
-	// Access Application operations
-
+// AccessAppOps defines operations for managing Cloudflare Access applications,
+// including creation, retrieval, update, deletion, and name-based lookup.
+type AccessAppOps interface {
 	// CreateAccessApplication creates a new Access application.
 	CreateAccessApplication(ctx context.Context, accountID string, params CreateApplicationParams) (*AccessApplication, error)
 
@@ -110,9 +101,11 @@ type Client interface {
 	// GetAccessApplicationByName retrieves an Access application by name.
 	// Returns nil if the application does not exist.
 	GetAccessApplicationByName(ctx context.Context, accountID, name string) (*AccessApplication, error)
+}
 
-	// Access Policy operations (application-scoped)
-
+// AccessPolicyOps defines operations for managing Cloudflare Access policies
+// scoped to an application, including creation, retrieval, update, and deletion.
+type AccessPolicyOps interface {
 	// CreateAccessPolicy creates a new Access policy for an application.
 	CreateAccessPolicy(ctx context.Context, accountID, appID string, params CreatePolicyParams) (*AccessPolicy, error)
 
@@ -127,9 +120,11 @@ type Client interface {
 
 	// ListAccessPolicies lists all Access policies for an application.
 	ListAccessPolicies(ctx context.Context, accountID, appID string) ([]AccessPolicy, error)
+}
 
-	// Access Group operations
-
+// AccessGroupOps defines operations for managing Cloudflare Access groups,
+// including creation, retrieval, update, deletion, and name-based lookup.
+type AccessGroupOps interface {
 	// CreateAccessGroup creates a new Access group.
 	CreateAccessGroup(ctx context.Context, accountID string, params CreateGroupParams) (*AccessGroup, error)
 
@@ -148,9 +143,11 @@ type Client interface {
 	// GetAccessGroupByName retrieves an Access group by name.
 	// Returns nil if the group does not exist.
 	GetAccessGroupByName(ctx context.Context, accountID, name string) (*AccessGroup, error)
+}
 
-	// Service Token operations
-
+// ServiceTokenOps defines operations for managing Cloudflare Access service tokens,
+// including creation, retrieval, update, deletion, rotation, and expiration refresh.
+type ServiceTokenOps interface {
 	// CreateServiceToken creates a new service token.
 	// The returned token includes the client secret, which is only available at creation time.
 	CreateServiceToken(ctx context.Context, accountID string, params CreateServiceTokenParams) (*ServiceTokenWithSecret, error)
@@ -173,9 +170,11 @@ type Client interface {
 
 	// RefreshServiceToken refreshes a service token's expiration.
 	RefreshServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
+}
 
-	// mTLS Certificate operations
-
+// MTLSOps defines operations for managing mTLS certificates and their
+// hostname association settings.
+type MTLSOps interface {
 	// CreateMTLSCertificate creates a new mTLS certificate.
 	CreateMTLSCertificate(ctx context.Context, accountID string, params CreateCertificateParams) (*MTLSCertificate, error)
 
@@ -191,13 +190,36 @@ type Client interface {
 	// ListMTLSCertificates lists all mTLS certificates.
 	ListMTLSCertificates(ctx context.Context, accountID string) ([]MTLSCertificate, error)
 
-	// mTLS Certificate Settings (hostname association)
-
 	// GetMTLSCertificateSettings retrieves mTLS certificate settings.
 	GetMTLSCertificateSettings(ctx context.Context, accountID string) ([]CertificateSettings, error)
 
 	// UpdateMTLSCertificateSettings updates mTLS certificate settings.
 	UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettingsParam) ([]CertificateSettings, error)
+}
+
+// Client defines the Cloudflare API operations composed from domain interfaces.
+//
+// Client wraps cloudflare-go v6 SDK and handles error normalization, 404 patterns,
+// and SDK quirks. Controllers should use the high-level services (TunnelService,
+// DNSService, AccessService) rather than Client directly.
+//
+// Create a new client with NewClient:
+//
+//	client, err := cloudflare.NewClient(apiToken)
+//
+// The client implements idempotent 404 handling: methods that retrieve resources
+// (GetTunnel, GetZoneByName, etc.) return nil, nil when the resource doesn't exist
+// rather than an error.
+type Client interface {
+	TunnelOps
+	DNSOps
+	ZoneOps
+	AccountOps
+	AccessAppOps
+	AccessPolicyOps
+	AccessGroupOps
+	ServiceTokenOps
+	MTLSOps
 }
 
 // Tunnel represents a Cloudflare Tunnel.
