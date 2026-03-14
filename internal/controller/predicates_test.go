@@ -568,7 +568,7 @@ func TestGatewayCreateAnnotationFilter(t *testing.T) {
 		obj := &unstructured.Unstructured{}
 		obj.SetAnnotations(map[string]string{
 			"cfgate.io/tunnel-ref": "my-tunnel",
-			"helm.sh/x":           "a",
+			"helm.sh/x":            "a",
 		})
 		got := GatewayCreateAnnotationFilter.Create(event.CreateEvent{Object: obj})
 		if !got {

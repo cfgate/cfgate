@@ -125,7 +125,7 @@ func TestNewCondition(t *testing.T) {
 			if len(got.Message) > MaxConditionMessageLength {
 				t.Errorf("Message length %d exceeds max %d", len(got.Message), MaxConditionMessageLength)
 			}
-			if got.LastTransitionTime.Time.Before(before) || got.LastTransitionTime.Time.After(after) {
+			if got.LastTransitionTime.Time.Before(before) || got.LastTransitionTime.After(after) {
 				t.Errorf("LastTransitionTime %v not between %v and %v", got.LastTransitionTime.Time, before, after)
 			}
 		})

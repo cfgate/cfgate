@@ -17,30 +17,30 @@ var _ Client = (*MockClient)(nil)
 //	svc := NewTunnelService(mock)
 type MockClient struct {
 	// Tunnel operations
-	GetTunnelFunc              func(ctx context.Context, accountID, tunnelID string) (*Tunnel, error)
-	GetTunnelByNameFunc        func(ctx context.Context, accountID, name string) (*Tunnel, error)
-	CreateTunnelFunc           func(ctx context.Context, accountID string, params CreateTunnelParams) (*Tunnel, error)
-	DeleteTunnelFunc           func(ctx context.Context, accountID, tunnelID string) error
-	DeleteTunnelConnectionsFunc func(ctx context.Context, accountID, tunnelID string) error
-	GetTunnelTokenFunc         func(ctx context.Context, accountID, tunnelID string) (string, error)
+	GetTunnelFunc                 func(ctx context.Context, accountID, tunnelID string) (*Tunnel, error)
+	GetTunnelByNameFunc           func(ctx context.Context, accountID, name string) (*Tunnel, error)
+	CreateTunnelFunc              func(ctx context.Context, accountID string, params CreateTunnelParams) (*Tunnel, error)
+	DeleteTunnelFunc              func(ctx context.Context, accountID, tunnelID string) error
+	DeleteTunnelConnectionsFunc   func(ctx context.Context, accountID, tunnelID string) error
+	GetTunnelTokenFunc            func(ctx context.Context, accountID, tunnelID string) (string, error)
 	UpdateTunnelConfigurationFunc func(ctx context.Context, accountID, tunnelID string, config TunnelConfiguration) error
 
 	// DNS operations
-	ListDNSRecordsFunc          func(ctx context.Context, zoneID string) ([]DNSRecord, error)
+	ListDNSRecordsFunc           func(ctx context.Context, zoneID string) ([]DNSRecord, error)
 	ListDNSRecordsByNameTypeFunc func(ctx context.Context, zoneID, name, recordType string) ([]DNSRecord, error)
-	CreateDNSRecordFunc         func(ctx context.Context, zoneID string, record DNSRecord) (*DNSRecord, error)
-	UpdateDNSRecordFunc         func(ctx context.Context, zoneID, recordID string, record DNSRecord) (*DNSRecord, error)
-	DeleteDNSRecordFunc         func(ctx context.Context, zoneID, recordID string) error
+	CreateDNSRecordFunc          func(ctx context.Context, zoneID string, record DNSRecord) (*DNSRecord, error)
+	UpdateDNSRecordFunc          func(ctx context.Context, zoneID, recordID string, record DNSRecord) (*DNSRecord, error)
+	DeleteDNSRecordFunc          func(ctx context.Context, zoneID, recordID string) error
 
 	// Zone operations
-	ListZonesFunc    func(ctx context.Context) ([]Zone, error)
+	ListZonesFunc     func(ctx context.Context) ([]Zone, error)
 	GetZoneByNameFunc func(ctx context.Context, name string) (*Zone, error)
 
 	// Token validation
 	ValidateTokenFunc func(ctx context.Context, accountID string) error
 
 	// Account operations
-	ListAccountsFunc    func(ctx context.Context) ([]Account, error)
+	ListAccountsFunc     func(ctx context.Context) ([]Account, error)
 	GetAccountByNameFunc func(ctx context.Context, name string) (*Account, error)
 
 	// Access Application operations

@@ -165,9 +165,9 @@ func TestDetectFeatures(t *testing.T) {
 			name: "all CRDs present",
 			mock: fullMock(),
 			want: FeatureGates{
-				TCPRouteCRDExists:      true,
-				UDPRouteCRDExists:      true,
-				GRPCRouteCRDExists:     true,
+				TCPRouteCRDExists:       true,
+				UDPRouteCRDExists:       true,
+				GRPCRouteCRDExists:      true,
 				ReferenceGrantCRDExists: true,
 			},
 		},
@@ -212,7 +212,7 @@ func TestDetectFeatures(t *testing.T) {
 				withResource(gvV1, GRPCRouteResource).
 				withResource(gvBeta1, ReferenceGrantResource),
 			want: FeatureGates{
-				GRPCRouteCRDExists:     true,
+				GRPCRouteCRDExists:      true,
 				ReferenceGrantCRDExists: true,
 			},
 		},
@@ -233,7 +233,7 @@ func TestDetectFeatures(t *testing.T) {
 				withResource(gvV1, GRPCRouteResource).
 				withResource(gvBeta1, ReferenceGrantResource),
 			want: FeatureGates{
-				GRPCRouteCRDExists:     true,
+				GRPCRouteCRDExists:      true,
 				ReferenceGrantCRDExists: true,
 			},
 		},
@@ -245,8 +245,8 @@ func TestDetectFeatures(t *testing.T) {
 				withResource(gvAlpha2, UDPRouteResource).
 				withResource(gvBeta1, ReferenceGrantResource),
 			want: FeatureGates{
-				TCPRouteCRDExists:      true,
-				UDPRouteCRDExists:      true,
+				TCPRouteCRDExists:       true,
+				UDPRouteCRDExists:       true,
 				ReferenceGrantCRDExists: true,
 			},
 		},
@@ -270,7 +270,7 @@ func TestDetectFeatures(t *testing.T) {
 				withResource(gvV1, GRPCRouteResource).
 				withResource(gvBeta1, ReferenceGrantResource),
 			want: FeatureGates{
-				GRPCRouteCRDExists:     true,
+				GRPCRouteCRDExists:      true,
 				ReferenceGrantCRDExists: true,
 			},
 		},
@@ -395,9 +395,9 @@ func TestSupportedRouteKinds(t *testing.T) {
 func TestLogFeatures(t *testing.T) {
 	t.Run("all present: no panic", func(t *testing.T) {
 		gates := &FeatureGates{
-			TCPRouteCRDExists:      true,
-			UDPRouteCRDExists:      true,
-			GRPCRouteCRDExists:     true,
+			TCPRouteCRDExists:       true,
+			UDPRouteCRDExists:       true,
+			GRPCRouteCRDExists:      true,
 			ReferenceGrantCRDExists: true,
 		}
 		gates.LogFeatures(logr.Discard())
@@ -419,9 +419,9 @@ func TestLogFeatures(t *testing.T) {
 
 	t.Run("GRPC missing only: no panic", func(t *testing.T) {
 		gates := &FeatureGates{
-			TCPRouteCRDExists:      true,
-			UDPRouteCRDExists:      true,
-			GRPCRouteCRDExists:     false,
+			TCPRouteCRDExists:       true,
+			UDPRouteCRDExists:       true,
+			GRPCRouteCRDExists:      false,
 			ReferenceGrantCRDExists: true,
 		}
 		gates.LogFeatures(logr.Discard())

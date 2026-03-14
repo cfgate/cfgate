@@ -1241,4 +1241,3 @@ func (c *clientImpl) UpdateMTLSCertificateSettings(ctx context.Context, accountI
 
 	return resultSettings, nil
 }
-

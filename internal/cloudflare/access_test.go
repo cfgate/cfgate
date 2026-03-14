@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func boolPtr(b bool) *bool   { return &b }
+func boolPtr(b bool) *bool    { return &b }
 func strPtr(s string) *string { return &s }
 
 func makeMatchingAppPair() (*AccessApplication, *ApplicationParams) {
@@ -152,9 +152,11 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 			want:   true,
 		},
 		{
-			name:   "CustomNonIdentityDenyURL drift",
-			modify: func(_ *AccessApplication, p *ApplicationParams) { p.CustomNonIdentityDenyURL = "https://noid.example.com" },
-			want:   true,
+			name: "CustomNonIdentityDenyURL drift",
+			modify: func(_ *AccessApplication, p *ApplicationParams) {
+				p.CustomNonIdentityDenyURL = "https://noid.example.com"
+			},
+			want: true,
 		},
 		{
 			name:   "OptionsPreflightBypass drift",
