@@ -187,7 +187,7 @@ Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the or
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
-Mutually exclusive with `cfgate.io/origin-http2`.
+Mutually exclusive with `cfgate.io/origin-http2`. Requires the [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared) fork image (the default). Upstream cloudflared silently ignores this field. See [Image](cloudflare-tunnel.md#image).
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
