@@ -832,6 +832,8 @@ func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.Acce
 				})
 			} else if r.IPList.Name != "" {
 				return nil, fmt.Errorf("ipList rule specifies name %q without listID; listID is required for IP list rules", r.IPList.Name)
+			} else {
+				return nil, fmt.Errorf("ipList rule must specify listID")
 			}
 			continue
 		}
@@ -898,6 +900,8 @@ func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.Acce
 				})
 			} else if r.EmailList.Name != "" {
 				return nil, fmt.Errorf("emailList rule specifies name %q without listID; listID is required for email list rules", r.EmailList.Name)
+			} else {
+				return nil, fmt.Errorf("emailList rule must specify listID")
 			}
 			continue
 		}
@@ -1152,9 +1156,8 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
 	accessService, accountID, err := r.resolveCredentials(ctx, policy)
 	if err != nil {
 		log.Error(err, "failed to resolve credentials for deletion")
-		r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
-			"Failed to resolve credentials: %s. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.", err.Error())
-		return ctrl.Result{RequeueAfter: accessDeletionRequeueInterval}, nil
+		return r.blockAccessDeletion(ctx, policy,
+			fmt.Sprintf("Failed to resolve credentials: %s", err.Error()))
 	}
 
 	// Delete Access Application (cascades to policies)
