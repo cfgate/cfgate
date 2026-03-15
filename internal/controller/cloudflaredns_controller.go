@@ -532,6 +532,11 @@ func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfg
 // in matchNames are included. Reads via APIReader for consistency with uncached reads used
 // elsewhere in hostname collection.
 func (r *CloudflareDNSReconciler) resolveSelectedNamespaces(ctx context.Context, selector *cfgatev1alpha1.DNSNamespaceSelector) (map[string]bool, error) {
+	// Empty selector matches all namespaces (Kubernetes convention).
+	if len(selector.MatchLabels) == 0 && len(selector.MatchNames) == 0 {
+		return nil, nil
+	}
+
 	var namespaceList corev1.NamespaceList
 	if err := r.APIReader.List(ctx, &namespaceList); err != nil {
 		return nil, fmt.Errorf("failed to list namespaces: %w", err)

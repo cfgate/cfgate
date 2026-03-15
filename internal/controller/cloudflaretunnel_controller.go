@@ -802,9 +802,16 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 		cfClient, err := r.getCloudflareClientForDeletion(ctx, tunnel)
 		if err != nil {
 			log.Error(err, "failed to create Cloudflare client for deletion")
-			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
-				"Failed to resolve credentials for tunnel %s: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
-				tunnel.Status.TunnelID, err)
+			retryElapsed := time.Since(tunnel.DeletionTimestamp.Time)
+			if retryElapsed < deletionRetryBudget {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
+					"Failed to resolve credentials for tunnel %s: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
+					tunnel.Status.TunnelID, err)
+			} else {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupBlocked", "Delete",
+					"Tunnel %s credential resolution blocked after %s of retries: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
+					tunnel.Status.TunnelID, retryElapsed.Round(time.Second), err)
+			}
 			return ctrl.Result{RequeueAfter: deletionRequeueInterval}, nil
 		}
 
@@ -817,9 +824,16 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 
 		if accountID == "" {
 			log.Info("no account ID available for deletion")
-			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
-				"No account ID available for tunnel %s. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
-				tunnel.Status.TunnelID)
+			retryElapsed := time.Since(tunnel.DeletionTimestamp.Time)
+			if retryElapsed < deletionRetryBudget {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
+					"No account ID available for tunnel %s. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
+					tunnel.Status.TunnelID)
+			} else {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupBlocked", "Delete",
+					"Tunnel %s account resolution blocked after %s of retries. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
+					tunnel.Status.TunnelID, retryElapsed.Round(time.Second))
+			}
 			return ctrl.Result{RequeueAfter: deletionRequeueInterval}, nil
 		}
 
