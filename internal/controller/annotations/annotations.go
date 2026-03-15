@@ -109,6 +109,15 @@ const (
 	AnnotationOriginH2c = AnnotationPrefix + "origin-h2c"
 )
 
+// DNS management annotations.
+const (
+	// AnnotationAllowDeepSubdomains suppresses the warning event emitted when a hostname
+	// has multiple subdomain levels relative to its zone (e.g., deep.sub.example.com).
+	// Values: "true", "false"
+	// Default: not set (warning emitted)
+	AnnotationAllowDeepSubdomains = AnnotationPrefix + "allow-deep-subdomains"
+)
+
 // Validation constants.
 const (
 	// MaxTTL is the maximum allowed TTL value in seconds.

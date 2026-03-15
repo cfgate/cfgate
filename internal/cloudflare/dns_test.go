@@ -124,6 +124,50 @@ func TestValidateTTL(t *testing.T) {
 	}
 }
 
+func TestBuildDNSRecord(t *testing.T) {
+	tests := []struct {
+		name       string
+		hostname   string
+		target     string
+		recordType string
+		proxied    bool
+		ttl        int
+		comment    string
+		wantTTL    int
+	}{
+		{"CNAME record", "app.example.com", "uuid.cfargotunnel.com", "CNAME", true, 300, "managed", 300},
+		{"A record", "app.example.com", "1.2.3.4", "A", true, 60, "managed", 60},
+		{"AAAA record", "app.example.com", "2001:db8::1", "AAAA", false, 120, "managed", 120},
+		{"ttl zero defaults to auto", "app.example.com", "1.2.3.4", "A", true, 0, "", 1},
+		{"ttl negative defaults to auto", "app.example.com", "1.2.3.4", "A", false, -5, "", 1},
+		{"ttl one passthrough", "app.example.com", "target.com", "CNAME", true, 1, "", 1},
+		{"empty hostname", "", "1.2.3.4", "A", false, 60, "", 60},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := BuildDNSRecord(tt.hostname, tt.target, tt.recordType, tt.proxied, tt.ttl, tt.comment)
+			if got.Type != tt.recordType {
+				t.Errorf("Type = %q, want %q", got.Type, tt.recordType)
+			}
+			if got.Name != tt.hostname {
+				t.Errorf("Name = %q, want %q", got.Name, tt.hostname)
+			}
+			if got.Content != tt.target {
+				t.Errorf("Content = %q, want %q", got.Content, tt.target)
+			}
+			if got.Proxied != tt.proxied {
+				t.Errorf("Proxied = %v, want %v", got.Proxied, tt.proxied)
+			}
+			if got.TTL != tt.wantTTL {
+				t.Errorf("TTL = %d, want %d", got.TTL, tt.wantTTL)
+			}
+			if got.Comment != tt.comment {
+				t.Errorf("Comment = %q, want %q", got.Comment, tt.comment)
+			}
+		})
+	}
+}
+
 func TestBuildCNAMERecord(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -161,6 +205,30 @@ func TestBuildCNAMERecord(t *testing.T) {
 			}
 			if got.Comment != tt.comment {
 				t.Errorf("Comment = %q, want %q", got.Comment, tt.comment)
+			}
+		})
+	}
+}
+
+func TestValidateHostnameDepth(t *testing.T) {
+	tests := []struct {
+		name     string
+		hostname string
+		zoneName string
+		want     bool
+	}{
+		{"single level", "app.example.com", "example.com", false},
+		{"multi level", "deep.sub.example.com", "example.com", true},
+		{"exact zone match", "example.com", "example.com", false},
+		{"three levels deep", "a.b.c.example.com", "example.com", true},
+		{"zone not suffix", "app.other.com", "example.com", false},
+		{"complex TLD single level", "app.example.co.uk", "example.co.uk", false},
+		{"complex TLD multi level", "deep.sub.example.co.uk", "example.co.uk", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidateHostnameDepth(tt.hostname, tt.zoneName); got != tt.want {
+				t.Errorf("ValidateHostnameDepth(%q, %q) = %v, want %v", tt.hostname, tt.zoneName, got, tt.want)
 			}
 		})
 	}
