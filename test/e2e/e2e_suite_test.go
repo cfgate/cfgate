@@ -752,33 +752,16 @@ func createTestNamespace(prefix string) *corev1.Namespace {
 }
 
 // deleteTestNamespace deletes a test namespace and waits for termination.
-// Explicitly deletes CloudflareTunnel CRs first so finalizers can access credentials.
+// Deletion follows dependency order: DNS and Access CRs first (they need the
+// tunnel's credentials for Cloudflare API cleanup), then Tunnels, then the
+// namespace itself. Each phase waits for completion before proceeding.
 func deleteTestNamespace(ns *corev1.Namespace) {
 	if testEnv.SkipCleanup {
 		return
 	}
 
-	// Delete all cfgate CRs first; finalizers need the Secret which lives in namespace.
-	// Pre-deleting CRs triggers the controller to process deletions while the
-	// namespace (and its Secrets) still exist, avoiding orphaned finalizers.
-
-	// CloudflareTunnels
-	var tunnels cfgatev1alpha1.CloudflareTunnelList
-	if err := k8sClient.List(ctx, &tunnels, client.InNamespace(ns.Name)); err == nil {
-		for i := range tunnels.Items {
-			_ = k8sClient.Delete(ctx, &tunnels.Items[i])
-		}
-	}
-
-	// CloudflareAccessPolicies
-	var policies cfgatev1alpha1.CloudflareAccessPolicyList
-	if err := k8sClient.List(ctx, &policies, client.InNamespace(ns.Name)); err == nil {
-		for i := range policies.Items {
-			_ = k8sClient.Delete(ctx, &policies.Items[i])
-		}
-	}
-
-	// CloudflareDNS
+	// Phase 1: Delete DNS and Access CRs. Both reference the tunnel for
+	// credentials during reconcileDelete; the tunnel must still exist.
 	var dnsRecords cfgatev1alpha1.CloudflareDNSList
 	if err := k8sClient.List(ctx, &dnsRecords, client.InNamespace(ns.Name)); err == nil {
 		for i := range dnsRecords.Items {
@@ -786,25 +769,43 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		}
 	}
 
-	// Wait for all CR types to be fully deleted (finalizers complete).
+	var policies cfgatev1alpha1.CloudflareAccessPolicyList
+	if err := k8sClient.List(ctx, &policies, client.InNamespace(ns.Name)); err == nil {
+		for i := range policies.Items {
+			_ = k8sClient.Delete(ctx, &policies.Items[i])
+		}
+	}
+
+	// Wait for DNS and Access CRs to be fully deleted before touching tunnels.
+	Eventually(func() bool {
+		var dCheck cfgatev1alpha1.CloudflareDNSList
+		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
+		dErr := k8sClient.List(ctx, &dCheck, client.InNamespace(ns.Name))
+		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
+		dDone := dErr != nil || len(dCheck.Items) == 0
+		pDone := pErr != nil || len(pCheck.Items) == 0
+		return dDone && pDone
+	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
+		"DNS/Access CRs in namespace %s did not terminate", ns.Name)
+
+	// Phase 2: Delete Tunnels. No remaining CRs depend on tunnel credentials.
+	var tunnels cfgatev1alpha1.CloudflareTunnelList
+	if err := k8sClient.List(ctx, &tunnels, client.InNamespace(ns.Name)); err == nil {
+		for i := range tunnels.Items {
+			_ = k8sClient.Delete(ctx, &tunnels.Items[i])
+		}
+	}
+
 	Eventually(func() bool {
 		var tCheck cfgatev1alpha1.CloudflareTunnelList
-		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
-		var dCheck cfgatev1alpha1.CloudflareDNSList
 		tErr := k8sClient.List(ctx, &tCheck, client.InNamespace(ns.Name))
-		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
-		dErr := k8sClient.List(ctx, &dCheck, client.InNamespace(ns.Name))
-		tDone := tErr != nil || len(tCheck.Items) == 0
-		pDone := pErr != nil || len(pCheck.Items) == 0
-		dDone := dErr != nil || len(dCheck.Items) == 0
-		return tDone && pDone && dDone
+		return tErr != nil || len(tCheck.Items) == 0
 	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
-		"cfgate CRs in namespace %s did not terminate", ns.Name)
+		"Tunnel CRs in namespace %s did not terminate", ns.Name)
 
-	// Delete namespace after CRs are gone.
+	// Phase 3: Delete namespace after all CRs are gone.
 	Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
 
-	// Wait for namespace to terminate.
 	Eventually(func() bool {
 		var check corev1.Namespace
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: ns.Name}, &check)
