@@ -387,3 +387,45 @@ spec:
     name: cloudflare-admin-credentials
     namespace: cfgate-system
 ```
+
+## Deletion Behavior
+
+The controller adds the finalizer `cfgate.io/dns-cleanup` to every CloudflareDNS resource. When the resource is deleted, the controller attempts to delete all owned DNS records and their TXT ownership records before removing the finalizer.
+
+If cleanup fails, the controller blocks indefinitely and requeues every 15 seconds. It never removes the finalizer automatically. Within a 1-minute retry budget, the controller emits Warning events with reason `CleanupFailed`. After the retry budget is exhausted, subsequent events escalate to reason `CleanupBlocked`.
+
+To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate.io/deletion-policy=orphan` annotation on the CloudflareDNS resource. The controller will leave DNS records in Cloudflare and remove the finalizer without attempting cleanup. This annotation is new in v0.1.0-alpha.14; previous releases supported it only on CloudflareTunnel and CloudflareAccessPolicy.
+
+```bash
+kubectl annotate cloudflarednses my-dns -n cfgate-system \
+  cfgate.io/deletion-policy=orphan
+```
+
+## Record Types
+
+When using `tunnelRef`, all DNS records are CNAME records pointing to `{tunnelId}.cfargotunnel.com`. The record type is not configurable in tunnel-ref mode.
+
+When using `externalTarget`, the `type` field determines the DNS record type. Valid values are `CNAME`, `A`, and `AAAA`. The `value` field contains the record target: a domain name for CNAME, an IPv4 address for A, or an IPv6 address for AAAA. The controller does not validate that A or AAAA target values are valid IP addresses; values are passed through to the Cloudflare API.
+
+Only A, AAAA, and CNAME records can be proxied by Cloudflare. Setting `proxied: true` on other record types will cause the Cloudflare API to reject the request.
+
+## Multi-level Subdomains
+
+Cloudflare Universal SSL certificates cover `*.example.com` but not deeper wildcards such as `*.sub.example.com`. Hostnames with more than one subdomain level relative to the zone (for example, `api.staging.example.com` in zone `example.com`) require Cloudflare Advanced Certificate Manager or a custom certificate uploaded to Cloudflare.
+
+The controller emits a `DeepSubdomain` warning event when it encounters a hostname with depth greater than 1 relative to the zone. This warning is informational only; record creation proceeds regardless.
+
+To suppress the warning, set the annotation `cfgate.io/allow-deep-subdomains: "true"` on the CloudflareDNS resource.
+
+```bash
+kubectl annotate cloudflarednses my-dns -n cfgate-system \
+  cfgate.io/allow-deep-subdomains=true
+```
+
+## Namespace Selector
+
+When `spec.source.gatewayRoutes.namespaceSelector` is set, only routes from matching namespaces are considered for DNS record creation. The selector supports two filters: `matchLabels` and `matchNames`.
+
+`matchLabels` uses AND semantics: all specified labels must be present on the namespace. `matchNames` matches namespaces by name. If both filters are specified, the result is a union (a namespace matching either filter is included).
+
+An empty selector (`namespaceSelector: {}`) matches all namespaces, following the Kubernetes convention used by NetworkPolicy and other resources.

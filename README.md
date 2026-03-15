@@ -180,6 +180,7 @@ TCPRoute and UDPRoute controllers are registered but not yet implemented (planne
 | [basic](examples/basic) | Single tunnel + gateway + DNS sync |
 | [multi-service](examples/multi-service) | Multiple services, one tunnel, Access policies |
 | [with-rancher](examples/with-rancher) | Rancher 2.14+ integration |
+| [external-target](examples/external-target) | A/AAAA records via ExternalTarget (no tunnel) |
 
 ## Requirements
 

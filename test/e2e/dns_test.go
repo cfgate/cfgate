@@ -612,6 +612,61 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 	})
 
 	// =========================================================================
+	// Section 7: Orphan Deletion Policy Tests
+	// =========================================================================
+
+	Context("orphan deletion policy", func() {
+		It("should preserve DNS records when deletion policy is orphan", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
+			hostname := fmt.Sprintf("%s.%s", testID("dns-orphan"), testEnv.CloudflareZoneName)
+
+			By("Creating CloudflareDNS with tunnelRef")
+			dnsResource := createCloudflareDNSWithTunnelRef(ctx, k8sClient,
+				testID("dns-orphan"), namespace.Name,
+				sharedTunnel.Name, namespace.Name,
+				[]string{hostname},
+				cfgatev1alpha1.DNSPolicySync,
+				false,
+			)
+
+			By("Waiting for CloudflareDNS to be ready")
+			dnsResource = waitForDNSReady(ctx, k8sClient, dnsResource.Name, namespace.Name, DefaultTimeout)
+
+			By("Verifying DNS record exists in Cloudflare")
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil(), "CNAME record should exist before deletion")
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Setting orphan deletion policy annotation")
+			Eventually(func() error {
+				var current cfgatev1alpha1.CloudflareDNS
+				if err := k8sClient.Get(ctx, client.ObjectKey{Name: dnsResource.Name, Namespace: namespace.Name}, &current); err != nil {
+					return err
+				}
+				if current.Annotations == nil {
+					current.Annotations = make(map[string]string)
+				}
+				current.Annotations["cfgate.io/deletion-policy"] = "orphan"
+				return k8sClient.Update(ctx, &current)
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Deleting CloudflareDNS resource")
+			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
+
+			By("Waiting for CloudflareDNS to be deleted from Kubernetes")
+			waitForDNSDeleted(ctx, k8sClient, dnsResource.Name, namespace.Name, DefaultTimeout)
+
+			By("Verifying DNS record still exists in Cloudflare (orphaned)")
+			record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record).NotTo(BeNil(), "DNS record should still exist in Cloudflare with orphan policy")
+
+			cleanupDNSRecord(ctx, cfClient, zoneID, hostname, "CNAME")
+		})
+	})
+
+	// =========================================================================
 	// Section 8: Comment Length Regression Guard
 	// =========================================================================
 

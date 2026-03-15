@@ -298,7 +298,15 @@ cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS r
    kubectl logs -n cfgate-system deploy/cfgate -c manager | grep "deletion\|cleanup\|finalizer"
    ```
 
-4. For CloudflareTunnel: the controller retries Cloudflare deletion for up to 2 minutes before giving up and removing the finalizer anyway. If the tunnel has active cloudflared connections, it waits for them to drain (~30s). If you are stuck beyond 2 minutes, something else is wrong (controller not running, RBAC issues).
+4. The controller blocks indefinitely on cleanup failure and never removes the finalizer automatically. Within the retry budget, events use reason `CleanupFailed`. After the budget is exhausted, events escalate to reason `CleanupBlocked`, but the controller continues retrying. The only way to unblock a stuck finalizer is the `cfgate.io/deletion-policy=orphan` annotation (see Resolution Options below).
+
+   Retry budgets per controller:
+
+   | Controller | Budget | Requeue Interval |
+   |---|---|---|
+   | CloudflareTunnel | 2 minutes | 10 seconds |
+   | CloudflareDNS | 1 minute | 15 seconds |
+   | CloudflareAccessPolicy | 1 minute | 15 seconds |
 
 ### Resolution Options
 
@@ -308,6 +316,8 @@ This tells the controller to skip Cloudflare cleanup and remove the finalizer im
 
 ```bash
 kubectl annotate cloudflaretunnel my-tunnel cfgate.io/deletion-policy=orphan
+kubectl annotate cloudflarednses my-dns -n cfgate-system \
+  cfgate.io/deletion-policy=orphan
 kubectl annotate cloudflareaccesspolicy my-policy cfgate.io/deletion-policy=orphan
 ```
 
@@ -402,10 +412,17 @@ kubectl logs -n cfgate-system deploy/cfgate -c manager | grep httproute
 | `"starting reconciliation"` | Normal: controller processing a resource |
 | `"credentials validation failed"` | API token invalid or secret missing |
 | `"tunnel not found on Cloudflare, clearing tunnelID"` | Tunnel was deleted on CF side; controller will re-create |
-| `"retry budget exhausted"` | Tunnel deletion failed after 2 minutes of retries |
+| `"retry budget exhausted"` | Deletion failed after the retry budget (tunnel: 2min, DNS: 1min, Access: 1min). Events escalate from `CleanupFailed` to `CleanupBlocked`. Controller continues retrying indefinitely; set `cfgate.io/deletion-policy=orphan` to skip cleanup. |
 | `"orphaning tunnel due to deletion policy"` | `cfgate.io/deletion-policy: orphan` was set |
 | `"no hostnames discovered with gatewayRoutes enabled"` | DNS controller found no routes; will retry in 10s |
-| `"failed to resolve credentials for deletion"` | Credentials unavailable during cleanup; finalizer removed anyway |
+| `"failed to resolve credentials for deletion"` | Credentials unavailable during cleanup; controller blocks and requeues. Set `cfgate.io/deletion-policy=orphan` to proceed. |
+
+### Event Reasons
+
+| Event Reason | Type | Meaning |
+|---|---|---|
+| `CleanupFailed` | Warning | Cloudflare cleanup failed within the retry budget. The controller will retry at the configured interval. |
+| `CleanupBlocked` | Warning | Retry budget is exhausted and Cloudflare cleanup is still failing. The controller continues retrying indefinitely. Set `cfgate.io/deletion-policy=orphan` on the resource to skip cleanup and release the finalizer. |
 
 ### Common Deployment Names
 
@@ -419,6 +436,22 @@ Adjust the `deploy/cfgate` in log commands above if using kustomize:
 ```bash
 kubectl logs -n cfgate-system deploy/controller-manager -c manager
 ```
+
+---
+
+## RBAC Upgrade Notes
+
+### Namespace Selector Permissions
+
+The CloudflareDNS `namespaceSelector` feature requires `get`, `list`, and `watch` permissions on `namespaces` in the controller's ClusterRole. Helm chart and kustomize installations include these permissions automatically. If you maintain your own ClusterRole (manual RBAC setup), add the following rule when upgrading to a version with namespace selector support:
+
+```yaml
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["get", "list", "watch"]
+```
+
+Without this rule, the controller logs a permissions error when a CloudflareDNS resource specifies `spec.source.gatewayRoutes.namespaceSelector`.
 
 ---
 

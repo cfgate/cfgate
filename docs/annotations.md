@@ -352,7 +352,7 @@ The tunnel endpoint domain, set automatically by the CloudflareTunnel controller
 
 ## Lifecycle Annotations
 
-Applied to CloudflareTunnel and CloudflareAccessPolicy resources to control deletion behavior.
+Applied to CloudflareTunnel, CloudflareDNS, and CloudflareAccessPolicy resources to control deletion behavior.
 
 | Annotation | Values | Default | Description |
 |---|---|---|---|
@@ -370,6 +370,7 @@ Controls what happens to Cloudflare-side resources when the Kubernetes resource 
 
 **Supported on:**
 - **CloudflareTunnel:** When set to `orphan`, the tunnel remains in Cloudflare but the K8s resource is removed. The controller skips tunnel deletion and proceeds directly to finalizer removal.
+- **CloudflareDNS:** When set to `orphan`, the DNS records remain in Cloudflare but the K8s resource is removed. The controller skips record cleanup and proceeds directly to finalizer removal.
 - **CloudflareAccessPolicy:** When set to `orphan`, the Access Application, policies, service tokens, and mTLS certificates remain in Cloudflare. The controller skips all Cloudflare cleanup and proceeds directly to finalizer removal.
 
 **Use cases:**
@@ -386,12 +387,51 @@ kubectl delete cloudflaretunnel my-tunnel
 ```
 
 ```bash
+# Same for DNS resources
+kubectl annotate cloudflarednses my-dns cfgate.io/deletion-policy=orphan
+kubectl delete cloudflaredns my-dns
+```
+
+```bash
 # Same for access policies
 kubectl annotate cloudflareaccesspolicy my-policy cfgate.io/deletion-policy=orphan
 kubectl delete cloudflareaccesspolicy my-policy
 ```
 
 **Warning:** Orphaned resources in Cloudflare must be manually deleted via the Cloudflare dashboard or API. cfgate will not manage them again unless you re-create the Kubernetes resource with matching names.
+
+---
+
+## DNS Management Annotations
+
+Applied to CloudflareDNS resources to control DNS-specific behavior.
+
+| Annotation | Values | Default | Description |
+|---|---|---|---|
+| `cfgate.io/allow-deep-subdomains` | `true` | Not set (warning emitted) | Suppresses the `DeepSubdomain` warning event for multi-level subdomains |
+
+---
+
+#### `cfgate.io/allow-deep-subdomains`
+
+Suppresses the `DeepSubdomain` warning event that the controller emits when a hostname has more than one subdomain level relative to its zone. For example, `api.staging.example.com` in zone `example.com` has two subdomain levels and triggers the warning because Cloudflare Universal SSL certificates cover only single-level wildcards (`*.example.com`). Deeper subdomains require Cloudflare Advanced Certificate Manager or a custom certificate.
+
+**Valid values:** `"true"` to suppress the warning; any other value or absent means the warning is emitted.
+
+**Default:** Not set (warning emitted on each reconciliation)
+
+**Applied to:** CloudflareDNS resources
+
+**Read by:** CloudflareDNS controller (checked in `syncRecords` before emitting the `DeepSubdomain` event)
+
+Set this annotation on the CloudflareDNS resource when you have appropriate TLS coverage for deep subdomains and want to suppress the recurring warning:
+
+```bash
+kubectl annotate cloudflarednses my-dns -n cfgate-system \
+  cfgate.io/allow-deep-subdomains=true
+```
+
+See the [Multi-level Subdomains](cloudflare-dns.md#multi-level-subdomains) section in the CloudflareDNS reference for details on subdomain depth validation.
 
 ---
 
