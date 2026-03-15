@@ -3,6 +3,8 @@
 package e2e_test
 
 import (
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -12,6 +14,17 @@ import (
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 )
+
+// validationAccountID returns a Cloudflare account ID for CEL validation tests.
+// If testEnv.CloudflareAccountID is set, it returns that value. Otherwise it
+// returns a dummy 32-character hex string so CEL tests can run without
+// Cloudflare credentials.
+func validationAccountID() string {
+	if testEnv.CloudflareAccountID != "" {
+		return testEnv.CloudflareAccountID
+	}
+	return strings.Repeat("0", 32)
+}
 
 var _ = Describe("CEL Validation E2E", func() {
 	var namespace *corev1.Namespace
@@ -46,7 +59,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					// No targetRef, no targetRefs - should fail CEL validation
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:   "test-app",
@@ -97,7 +110,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					},
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:   "test-app",
@@ -184,7 +197,7 @@ var _ = Describe("CEL Validation E2E", func() {
 						Name: testID("tunnel"),
 					},
 					Cloudflare: cfgatev1alpha1.CloudflareConfig{
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 						SecretRef: cfgatev1alpha1.SecretRef{
 							Name: "cloudflare-credentials",
 						},
@@ -215,7 +228,7 @@ var _ = Describe("CEL Validation E2E", func() {
 						Name: testID("tunnel"),
 					},
 					Cloudflare: cfgatev1alpha1.CloudflareConfig{
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 						SecretRef: cfgatev1alpha1.SecretRef{
 							Name: "cloudflare-credentials",
 						},
@@ -263,7 +276,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					},
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:   "test-app",
@@ -322,7 +335,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					},
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:   "test-app",
@@ -361,7 +374,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					},
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:   "test-app",
@@ -401,7 +414,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					},
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:   "test-app",
@@ -442,7 +455,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					},
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:            "test-app",
@@ -483,7 +496,7 @@ var _ = Describe("CEL Validation E2E", func() {
 					},
 					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
 						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
+						AccountID: validationAccountID(),
 					},
 					Application: cfgatev1alpha1.AccessApplication{
 						Name:   "test-app",

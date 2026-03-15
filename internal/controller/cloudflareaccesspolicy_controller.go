@@ -6,7 +6,6 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -754,13 +753,26 @@ func (r *CloudflareAccessPolicyReconciler) syncPolicies(
 			}
 		}
 
+		includeRules, err := convertAccessRules(rule.Include)
+		if err != nil {
+			return nil, fmt.Errorf("policy %q include rules: %w", rule.Name, err)
+		}
+		excludeRules, err := convertAccessRules(rule.Exclude)
+		if err != nil {
+			return nil, fmt.Errorf("policy %q exclude rules: %w", rule.Name, err)
+		}
+		requireRules, err := convertAccessRules(rule.Require)
+		if err != nil {
+			return nil, fmt.Errorf("policy %q require rules: %w", rule.Name, err)
+		}
+
 		params = append(params, cloudflare.PolicyParams{
 			Name:                         rule.Name,
 			Decision:                     rule.Decision,
 			Precedence:                   precedence,
-			Include:                      convertAccessRules(log, rule.Include),
-			Exclude:                      convertAccessRules(log, rule.Exclude),
-			Require:                      convertAccessRules(log, rule.Require),
+			Include:                      includeRules,
+			Exclude:                      excludeRules,
+			Require:                      requireRules,
 			SessionDuration:              rule.SessionDuration,
 			PurposeJustificationRequired: rule.PurposeJustificationRequired,
 			PurposeJustificationPrompt:   rule.PurposeJustificationPrompt,
@@ -778,12 +790,13 @@ func (r *CloudflareAccessPolicyReconciler) syncPolicies(
 }
 
 // convertAccessRules converts CRD AccessRule slice to API AccessRuleParam slice.
+// Returns an error if a rule references a list by name without providing its ID.
 // Implements P0/P1/P2 rule types for alpha.3 with SDK-aligned naming:
 //   - P0: No IdP (IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken)
 //   - P1: Basic IdP (Email, EmailList, EmailDomain, OIDCClaim)
 //   - P2: Google Workspace (GSuiteGroup)
 //   - P3: Deferred to v0.2.0 (Certificate, Group, GitHub, Azure, Okta, SAML, etc.)
-func convertAccessRules(log logr.Logger, crdRules []cfgatev1alpha1.AccessRule) []cloudflare.AccessRuleParam {
+func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.AccessRuleParam, error) {
 	var rules []cloudflare.AccessRuleParam
 	for _, r := range crdRules {
 		// ============================================================
@@ -809,9 +822,7 @@ func convertAccessRules(log logr.Logger, crdRules []cfgatev1alpha1.AccessRule) [
 					IPListID: &id,
 				})
 			} else if r.IPList.Name != "" {
-				log.Info("ipList.name lookup is not yet supported; use ipList.id instead",
-					"ipListName", r.IPList.Name,
-				)
+				return nil, fmt.Errorf("ipList rule specifies name %q without listID; listID is required for IP list rules", r.IPList.Name)
 			}
 			continue
 		}
@@ -877,9 +888,7 @@ func convertAccessRules(log logr.Logger, crdRules []cfgatev1alpha1.AccessRule) [
 					EmailListID: &id,
 				})
 			} else if r.EmailList.Name != "" {
-				log.Info("emailList.name lookup is not yet supported; use emailList.id instead",
-					"emailListName", r.EmailList.Name,
-				)
+				return nil, fmt.Errorf("emailList rule specifies name %q without listID; listID is required for email list rules", r.EmailList.Name)
 			}
 			continue
 		}
@@ -926,7 +935,7 @@ func convertAccessRules(log logr.Logger, crdRules []cfgatev1alpha1.AccessRule) [
 		// Certificate, CommonName, Group, GitHub, Azure, Okta, SAML,
 		// AuthenticationMethod, DevicePosture, ExternalEvaluation, LoginMethod
 	}
-	return rules
+	return rules, nil
 }
 
 // convertApprovalGroups converts CRD ApprovalGroup slice to API ApprovalGroupParam slice.
