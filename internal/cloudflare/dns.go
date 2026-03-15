@@ -455,20 +455,39 @@ func ValidateTTL(ttl int) error {
 	return nil
 }
 
-// BuildCNAMERecord builds a CNAME record for a tunnel.
-func BuildCNAMERecord(hostname, tunnelDomain string, proxied bool, ttl int, comment string) DNSRecord {
-	// TTL=1 means Cloudflare "auto" TTL. Use it as default if not specified.
+// BuildDNSRecord builds a DNS record with the specified type (CNAME, A, or AAAA).
+// If ttl is zero or negative, it defaults to 1 (Cloudflare auto TTL, resolves to 300s).
+func BuildDNSRecord(hostname, target, recordType string, proxied bool, ttl int, comment string) DNSRecord {
 	if ttl <= 0 {
 		ttl = 1
 	}
 	return DNSRecord{
-		Type:    "CNAME",
+		Type:    recordType,
 		Name:    hostname,
-		Content: tunnelDomain,
+		Content: target,
 		TTL:     ttl,
 		Proxied: proxied,
 		Comment: comment,
 	}
+}
+
+// BuildCNAMERecord builds a CNAME record for a tunnel.
+// Delegates to BuildDNSRecord with recordType "CNAME".
+func BuildCNAMERecord(hostname, tunnelDomain string, proxied bool, ttl int, comment string) DNSRecord {
+	return BuildDNSRecord(hostname, tunnelDomain, "CNAME", proxied, ttl, comment)
+}
+
+// ValidateHostnameDepth reports whether hostname has more than one subdomain level
+// relative to zoneName. Cloudflare Universal SSL covers only single-level wildcards
+// (*.example.com); deeper subdomains (e.g., deep.sub.example.com) require Advanced
+// Certificate Manager or a paid TLS tier.
+func ValidateHostnameDepth(hostname, zoneName string) bool {
+	suffix := "." + zoneName
+	if !strings.HasSuffix(hostname, suffix) {
+		return false
+	}
+	subdomain := strings.TrimSuffix(hostname, suffix)
+	return strings.Contains(subdomain, ".")
 }
 
 // BuildOwnershipTXTRecord builds a TXT record for ownership tracking using external-dns aligned format.

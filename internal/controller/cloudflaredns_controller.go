@@ -73,6 +73,8 @@ type HostnameConfig struct {
 	TTL int32
 	// Proxied indicates if Cloudflare proxy should be enabled (nil means use default)
 	Proxied *bool
+	// RecordType is the DNS record type (CNAME, A, AAAA); defaults to CNAME
+	RecordType string
 }
 
 // hostnameKeys extracts hostname strings from a HostnameConfig map for functions
@@ -441,8 +443,8 @@ func (r *CloudflareDNSReconciler) findAffectedDNSByGateway(ctx context.Context, 
 	return requests
 }
 
-// resolveTarget resolves the CNAME target domain.
-// Returns the target domain, the resolved tunnel (if tunnelRef), and any error.
+// resolveTarget resolves the DNS record target value.
+// Returns the target domain or IP, the resolved tunnel (if tunnelRef), and any error.
 func (r *CloudflareDNSReconciler) resolveTarget(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS) (string, *cfgatev1alpha1.CloudflareTunnel, error) {
 	// 1. Tunnel reference mode
 	if dns.Spec.TunnelRef != nil {
@@ -458,11 +460,6 @@ func (r *CloudflareDNSReconciler) resolveTarget(ctx context.Context, dns *cfgate
 
 	// 2. External target mode
 	if dns.Spec.ExternalTarget != nil {
-		if dns.Spec.ExternalTarget.Type != cfgatev1alpha1.RecordTypeCNAME {
-			log.FromContext(ctx).Info("externalTarget type not yet supported, records will be created as CNAME",
-				"configuredType", dns.Spec.ExternalTarget.Type,
-			)
-		}
 		return dns.Spec.ExternalTarget.Value, nil, nil
 	}
 
@@ -493,9 +490,15 @@ func (r *CloudflareDNSReconciler) resolveTunnel(ctx context.Context, dns *cfgate
 func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, tunnel *cfgatev1alpha1.CloudflareTunnel) (map[string]HostnameConfig, error) {
 	hostnames := make(map[string]HostnameConfig)
 
+	// Determine record type at resource level
+	recordType := "CNAME"
+	if dns.Spec.ExternalTarget != nil && dns.Spec.ExternalTarget.Type != "" {
+		recordType = string(dns.Spec.ExternalTarget.Type)
+	}
+
 	// Collect from explicit hostnames (no route-level config)
 	for _, explicit := range dns.Spec.Source.Explicit {
-		hostnames[explicit.Hostname] = HostnameConfig{}
+		hostnames[explicit.Hostname] = HostnameConfig{RecordType: recordType}
 	}
 
 	// Collect from Gateway routes if enabled
@@ -506,6 +509,7 @@ func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfg
 		}
 		// Merge route hostnames (route annotations override explicit)
 		for h, config := range routeHostnames {
+			config.RecordType = recordType
 			hostnames[h] = config
 		}
 	}
@@ -668,6 +672,11 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 	var syncedCount, pendingCount, failedCount int32
 
 	for hostname, hostnameConfig := range hostnameConfigs {
+		recordType := hostnameConfig.RecordType
+		if recordType == "" {
+			recordType = "CNAME"
+		}
+
 		// Determine zone for this hostname
 		zoneName := cloudflare.ExtractZoneFromHostname(hostname)
 		zoneID, ok := zones[zoneName]
@@ -678,7 +687,7 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			)
 			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{
 				Hostname: hostname,
-				Type:     "CNAME",
+				Type:     recordType,
 				Status:   "Failed",
 				Error:    fmt.Sprintf("zone %s not configured", zoneName),
 			})
@@ -715,7 +724,16 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 		}
 
 		comment := "managed by cfgate"
-		desired := cloudflare.BuildCNAMERecord(hostname, target, proxied, int(ttl), comment)
+		desired := cloudflare.BuildDNSRecord(hostname, target, recordType, proxied, int(ttl), comment)
+
+		// Warn on deep subdomains unless suppressed by annotation
+		if cloudflare.ValidateHostnameDepth(hostname, zoneName) {
+			if dns.Annotations[annotations.AnnotationAllowDeepSubdomains] != "true" {
+				r.Recorder.Eventf(dns, nil, corev1.EventTypeWarning, "DeepSubdomain", "Sync",
+					"hostname %s has multiple subdomain levels; Cloudflare Universal SSL may not cover it. Set annotation %s=true to suppress this warning",
+					hostname, annotations.AnnotationAllowDeepSubdomains)
+			}
+		}
 
 		// Sync record using policy
 		record, modified, err := dnsService.SyncRecordWithPolicy(ctx, zoneID, desired, ownerID, policy)
@@ -723,7 +741,7 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			logger.Error(err, "failed to sync DNS record", "hostname", hostname)
 			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{
 				Hostname: hostname,
-				Type:     "CNAME",
+				Type:     recordType,
 				Status:   "Failed",
 				Error:    err.Error(),
 			})
