@@ -114,6 +114,7 @@ type CloudflareDNSReconciler struct {
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflaretunnels,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 
 // Reconcile handles the reconciliation loop for CloudflareDNS resources.
 // It collects hostnames from routes, resolves zones, and syncs DNS records.
@@ -517,18 +518,63 @@ func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfg
 	return hostnames, nil
 }
 
+// resolveSelectedNamespaces returns the set of namespace names that match the given selector.
+// It uses union semantics: namespaces matching matchLabels (all labels must match) OR appearing
+// in matchNames are included. Reads via APIReader for consistency with uncached reads used
+// elsewhere in hostname collection.
+func (r *CloudflareDNSReconciler) resolveSelectedNamespaces(ctx context.Context, selector *cfgatev1alpha1.DNSNamespaceSelector) (map[string]bool, error) {
+	var namespaceList corev1.NamespaceList
+	if err := r.APIReader.List(ctx, &namespaceList); err != nil {
+		return nil, fmt.Errorf("failed to list namespaces: %w", err)
+	}
+
+	allowed := make(map[string]bool)
+
+	for i := range namespaceList.Items {
+		ns := &namespaceList.Items[i]
+
+		if len(selector.MatchLabels) > 0 {
+			allMatch := true
+			for k, v := range selector.MatchLabels {
+				if ns.Labels[k] != v {
+					allMatch = false
+					break
+				}
+			}
+			if allMatch {
+				allowed[ns.Name] = true
+				continue
+			}
+		}
+
+		if len(selector.MatchNames) > 0 {
+			for _, name := range selector.MatchNames {
+				if ns.Name == name {
+					allowed[ns.Name] = true
+					break
+				}
+			}
+		}
+	}
+
+	return allowed, nil
+}
+
 // collectHostnamesFromRoutes collects hostnames from HTTPRoutes that reference
 // Gateways associated with the given tunnel. Returns a map of hostname to
 // HostnameConfig with per-route annotation settings.
 func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, tunnel *cfgatev1alpha1.CloudflareTunnel) (map[string]HostnameConfig, error) {
-	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
-
 	if tunnel == nil {
 		return nil, nil
 	}
 
+	var allowedNamespaces map[string]bool
 	if dns.Spec.Source.GatewayRoutes.NamespaceSelector != nil {
-		logger.Info("namespaceSelector is not yet implemented, routes from all namespaces will be included")
+		var err error
+		allowedNamespaces, err = r.resolveSelectedNamespaces(ctx, dns.Spec.Source.GatewayRoutes.NamespaceSelector)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve namespace selector: %w", err)
+		}
 	}
 
 	hostnames := make(map[string]HostnameConfig)
@@ -566,6 +612,9 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 
 	for _, gw := range relevantGateways {
 		for _, route := range routes.Items {
+			if allowedNamespaces != nil && !allowedNamespaces[route.Namespace] {
+				continue
+			}
 			if filter := dns.Spec.Source.GatewayRoutes.AnnotationFilter; filter != "" {
 				if parts := strings.SplitN(filter, "=", 2); len(parts) == 2 {
 					if val, ok := route.Annotations[parts[0]]; !ok || val != parts[1] {
