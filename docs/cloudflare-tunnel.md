@@ -300,3 +300,16 @@ spec:
     noTLSVerify: false
     connectTimeout: "30s"
 ```
+
+## Deletion Behavior
+
+The controller adds the finalizer `cfgate.io/tunnel-cleanup` to every CloudflareTunnel resource. When the resource is deleted, the controller attempts to delete the Cloudflare tunnel and its credentials Secret before removing the finalizer.
+
+If cleanup fails, the controller blocks indefinitely and requeues every 10 seconds. It never removes the finalizer automatically. Within a 2-minute retry budget, the controller emits Warning events with reason `CleanupFailed`. After the retry budget is exhausted, subsequent events escalate to reason `CleanupBlocked`.
+
+To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate.io/deletion-policy=orphan` annotation on the CloudflareTunnel resource. The controller will leave tunnel resources in Cloudflare and remove the finalizer without attempting cleanup.
+
+```bash
+kubectl annotate cloudflaretunnel my-tunnel -n cfgate-system \
+  cfgate.io/deletion-policy=orphan
+```

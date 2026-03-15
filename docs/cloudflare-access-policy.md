@@ -567,3 +567,16 @@ spec:
       - "grpc.internal.example.com"
     ruleName: "internal-mtls"
 ```
+
+## Deletion Behavior
+
+The controller adds the finalizer `cfgate.io/access-policy-cleanup` to every CloudflareAccessPolicy resource. When the resource is deleted, the controller attempts to delete the Cloudflare Access application, revoke service tokens, and remove mTLS certificates before removing the finalizer.
+
+If cleanup fails, the controller blocks indefinitely and requeues every 15 seconds. It never removes the finalizer automatically. Within a 1-minute retry budget, the controller emits Warning events with reason `CleanupFailed`. After the retry budget is exhausted, subsequent events escalate to reason `CleanupBlocked`.
+
+To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate.io/deletion-policy=orphan` annotation on the CloudflareAccessPolicy resource. The controller will leave Access resources in Cloudflare and remove the finalizer without attempting cleanup.
+
+```bash
+kubectl annotate cfap my-policy -n cfgate-system \
+  cfgate.io/deletion-policy=orphan
+```
