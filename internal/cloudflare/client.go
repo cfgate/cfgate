@@ -387,9 +387,6 @@ type DNSRecord struct {
 
 	// ZoneID is the zone ID containing this record.
 	ZoneID string
-
-	// ZoneName is the zone name.
-	ZoneName string
 }
 
 // Zone represents a Cloudflare DNS zone.
