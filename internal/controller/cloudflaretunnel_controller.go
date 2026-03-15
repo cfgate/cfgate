@@ -659,7 +659,12 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 				}
 
 				if string(parentRef.Name) == gw.Name && parentNS == gw.Namespace {
-					routeRules := r.buildRulesFromHTTPRoute(&route)
+					routeRules, err := r.buildRulesFromHTTPRoute(&route)
+					if err != nil {
+						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
+							"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
+						break
+					}
 					rules = append(rules, routeRules...)
 					routeCount++
 				}
@@ -684,60 +689,89 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 	return rules, routeCount, nil
 }
 
-// buildRulesFromHTTPRoute builds ingress rules from an HTTPRoute.
-func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTPRoute) []cloudflare.IngressRule {
+// buildRulesFromHTTPRoute builds ingress rules from an HTTPRoute by iterating
+// all hostnames and all matches per rule. Returns an error if a rule has
+// multiple backendRefs (Cloudflare tunnel ingress is 1:1) or an unsupported
+// backend group/kind. Rules with zero backendRefs are skipped.
+func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTPRoute) ([]cloudflare.IngressRule, error) {
 	var rules []cloudflare.IngressRule
 
 	for _, hostname := range route.Spec.Hostnames {
 		for _, rule := range route.Spec.Rules {
-			// Get path from matches
-			path := ""
-			if len(rule.Matches) > 0 && rule.Matches[0].Path != nil {
-				if rule.Matches[0].Path.Value != nil {
-					path = *rule.Matches[0].Path.Value
+			if len(rule.BackendRefs) == 0 {
+				continue
+			}
+			if len(rule.BackendRefs) > 1 {
+				return nil, fmt.Errorf("route %s/%s: multiple backendRefs not supported for tunnel ingress rules",
+					route.Namespace, route.Name)
+			}
+
+			backend := rule.BackendRefs[0]
+
+			if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
+				return nil, fmt.Errorf("route %s/%s: unsupported backend group %q",
+					route.Namespace, route.Name, *backend.Group)
+			}
+			if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
+				return nil, fmt.Errorf("route %s/%s: unsupported backend kind %q",
+					route.Namespace, route.Name, *backend.Kind)
+			}
+
+			servicePort := int32(80)
+			if backend.Port != nil {
+				servicePort = int32(*backend.Port)
+			}
+
+			backendNS := route.Namespace
+			if backend.Namespace != nil && *backend.Namespace != "" {
+				backendNS = string(*backend.Namespace)
+			}
+
+			protocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
+			if protocol != "https" {
+				protocol = "http"
+			}
+
+			service := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
+				protocol, backend.Name, backendNS, servicePort)
+
+			var originRequest *cloudflare.OriginRequestConfig
+			originConfig := cloudflared.BuildOriginConfig(nil, route.Annotations)
+			if originConfig != nil {
+				originRequest = &cloudflare.OriginRequestConfig{
+					ConnectTimeout: originConfig.ConnectTimeout,
+					NoTLSVerify:    originConfig.NoTLSVerify,
+					HTTP2Origin:    originConfig.HTTP2Origin,
+					H2cOrigin:      originConfig.H2cOrigin,
+					HTTPHostHeader: originConfig.HTTPHostHeader,
 				}
 			}
 
-			// Get backend service
-			if len(rule.BackendRefs) > 0 {
-				backend := rule.BackendRefs[0]
-				servicePort := int32(80)
-				if backend.Port != nil {
-					servicePort = int32(*backend.Port)
+			if len(rule.Matches) == 0 {
+				rules = append(rules, cloudflare.IngressRule{
+					Hostname:      string(hostname),
+					Service:       service,
+					OriginRequest: originRequest,
+				})
+				continue
+			}
+
+			for _, match := range rule.Matches {
+				path := ""
+				if match.Path != nil && match.Path.Value != nil {
+					path = *match.Path.Value
 				}
-
-				protocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
-				if protocol != "https" {
-					protocol = "http"
-				}
-
-				service := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
-					protocol, backend.Name, route.Namespace, servicePort)
-
-				ingressRule := cloudflare.IngressRule{
-					Hostname: string(hostname),
-					Path:     path,
-					Service:  service,
-				}
-
-				// Apply origin config from annotations
-				originConfig := cloudflared.BuildOriginConfig(nil, route.Annotations)
-				if originConfig != nil {
-					ingressRule.OriginRequest = &cloudflare.OriginRequestConfig{
-						ConnectTimeout: originConfig.ConnectTimeout,
-						NoTLSVerify:    originConfig.NoTLSVerify,
-						HTTP2Origin:    originConfig.HTTP2Origin,
-						H2cOrigin:      originConfig.H2cOrigin,
-						HTTPHostHeader: originConfig.HTTPHostHeader,
-					}
-				}
-
-				rules = append(rules, ingressRule)
+				rules = append(rules, cloudflare.IngressRule{
+					Hostname:      string(hostname),
+					Path:          path,
+					Service:       service,
+					OriginRequest: originRequest,
+				})
 			}
 		}
 	}
 
-	return rules
+	return rules, nil
 }
 
 // reconcileDelete handles CloudflareTunnel deletion by deleting tunnel connections,
