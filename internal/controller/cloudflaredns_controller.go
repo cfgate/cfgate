@@ -41,6 +41,15 @@ const (
 
 	// dnsGatewayRoutesEnabledIndex is the field indexer key for CloudflareDNS spec.source.gatewayRoutes.enabled.
 	dnsGatewayRoutesEnabledIndex = "spec.source.gatewayRoutes.enabled"
+
+	// dnsDeletionRetryBudget is the maximum time to retry DNS record cleanup
+	// before emitting an escalated warning. After this budget, the controller
+	// keeps blocking (does not remove the finalizer). The only escape is the
+	// cfgate.io/deletion-policy=orphan annotation.
+	dnsDeletionRetryBudget = 1 * time.Minute
+
+	// dnsDeletionRequeueInterval is the requeue delay between deletion retries.
+	dnsDeletionRequeueInterval = 15 * time.Second
 )
 
 func extractDNSTunnelRefName(obj client.Object) []string {
@@ -962,8 +971,10 @@ func (r *CloudflareDNSReconciler) shouldCreateTXTRecords(dns *cfgatev1alpha1.Clo
 }
 
 // reconcileDelete handles deletion of CloudflareDNS, cleaning up DNS records
-// from Cloudflare if policy allows. Uses fallback credentials if the tunnel's
-// credentials are unavailable.
+// from Cloudflare if policy allows. Cleanup failure blocks finalizer removal
+// and requeues. Set cfgate.io/deletion-policy=orphan to skip cleanup and allow
+// deletion to proceed. Uses fallback credentials if the tunnel's credentials
+// are unavailable.
 func (r *CloudflareDNSReconciler) reconcileDelete(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
 	logger.Info("handling DNS deletion",
@@ -974,16 +985,31 @@ func (r *CloudflareDNSReconciler) reconcileDelete(ctx context.Context, dns *cfga
 		return ctrl.Result{}, nil
 	}
 
-	// Cleanup records if policy allows
+	if dns.Annotations["cfgate.io/deletion-policy"] == "orphan" {
+		logger.Info("deletion policy is orphan, skipping DNS cleanup")
+		return r.removeDNSFinalizer(ctx, dns)
+	}
+
 	// Only delete records if policy is "sync" AND CleanupPolicy.DeleteOnResourceRemoval is true (or nil, defaulting to true).
 	// upsert-only and create-only policies never delete records.
 	shouldDeleteOnResourceRemoval := dns.Spec.CleanupPolicy.DeleteOnResourceRemoval == nil || *dns.Spec.CleanupPolicy.DeleteOnResourceRemoval
 	if dns.Spec.Policy == cfgatev1alpha1.DNSPolicySync && shouldDeleteOnResourceRemoval {
 		if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
-			logger.Error(err, "failed to cleanup DNS records, records may be orphaned")
-			r.Recorder.Eventf(dns, nil, corev1.EventTypeWarning, "DNSCleanupFailed", "Cleanup",
-				"DNS cleanup failed, records may be orphaned: %v", err)
-			// Continue with finalizer removal - don't block deletion
+			retryElapsed := time.Since(dns.DeletionTimestamp.Time)
+			if retryElapsed < dnsDeletionRetryBudget {
+				logger.Error(err, "failed to cleanup DNS records, will retry",
+					"retryElapsed", retryElapsed.Round(time.Second),
+					"retryBudget", dnsDeletionRetryBudget)
+				r.Recorder.Eventf(dns, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
+					"Failed to delete DNS records: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.", err)
+				return ctrl.Result{RequeueAfter: dnsDeletionRequeueInterval}, nil
+			}
+			logger.Error(err, "retry budget exhausted, cleanup still blocked",
+				"retryElapsed", retryElapsed.Round(time.Second))
+			r.Recorder.Eventf(dns, nil, corev1.EventTypeWarning, "CleanupBlocked", "Delete",
+				"DNS record deletion blocked after %s of retries: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
+				retryElapsed.Round(time.Second), err)
+			return ctrl.Result{RequeueAfter: dnsDeletionRequeueInterval}, nil
 		}
 	} else if dns.Spec.Policy != cfgatev1alpha1.DNSPolicySync {
 		logger.Info("skipping DNS cleanup due to policy", "policy", dns.Spec.Policy)
@@ -991,13 +1017,16 @@ func (r *CloudflareDNSReconciler) reconcileDelete(ctx context.Context, dns *cfga
 		logger.Info("skipping DNS cleanup, deleteOnResourceRemoval is disabled")
 	}
 
-	// Remove finalizer using patch to reduce lock contention
+	return r.removeDNSFinalizer(ctx, dns)
+}
+
+// removeDNSFinalizer removes the DNS finalizer using a patch to reduce lock contention.
+func (r *CloudflareDNSReconciler) removeDNSFinalizer(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS) (ctrl.Result, error) {
 	patch := client.MergeFrom(dns.DeepCopy())
 	controllerutil.RemoveFinalizer(dns, dnsFinalizer)
 	if err := r.Patch(ctx, dns, patch); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
-
 	return ctrl.Result{}, nil
 }
 
