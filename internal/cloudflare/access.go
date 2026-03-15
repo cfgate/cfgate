@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -844,7 +845,10 @@ func approvalGroupsEqual(a, b []ApprovalGroupParam) bool {
 		return true
 	}
 	sortKey := func(g ApprovalGroupParam) string {
-		return fmt.Sprintf("%s:%d", g.EmailListUUID, g.ApprovalsNeeded)
+		emails := make([]string, len(g.EmailAddresses))
+		copy(emails, g.EmailAddresses)
+		slices.Sort(emails)
+		return fmt.Sprintf("%s:%d:%s", g.EmailListUUID, g.ApprovalsNeeded, strings.Join(emails, ","))
 	}
 	sa := make([]ApprovalGroupParam, len(a))
 	copy(sa, a)
