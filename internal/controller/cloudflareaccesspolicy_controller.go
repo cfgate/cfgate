@@ -48,6 +48,15 @@ const (
 
 	// accessPolicyTargetIndex is the field index key for target lookups.
 	accessPolicyTargetIndex = ".spec.targetRefs"
+
+	// accessDeletionRetryBudget is the maximum time to retry Access resource
+	// cleanup before emitting an escalated warning. After this budget, the
+	// controller keeps blocking (does not remove the finalizer). The only
+	// escape is the cfgate.io/deletion-policy=orphan annotation.
+	accessDeletionRetryBudget = 1 * time.Minute
+
+	// accessDeletionRequeueInterval is the requeue delay between deletion retries.
+	accessDeletionRequeueInterval = 15 * time.Second
 )
 
 // CloudflareAccessPolicyReconciler reconciles CloudflareAccessPolicy resources.
@@ -1119,8 +1128,9 @@ func (r *CloudflareAccessPolicyReconciler) configureMTLS(
 
 // reconcileDelete handles policy deletion cleanup.
 // It deletes the Access Application (which cascades to policies), revokes service
-// tokens, removes mTLS certificates, and removes the finalizer. Respects the
-// cfgate.io/deletion-policy annotation for orphaning resources.
+// tokens, removes mTLS certificates, and removes the finalizer. Cleanup failure
+// blocks finalizer removal and requeues. Set cfgate.io/deletion-policy=orphan
+// to skip cleanup and allow deletion to proceed.
 func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
 	ctx context.Context,
 	policy *cfgatev1alpha1.CloudflareAccessPolicy,
@@ -1141,10 +1151,10 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
 	// Get credentials for deletion
 	accessService, accountID, err := r.resolveCredentials(ctx, policy)
 	if err != nil {
-		log.Error(err, "failed to resolve credentials for deletion, removing finalizer anyway")
-		r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "CleanupSkipped", "Delete",
-			"Could not resolve credentials for cleanup: %s", err.Error())
-		return r.removeFinalizer(ctx, policy)
+		log.Error(err, "failed to resolve credentials for deletion")
+		r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
+			"Failed to resolve credentials: %s. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.", err.Error())
+		return ctrl.Result{RequeueAfter: accessDeletionRequeueInterval}, nil
 	}
 
 	// Delete Access Application (cascades to policies)
@@ -1153,14 +1163,12 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
 			"applicationId", policy.Status.ApplicationID,
 		)
 		if err := accessService.DeleteApplication(ctx, accountID, policy.Status.ApplicationID); err != nil {
-			// Log but don't block finalizer removal
 			log.Error(err, "failed to delete Access Application")
-			r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "CleanupError", "Delete",
-				"Failed to delete Access Application: %s", err.Error())
-		} else {
-			r.Recorder.Eventf(policy, nil, corev1.EventTypeNormal, "ApplicationDeleted", "Delete",
-				"Access Application %s deleted", policy.Status.ApplicationID)
+			return r.blockAccessDeletion(ctx, policy,
+				fmt.Sprintf("Failed to delete Access Application %s: %s", policy.Status.ApplicationID, err.Error()))
 		}
+		r.Recorder.Eventf(policy, nil, corev1.EventTypeNormal, "ApplicationDeleted", "Delete",
+			"Access Application %s deleted", policy.Status.ApplicationID)
 	}
 
 	// Revoke service tokens
@@ -1171,6 +1179,8 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
 		)
 		if err := r.revokeServiceToken(ctx, accessService, accountID, tokenID); err != nil {
 			log.Error(err, "failed to revoke service token", "tokenName", name)
+			return r.blockAccessDeletion(ctx, policy,
+				fmt.Sprintf("Failed to revoke service token %s (%s): %s", name, tokenID, err.Error()))
 		}
 	}
 
@@ -1181,10 +1191,32 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
 		)
 		if err := r.removeMTLSCertificate(ctx, accessService, accountID, policy.Status.MTLSRuleID); err != nil {
 			log.Error(err, "failed to remove mTLS certificate")
+			return r.blockAccessDeletion(ctx, policy,
+				fmt.Sprintf("Failed to remove mTLS certificate %s: %s", policy.Status.MTLSRuleID, err.Error()))
 		}
 	}
 
 	return r.removeFinalizer(ctx, policy)
+}
+
+// blockAccessDeletion emits a warning event and returns a requeue result that
+// blocks finalizer removal. After the retry budget, the event reason escalates
+// to CleanupBlocked.
+func (r *CloudflareAccessPolicyReconciler) blockAccessDeletion(
+	ctx context.Context,
+	policy *cfgatev1alpha1.CloudflareAccessPolicy,
+	detail string,
+) (ctrl.Result, error) {
+	retryElapsed := time.Since(policy.DeletionTimestamp.Time)
+	suffix := " Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer."
+	if retryElapsed < accessDeletionRetryBudget {
+		r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
+			"%s.%s", detail, suffix)
+	} else {
+		r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, "CleanupBlocked", "Delete",
+			"%s (blocked after %s of retries).%s", detail, retryElapsed.Round(time.Second), suffix)
+	}
+	return ctrl.Result{RequeueAfter: accessDeletionRequeueInterval}, nil
 }
 
 // revokeServiceToken revokes a service token in Cloudflare.
