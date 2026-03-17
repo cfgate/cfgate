@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 9am on monday"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["**/deployment.go"],
+      "matchStrings": [
+        "DefaultImage\\s*=\\s*\"(?<depName>[^:]+):(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["**/Dockerfile"],
+      "matchStrings": [
+        "FROM\\s+(?:--platform=\\S+\\s+)?(?<depName>[^:\\s]+):(?<currentValue>[^\\s]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group Kubernetes client libraries",
+      "matchPackagePatterns": ["^k8s\\.io/"],
+      "groupName": "kubernetes"
+    },
+    {
+      "description": "Group controller-runtime and gateway-api",
+      "matchPackagePatterns": ["^sigs\\.k8s\\.io/"],
+      "groupName": "kubernetes-sigs"
+    },
+    {
+      "description": "Group Ginkgo and Gomega",
+      "matchPackagePatterns": ["^github\\.com/onsi/"],
+      "groupName": "ginkgo"
+    },
+    {
+      "description": "Auto-merge patch updates for indirect deps",
+      "matchDepTypes": ["indirect"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    },
+    {
+      "description": "Cloudflared fork image; manual review",
+      "matchPackageNames": ["ghcr.io/inherent-design/cloudflared"],
+      "enabled": false
+    }
+  ]
+}
