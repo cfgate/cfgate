@@ -8,7 +8,7 @@ CLUSTER_NAME = "abaddon"
 GATEWAY_API_VERSION = "v1.4.1"
 
 [tools]
-go = "1.26"
+go = "1.26.2"
 "aqua:kubernetes-sigs/kind" = "0.31.0"
 "aqua:kubernetes/kubernetes/kubectl" = "1.35.0"
 "aqua:kubernetes-sigs/kustomize" = "5.8.0"
@@ -23,21 +23,39 @@ go = "1.26"
 [tasks.codegen]
 alias = ["gen"]
 description = "Generate DeepCopy and CRD manifests"
-run = "sh tasks/codegen.sh"
+run = """
+set -eu
+echo "Generating code and manifests"
+controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./..."
+controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+"""
 
 [tasks.lint]
 description = "Run golangci-lint"
-run = "sh tasks/lint.sh"
+run = """
+set -eu
+echo "Running lint"
+golangci-lint -E ginkgolinter run
+"""
 
 [tasks."lint:fix"]
 alias = ["fix"]
 description = "Run golangci-lint with auto-fix"
-run = "LINT_FIX=1 sh tasks/lint.sh"
+run = """
+set -eu
+echo "Running lint with fixes"
+golangci-lint -E ginkgolinter run --fix
+"""
 
 [tasks.format]
 alias = ["fmt"]
 description = "Format and vet code"
-run = "sh tasks/fmt.sh"
+run = """
+set -eu
+echo "Running fmt and vet"
+go fmt ./...
+go vet ./...
+"""
 
 #
 # Build
@@ -47,13 +65,59 @@ run = "sh tasks/fmt.sh"
 alias = "b"
 description = "Build manager binary"
 depends = ["codegen"]
-run = "sh tasks/build.sh"
+run = """
+set -eu
+tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+  version="${tag#v}"
+else
+  base="${tag#v}"
+  version="${base:-0.0.0}-dev+${commit}"
+fi
+if [ -n "${VERSION_SUFFIX:-}" ]; then
+  version="${version}${VERSION_SUFFIX}"
+fi
+mkdir -p bin
+echo "Building bin/manager ${version}"
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w \
+  -X main.Version=${version} \
+  -X main.Commit=${commit} \
+  -X main.BuildDate=${build_date}" \
+  -o bin/manager ./cmd/manager
+"""
 
 [tasks.manifests]
 alias = "dist"
 description = "Generate release manifests to dist/"
 depends = ["codegen"]
-run = "sh tasks/manifests.sh"
+run = """
+set -eu
+backup=""
+cleanup() {
+  if [ -n "$backup" ]; then
+    cp "$backup" config/manager/kustomization.yaml
+    rm -f "$backup"
+  fi
+}
+trap cleanup EXIT
+if [ -n "${IMAGE:-}" ]; then
+  backup="$(mktemp)"
+  cp config/manager/kustomization.yaml "$backup"
+  (cd config/manager && kustomize edit set image "controller=${IMAGE}")
+fi
+rm -rf dist
+mkdir -p dist/crds
+for f in config/crd/bases/cfgate.io_*.yaml; do
+  name="$(basename "$f" .yaml)"
+  cp "$f" "dist/crds/${name#cfgate.io_}.yaml"
+done
+cat dist/crds/*.yaml >dist/crds.yaml
+kubectl kustomize config/default >dist/install.yaml
+echo "Release manifests written to dist/"
+ls -la dist/ dist/crds/
+"""
 
 #
 # Testing
@@ -62,28 +126,204 @@ run = "sh tasks/manifests.sh"
 [tasks.test]
 alias = "t"
 description = "Run unit tests"
-run = "sh tasks/test.sh"
+run = """
+set -eu
+packages="${TEST_PKG:-./api/... ./cmd/... ./internal/...}"
+echo "Running unit tests: ${packages}"
+go test -race -count=1 ${TEST_ARGS:-} $packages
+"""
 
 [tasks."test:cover"]
 description = "Run unit tests with coverage report"
-run = "sh tasks/test-cover.sh"
+run = """
+set -eu
+packages="${TEST_PKG:-./api/... ./cmd/... ./internal/...}"
+mkdir -p out/coverage
+raw_profile="$(mktemp out/coverage/unit.raw.XXXXXX)"
+cleanup() {
+  rm -f "${raw_profile}"
+}
+trap cleanup EXIT
+echo "Running unit tests with coverage: ${packages}"
+go test -race -count=1 -covermode=atomic -coverprofile="${raw_profile}" $packages
+awk 'NR == 1 || $0 !~ /zz_generated\\.deepcopy\\.go:/' "${raw_profile}" > out/coverage/unit.coverprofile
+echo ""
+echo "Coverage summary:"
+go tool cover -func=out/coverage/unit.coverprofile | tail -1
+"""
 
 [tasks.e2e]
 description = "Run E2E tests against live Cloudflare API"
-env = { E2E_USE_EXISTING_CLUSTER = "true" }
-run = "sh tasks/e2e.sh"
+run = """
+set -eu
+export E2E_USE_EXISTING_CLUSTER="${E2E_USE_EXISTING_CLUSTER:-true}"
+restore_context_needed="false"
+current_context=""
+target_context=""
+tmp_dir=""
+focus_args=""
+print_e2e_bootstrap_paths() {
+  cat >&2 <<'EOF'
+Bootstrap one of these local paths, then rerun:
+  1. ~/production/abaddon
+     mise run 000-colima
+     mise run 001-kind
+  2. ~/production/cfgate/cfgate
+     mise run cluster:create
+EOF
+}
+require_docker_runtime() {
+  if docker info >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "Docker/Colima is not reachable for local E2E." >&2
+  print_e2e_bootstrap_paths
+  return 1
+}
+cleanup() {
+  status=$?
+  if [ -n "${tmp_dir}" ]; then
+    if [ -f "${tmp_dir}/e2e.json" ]; then
+      mv "${tmp_dir}/e2e.json" out/reports/e2e.json
+    fi
+    if [ -f "${tmp_dir}/e2e.coverprofile" ]; then
+      awk 'NR == 1 || $0 !~ /zz_generated\\.deepcopy\\.go:/' "${tmp_dir}/e2e.coverprofile" > out/coverage/e2e.coverprofile
+    fi
+    rm -rf "${tmp_dir}"
+  fi
+  if [ "${restore_context_needed}" = "true" ] && [ -n "${current_context}" ] && [ "${current_context}" != "${target_context}" ]; then
+    echo "Restoring kubectl context to ${current_context}"
+    kubectl config use-context "${current_context}" >/dev/null 2>&1 || true
+  fi
+  exit $status
+}
+trap cleanup EXIT
+if [ "$E2E_USE_EXISTING_CLUSTER" = "true" ]; then
+  target_context="kind-${CLUSTER_NAME:-abaddon}"
+  current_context="$(kubectl config current-context 2>/dev/null || true)"
+  if ! kubectl config get-contexts "$target_context" >/dev/null 2>&1; then
+    echo "Kubernetes context ${target_context} is not configured for local E2E." >&2
+    print_e2e_bootstrap_paths
+    exit 1
+  fi
+  if [ "$current_context" != "$target_context" ]; then
+    echo "Switching kubectl context: ${current_context:-<none>} -> ${target_context}"
+    kubectl config use-context "$target_context" >/dev/null
+    restore_context_needed="true"
+  fi
+  if ! kubectl --context "$target_context" --request-timeout=5s get ns >/dev/null 2>&1; then
+    echo "Kubernetes context ${target_context} is configured but not reachable." >&2
+    print_e2e_bootstrap_paths
+    exit 1
+  fi
+  echo "Running E2E tests (context: ${target_context})"
+else
+  require_docker_runtime
+  echo "Running E2E tests with suite-managed cluster lifecycle"
+fi
+mkdir -p out/coverage out/reports
+tmp_dir="$(mktemp -d out/e2e.XXXXXX)"
+if [ -n "${E2E_FOCUS:-}" ]; then
+  focus_args="--focus=${E2E_FOCUS}"
+fi
+ginkgo -vv \
+  --procs="${E2E_PROCS:-4}" \
+  --keep-going \
+  --silence-skips \
+  --poll-progress-after=15s \
+  ${focus_args:+"$focus_args"} \
+  --output-dir="${tmp_dir}" \
+  --json-report=e2e.json \
+  --cover \
+  --covermode=atomic \
+  --coverpkg=./api/...,./cmd/...,./internal/... \
+  --coverprofile=e2e.coverprofile \
+  --race \
+  ./test/e2e
+"""
 
 [tasks."e2e:filter"]
 alias = ["fe2e"]
 description = "Run E2E tests with a Ginkgo --focus filter"
 usage = 'arg "filter" help="Ginkgo --focus regex"'
-env = { E2E_USE_EXISTING_CLUSTER = "true" }
-run = "E2E_FOCUS=\"{{arg(name='filter')}}\" sh tasks/e2e.sh"
+run = """
+set -eu
+E2E_FOCUS="{{arg(name='filter')}}" mise run e2e
+"""
 
 [tasks."e2e:cleanup"]
 alias = ["clean"]
 description = "Clean up orphaned E2E test resources from Cloudflare"
 run = "go run ./cmd/cleanup"
+
+[tasks.coverage]
+alias = "cov"
+description = "Run unit and E2E coverage locally"
+run = """
+set -eu
+mise run test:cover
+mise run e2e
+"""
+
+[tasks.bench]
+description = "Run benchmark suite with memory stats"
+run = """
+set -eu
+packages="${BENCH_PKG:-./internal/cloudflare ./internal/cloudflared ./internal/controller/annotations ./internal/controller/context}"
+go test -run '^$' -bench . -benchmem $packages
+"""
+
+[tasks."profile:bench"]
+description = "Capture CPU and heap profiles for a benchmark package"
+run = """
+set -eu
+pkg="${PROFILE_PKG:-./internal/cloudflare}"
+mkdir -p out/profiles
+go test "$pkg" -run '^$' -bench . -benchmem \
+  -cpuprofile=out/profiles/bench.cpu.pb.gz \
+  -memprofile=out/profiles/bench.mem.pb.gz
+"""
+
+[tasks."profile:view"]
+description = "Open a local pprof web UI for a captured profile"
+usage = 'arg "profile" help="Path to a pprof profile file"'
+run = """
+set -eu
+go tool pprof -http=127.0.0.1:0 "{{arg(name='profile')}}"
+"""
+
+[tasks."profile:export"]
+description = "Export text and proto views for a captured profile"
+usage = 'arg "profile" help="Path to a pprof profile file"'
+run = """
+set -eu
+profile="{{arg(name='profile')}}"
+dir="$(dirname "$profile")"
+base="$(basename "$profile")"
+base="${base%.pb.gz}"
+go tool pprof -top -output "${dir}/${base}.top.txt" "$profile"
+go tool pprof -tree -output "${dir}/${base}.tree.txt" "$profile"
+go tool pprof -proto -output "${dir}/${base}.pb" "$profile"
+echo "Wrote ${dir}/${base}.top.txt"
+echo "Wrote ${dir}/${base}.tree.txt"
+echo "Wrote ${dir}/${base}.pb"
+"""
+
+[tasks.smoke]
+description = "Run a fast local smoke suite"
+run = """
+set -eu
+mise run build
+if ./bin/manager --help >/dev/null 2>&1; then
+  :
+else
+  status=$?
+  if [ "$status" -ne 1 ] && [ "$status" -ne 2 ]; then
+    exit "$status"
+  fi
+fi
+go test -count=1 ./api/... ./cmd/... ./internal/...
+"""
 
 #
 # Cluster - Local Development
@@ -92,6 +332,12 @@ run = "go run ./cmd/cleanup"
 [tasks."cluster:create"]
 description = "Create dedicated cfgate dev cluster"
 run = """
+set -eu
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker/Colima is not reachable for kind cluster creation." >&2
+  echo "Start Colima first, or use ~/production/abaddon with 'mise run 000-colima' then 'mise run 001-kind'." >&2
+  exit 1
+fi
 if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
   echo "Cluster '${CLUSTER_NAME}' already exists"
 else
@@ -125,10 +371,17 @@ kubectl apply -k config/crd
 description = "Deploy controller to current cluster"
 depends = ["codegen", "docker:build"]
 run = """
+set -eu
+backup="$(mktemp)"
+cp config/manager/kustomization.yaml "$backup"
+cleanup() {
+  cp "$backup" config/manager/kustomization.yaml
+  rm -f "$backup"
+}
+trap cleanup EXIT
 kind load docker-image ${IMG} --name ${CLUSTER_NAME}
 cd config/manager && kustomize edit set image controller=${IMG} && cd ../..
 kubectl apply -k config/default
-git checkout config/manager/kustomization.yaml 2>/dev/null || true
 """
 
 [tasks."local:undeploy"]
@@ -157,17 +410,49 @@ run = "go run ./cmd/manager"
 [tasks."docker:build"]
 alias = "db"
 description = "Build Docker image"
-run = "sh tasks/docker-build.sh"
+run = """
+set -eu
+tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+  version="${tag#v}"
+else
+  base="${tag#v}"
+  version="${base:-0.0.0}-dev+${commit}"
+fi
+if [ -n "${VERSION_SUFFIX:-}" ]; then
+  version="${version}${VERSION_SUFFIX}"
+fi
+image="${IMG:-cfgate:local}"
+echo "Building Docker image ${image}"
+docker build \
+  --build-arg VERSION="${version}" \
+  --build-arg COMMIT="${commit}" \
+  --build-arg BUILD_DATE="${build_date}" \
+  -t "${image}" .
+"""
 
 [tasks."docker:push"]
 alias = "dp"
 description = "Push Docker image to registry"
 run = """
-. tasks/version.sh
-if [ -n "$TAG" ] && [ "$(git describe --tags --exact-match 2>/dev/null)" = "$TAG" ]; then
-  docker tag ${IMG} ${REGISTRY}:${VERSION}
+set -eu
+tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+  version="${tag#v}"
+else
+  base="${tag#v}"
+  version="${base:-0.0.0}-dev+${commit}"
+fi
+if [ -n "${VERSION_SUFFIX:-}" ]; then
+  version="${version}${VERSION_SUFFIX}"
+fi
+if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+  docker tag ${IMG} ${REGISTRY}:${version}
   docker tag ${IMG} ${REGISTRY}:latest
-  docker push ${REGISTRY}:${VERSION}
+  docker push ${REGISTRY}:${version}
   docker push ${REGISTRY}:latest
 else
   docker tag ${IMG} ${REGISTRY}:dev
@@ -178,17 +463,29 @@ fi
 [tasks."docker:buildx"]
 description = "Build multi-arch image (amd64 + arm64)"
 run = """
-. tasks/version.sh
-if [ -n "$TAG" ] && [ "$(git describe --tags --exact-match 2>/dev/null)" = "$TAG" ]; then
-  TAGS="-t ${REGISTRY}:${VERSION} -t ${REGISTRY}:latest"
+set -eu
+tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+  version="${tag#v}"
 else
-  TAGS="-t ${REGISTRY}:dev"
+  base="${tag#v}"
+  version="${base:-0.0.0}-dev+${commit}"
+fi
+if [ -n "${VERSION_SUFFIX:-}" ]; then
+  version="${version}${VERSION_SUFFIX}"
+fi
+if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+  tags="-t ${REGISTRY}:${version} -t ${REGISTRY}:latest"
+else
+  tags="-t ${REGISTRY}:dev"
 fi
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg VERSION="${VERSION}" \
-  --build-arg COMMIT="${COMMIT}" \
-  --build-arg BUILD_DATE="${BUILD_DATE}" \
-  ${TAGS} \
+  --build-arg VERSION="${version}" \
+  --build-arg COMMIT="${commit}" \
+  --build-arg BUILD_DATE="${build_date}" \
+  ${tags} \
   --push .
 """

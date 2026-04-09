@@ -3,18 +3,22 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"strconv"
 
-	"github.com/spf13/viper"
+	"github.com/go-logr/logr"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Import all auth plugins for exec-entrypoint
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -23,6 +27,13 @@ import (
 	cfcloudflare "cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/controller"
 	"cfgate.io/cfgate/internal/controller/features"
+)
+
+const (
+	defaultMetricsPort = 8080
+	defaultHealthPort  = 8081
+	envMetricsPort     = "CFGATE_METRICS_PORT"
+	envHealthPort      = "CFGATE_HEALTH_PORT"
 )
 
 var (
@@ -36,156 +47,252 @@ var (
 	setupLog = ctrl.Log.WithName("setup")
 )
 
+type managerConfig struct {
+	MetricsAddr          string
+	ProbeAddr            string
+	EnableLeaderElection bool
+	SecureMetrics        bool
+	ZapOptions           zap.Options
+}
+
+type managerRuntime struct {
+	setLogger           func(logr.Logger)
+	createManager       func(managerConfig) (manager.Manager, *rest.Config, error)
+	detectFeatures      func(*rest.Config) (*features.FeatureGates, error)
+	registerControllers func(manager.Manager, *features.FeatureGates) error
+	addProbeChecks      func(manager.Manager) error
+	startManager        func(manager.Manager) error
+}
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(cfgatev1alpha1.AddToScheme(scheme))
 	utilruntime.Must(gwapiv1.Install(scheme))
 	utilruntime.Must(gwapiv1beta1.Install(scheme))
-
-	// Viper configuration
-	viper.SetEnvPrefix("CFGATE")
-	viper.AutomaticEnv()
-	viper.SetDefault("metrics.port", 8080)
-	viper.SetDefault("health.port", 8081)
 }
 
 func main() {
-	var metricsAddr string
-	var probeAddr string
-	var enableLeaderElection bool
-	var secureMetrics bool
-
-	flag.StringVar(&metricsAddr, "metrics-bind-address",
-		fmt.Sprintf(":%d", viper.GetInt("metrics.port")),
-		"The address the metrics endpoint binds to. Use :8443 for HTTPS or :8080 for HTTP.")
-	flag.StringVar(&probeAddr, "health-probe-bind-address",
-		fmt.Sprintf(":%d", viper.GetInt("health.port")),
-		"The address the probe endpoint binds to.")
-	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
-		"Enable leader election for controller manager. "+
-			"Enabling this will ensure there is only one active controller manager.")
-	flag.BoolVar(&secureMetrics, "metrics-secure", false,
-		"If set, the metrics endpoint is served securely via HTTPS.")
-	opts := zap.Options{
-		Development: false,
+	if err := run(os.Args[1:], os.Getenv, os.Stderr, defaultManagerRuntime()); err != nil {
+		setupLog.Error(err, "unable to run manager")
+		os.Exit(1)
 	}
-	opts.BindFlags(flag.CommandLine)
-	flag.Parse()
+}
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+func defaultManagerRuntime() managerRuntime {
+	return managerRuntime{
+		setLogger: func(logger logr.Logger) {
+			ctrl.SetLogger(logger)
+		},
+		createManager: func(cfg managerConfig) (manager.Manager, *rest.Config, error) {
+			kubeConfig := ctrl.GetConfigOrDie()
+			mgr, err := ctrl.NewManager(kubeConfig, buildManagerOptions(cfg))
+			if err != nil {
+				return nil, nil, fmt.Errorf("unable to start manager: %w", err)
+			}
+			return mgr, kubeConfig, nil
+		},
+		detectFeatures: func(kubeConfig *rest.Config) (*features.FeatureGates, error) {
+			dc, err := discoveryClientForConfig(kubeConfig)
+			if err != nil {
+				return nil, fmt.Errorf("unable to create discovery client: %w", err)
+			}
 
-	// Log startup configuration. Key-value pairs follow logr conventions.
+			featureGates, err := features.DetectFeatures(dc)
+			if err != nil {
+				return nil, fmt.Errorf("unable to detect feature gates: %w", err)
+			}
+			return featureGates, nil
+		},
+		registerControllers: registerControllers,
+		addProbeChecks:      addProbeChecks,
+		startManager: func(mgr manager.Manager) error {
+			if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+				return fmt.Errorf("manager stopped with error: %w", err)
+			}
+			return nil
+		},
+	}
+}
+
+func run(args []string, getenv func(string) string, stderr io.Writer, runtime managerRuntime) error {
+	cfg, err := parseManagerConfig(args, getenv, stderr)
+	if err != nil {
+		return err
+	}
+
+	runtime.setLogger(zap.New(zap.UseFlagOptions(&cfg.ZapOptions)))
+
 	setupLog.Info("starting cfgate controller manager",
 		"version", Version,
 		"commit", Commit,
 		"buildDate", BuildDate,
-		"metricsAddr", metricsAddr,
-		"healthProbeAddr", probeAddr,
-		"leaderElection", enableLeaderElection,
-		"secureMetrics", secureMetrics,
+		"metricsAddr", cfg.MetricsAddr,
+		"healthProbeAddr", cfg.ProbeAddr,
+		"leaderElection", cfg.EnableLeaderElection,
+		"secureMetrics", cfg.SecureMetrics,
 	)
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme: scheme,
-		Metrics: metricsserver.Options{
-			BindAddress:   metricsAddr,
-			SecureServing: secureMetrics,
-		},
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "cfgate.io",
-	})
+	mgr, kubeConfig, err := runtime.createManager(cfg)
 	if err != nil {
-		setupLog.Error(err, "unable to start manager")
-		os.Exit(1)
+		return err
 	}
 
-	// Detect optional Gateway API CRDs for conditional controller behavior.
-	dc, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	featureGates, err := runtime.detectFeatures(kubeConfig)
 	if err != nil {
-		setupLog.Error(err, "unable to create discovery client")
-		os.Exit(1)
-	}
-	featureGates, err := features.DetectFeatures(dc)
-	if err != nil {
-		setupLog.Error(err, "unable to detect feature gates")
-		os.Exit(1)
+		return err
 	}
 	featureGates.LogFeatures(setupLog)
 
-	// Shared credential cache for all Cloudflare-facing reconcilers.
-	credCache := cfcloudflare.NewCredentialCache(0) // 0 = default TTL
+	if err := runtime.registerControllers(mgr, featureGates); err != nil {
+		return err
+	}
 
-	if err = (&controller.CloudflareTunnelReconciler{
+	if err := runtime.addProbeChecks(mgr); err != nil {
+		return err
+	}
+
+	setupLog.Info("all controllers registered, starting manager")
+	if err := runtime.startManager(mgr); err != nil {
+		return err
+	}
+	setupLog.Info("manager shutdown complete")
+	return nil
+}
+
+func parseManagerConfig(args []string, getenv func(string) string, stderr io.Writer) (managerConfig, error) {
+	metricsPort, err := parsePortEnv(getenv, envMetricsPort, defaultMetricsPort)
+	if err != nil {
+		return managerConfig{}, err
+	}
+
+	probePort, err := parsePortEnv(getenv, envHealthPort, defaultHealthPort)
+	if err != nil {
+		return managerConfig{}, err
+	}
+
+	cfg := managerConfig{
+		MetricsAddr: fmt.Sprintf(":%d", metricsPort),
+		ProbeAddr:   fmt.Sprintf(":%d", probePort),
+		ZapOptions: zap.Options{
+			Development: false,
+		},
+	}
+
+	fs := flag.NewFlagSet("cfgate", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	fs.StringVar(&cfg.MetricsAddr, "metrics-bind-address", cfg.MetricsAddr,
+		"The address the metrics endpoint binds to. Use :8443 for HTTPS or :8080 for HTTP.")
+	fs.StringVar(&cfg.ProbeAddr, "health-probe-bind-address", cfg.ProbeAddr,
+		"The address the probe endpoint binds to.")
+	fs.BoolVar(&cfg.EnableLeaderElection, "leader-elect", false,
+		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
+	fs.BoolVar(&cfg.SecureMetrics, "metrics-secure", false,
+		"If set, the metrics endpoint is served securely via HTTPS.")
+	cfg.ZapOptions.BindFlags(fs)
+
+	if err := fs.Parse(args); err != nil {
+		return managerConfig{}, err
+	}
+
+	return cfg, nil
+}
+
+func parsePortEnv(getenv func(string) string, key string, fallback int) (int, error) {
+	value := getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+
+	port, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a valid integer: %w", key, err)
+	}
+
+	return port, nil
+}
+
+func buildManagerOptions(cfg managerConfig) ctrl.Options {
+	return ctrl.Options{
+		Scheme: scheme,
+		Metrics: metricsserver.Options{
+			BindAddress:   cfg.MetricsAddr,
+			SecureServing: cfg.SecureMetrics,
+		},
+		HealthProbeBindAddress: cfg.ProbeAddr,
+		LeaderElection:         cfg.EnableLeaderElection,
+		LeaderElectionID:       "cfgate.io",
+	}
+}
+
+func registerControllers(mgr manager.Manager, featureGates *features.FeatureGates) error {
+	credCache := cfcloudflare.NewCredentialCache(0)
+
+	if err := (&controller.CloudflareTunnelReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
 		Recorder:        mgr.GetEventRecorder("cloudflaretunnel-controller"),
 		CredentialCache: credCache,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "CloudflareTunnel")
-		os.Exit(1)
+		return fmt.Errorf("unable to create controller CloudflareTunnel: %w", err)
 	}
 
-	if err = (&controller.CloudflareDNSReconciler{
+	if err := (&controller.CloudflareDNSReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
 		Recorder:        mgr.GetEventRecorder("cloudflaredns-controller"),
 		CredentialCache: credCache,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "CloudflareDNS")
-		os.Exit(1)
+		return fmt.Errorf("unable to create controller CloudflareDNS: %w", err)
 	}
 
-	if err = (&controller.GatewayReconciler{
+	if err := (&controller.GatewayReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("gateway-controller"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Gateway")
-		os.Exit(1)
+		return fmt.Errorf("unable to create controller Gateway: %w", err)
 	}
 
-	if err = (&controller.GatewayClassReconciler{
+	if err := (&controller.GatewayClassReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "GatewayClass")
-		os.Exit(1)
+		return fmt.Errorf("unable to create controller GatewayClass: %w", err)
 	}
 
-	if err = (&controller.HTTPRouteReconciler{
+	if err := (&controller.HTTPRouteReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorder("httproute-controller"),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "HTTPRoute")
-		os.Exit(1)
+		return fmt.Errorf("unable to create controller HTTPRoute: %w", err)
 	}
 
-	if err = (&controller.CloudflareAccessPolicyReconciler{
+	if err := (&controller.CloudflareAccessPolicyReconciler{
 		Client:          mgr.GetClient(),
 		Scheme:          mgr.GetScheme(),
 		Recorder:        mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
 		FeatureGates:    featureGates,
 		CredentialCache: credCache,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "CloudflareAccessPolicy")
-		os.Exit(1)
+		return fmt.Errorf("unable to create controller CloudflareAccessPolicy: %w", err)
 	}
 
+	return nil
+}
+
+func addProbeChecks(mgr manager.Manager) error {
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up health check")
-		os.Exit(1)
-	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
-		setupLog.Error(err, "unable to set up ready check")
-		os.Exit(1)
+		return fmt.Errorf("unable to set up health check: %w", err)
 	}
 
-	setupLog.Info("all controllers registered, starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		setupLog.Error(err, "manager stopped with error")
-		os.Exit(1)
+	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
-	setupLog.Info("manager shutdown complete")
+
+	return nil
+}
+
+func discoveryClientForConfig(kubeConfig *rest.Config) (discovery.DiscoveryInterface, error) {
+	return discovery.NewDiscoveryClientForConfig(kubeConfig)
 }

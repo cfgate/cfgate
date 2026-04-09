@@ -4,6 +4,7 @@ package e2e_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -259,10 +260,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			dnsResource = waitForDNSReady(ctx, k8sClient, dnsResource.Name, namespace.Name, DefaultTimeout)
 
 			By("Verifying CREATE: record is created")
-			Eventually(func() bool {
-				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
-				return err == nil && record != nil
-			}, DefaultTimeout, DefaultInterval).Should(BeTrue())
+			recordID := waitForDNSRecordID(ctx, cfClient, zoneID, hostname, "CNAME", DefaultTimeout)
 
 			By("Deleting the CloudflareDNS resource")
 			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
@@ -270,14 +268,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 
 			By("Verifying NO DELETE: record should still exist with upsert-only policy")
 			Consistently(func() bool {
-				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
-				if err != nil {
-					// Treat transient API errors as "record still exists" to avoid
-					// flaky Consistently failures under CF rate limiting.
-					GinkgoWriter.Printf("getDNSRecordFromCloudflare: API error (treating as still-exists): %v\n", err)
-					return true
-				}
-				return record != nil
+				return dnsRecordByIDStillExists(ctx, cfClient, zoneID, recordID)
 			}, ShortTimeout, DefaultInterval).Should(BeTrue(), "Record should NOT be deleted with upsert-only policy")
 
 			// Manual cleanup for test hygiene.
@@ -288,7 +279,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			hostname := fmt.Sprintf("%s.%s", testID("createonly-policy"), testEnv.CloudflareZoneName)
 
 			By("Creating a pre-existing DNS record with different target")
-			_, err := cfClient.DNS.Records.New(ctx, dns.RecordNewParams{
+			record, err := cfClient.DNS.Records.New(ctx, dns.RecordNewParams{
 				ZoneID: cloudflare.F(zoneID),
 				Body: dns.CNAMERecordParam{
 					Name:    cloudflare.F(hostname),
@@ -299,6 +290,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 				},
 			})
 			Expect(err).NotTo(HaveOccurred())
+			recordID := record.ID
 
 			By("Creating CloudflareDNS with create-only policy")
 			dnsResource := createCloudflareDNSWithTunnelRef(ctx, k8sClient,
@@ -332,12 +324,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 
 			By("Verifying NO DELETE: record should still exist")
 			Consistently(func() bool {
-				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
-				if err != nil {
-					GinkgoWriter.Printf("getDNSRecordFromCloudflare: API error (treating as still-exists): %v\n", err)
-					return true
-				}
-				return record != nil
+				return dnsRecordByIDStillExists(ctx, cfClient, zoneID, recordID)
 			}, ShortTimeout, DefaultInterval).Should(BeTrue(), "Record should NOT be deleted with create-only policy")
 
 			// Manual cleanup.
@@ -587,10 +574,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			dnsResource = waitForDNSReady(ctx, k8sClient, dnsResource.Name, namespace.Name, DefaultTimeout)
 
 			By("Verifying record is created")
-			Eventually(func() bool {
-				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
-				return err == nil && record != nil
-			}, DefaultTimeout, DefaultInterval).Should(BeTrue())
+			recordID := waitForDNSRecordID(ctx, cfClient, zoneID, hostname, "CNAME", DefaultTimeout)
 
 			By("Deleting the CloudflareDNS resource")
 			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
@@ -598,12 +582,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 
 			By("Verifying record is NOT deleted (cleanup disabled)")
 			Consistently(func() bool {
-				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
-				if err != nil {
-					GinkgoWriter.Printf("getDNSRecordFromCloudflare: API error (treating as still-exists): %v\n", err)
-					return true
-				}
-				return record != nil
+				return dnsRecordByIDStillExists(ctx, cfClient, zoneID, recordID)
 			}, ShortTimeout, DefaultInterval).Should(BeTrue(), "Record should NOT be deleted when cleanup disabled")
 
 			// Manual cleanup.
@@ -917,6 +896,38 @@ func waitForDNSDeleted(ctx context.Context, k8sClient client.Client, name, names
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &dns)
 		return client.IgnoreNotFound(err) == nil && err != nil
 	}, timeout, DefaultInterval).Should(BeTrue(), "CloudflareDNS was not deleted")
+}
+
+// waitForDNSRecordID waits for a DNS record to exist and returns its record ID.
+func waitForDNSRecordID(ctx context.Context, cfClient *cloudflare.Client, zoneID, hostname, recordType string, timeout time.Duration) string {
+	var recordID string
+	Eventually(func(g Gomega) {
+		record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, recordType)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(record).NotTo(BeNil(), "DNS record should exist")
+		recordID = record.ID
+		g.Expect(recordID).NotTo(BeEmpty(), "DNS record should have an ID")
+	}, timeout, DefaultInterval).Should(Succeed())
+	return recordID
+}
+
+// dnsRecordByIDStillExists uses the direct record lookup API to reduce flakiness
+// from exact-name list calls under parallel E2E load.
+func dnsRecordByIDStillExists(ctx context.Context, cfClient *cloudflare.Client, zoneID, recordID string) bool {
+	for range 3 {
+		record, err := cfClient.DNS.Records.Get(ctx, recordID, dns.RecordGetParams{
+			ZoneID: cloudflare.F(zoneID),
+		})
+		if err == nil {
+			return record != nil
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return false
+		}
+		GinkgoWriter.Printf("DNS record get-by-ID error (treating as still-exists): id=%s err=%v\n", recordID, err)
+		return true
+	}
+	return false
 }
 
 // cleanupDNSRecord manually deletes a DNS record for test hygiene.

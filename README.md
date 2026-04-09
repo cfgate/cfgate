@@ -2,7 +2,7 @@
 
 [![Latest Release](https://img.shields.io/github/v/release/cfgate/cfgate?style=flat)](https://github.com/cfgate/cfgate/releases/latest) [![Image](https://img.shields.io/github/v/release/cfgate/cfgate?style=flat&label=image&logo=docker&logoColor=white&color=2496ED)](https://github.com/orgs/cfgate/packages/container/package/cfgate) [![Helm Chart](https://img.shields.io/badge/chart-GHCR-0F1689?style=flat&logo=helm&logoColor=white)](https://github.com/orgs/cfgate/packages/container/package/charts%2Fcfgate) [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/cfgate)](https://artifacthub.io/packages/container/cfgate/cfgate)
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/cfgate/cfgate/ci.yml?style=flat)](https://github.com/cfgate/cfgate/actions/workflows/ci.yml) [![Go Report Card](https://goreportcard.com/badge/github.com/cfgate/cfgate)](https://goreportcard.com/report/github.com/cfgate/cfgate) [![Go Reference](https://pkg.go.dev/badge/github.com/cfgate/cfgate.svg)](https://pkg.go.dev/cfgate.io/cfgate/)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/cfgate/cfgate/ci.yml?branch=main&style=flat)](https://github.com/cfgate/cfgate/actions/workflows/ci.yml) [![Coverage](https://codecov.io/gh/cfgate/cfgate/branch/main/graph/badge.svg)](https://codecov.io/gh/cfgate/cfgate) [![Go Report Card](https://goreportcard.com/badge/github.com/cfgate/cfgate)](https://goreportcard.com/report/github.com/cfgate/cfgate) [![Go Reference](https://pkg.go.dev/badge/github.com/cfgate/cfgate.svg)](https://pkg.go.dev/cfgate.io/cfgate/)
 
 cfgate is a Kubernetes operator that manages Cloudflare Tunnels, DNS records, and Access policies through three custom resources. It uses [Gateway API](https://gateway-api.sigs.k8s.io/), the CNCF standard replacing Ingress, so routing configuration works the same as Envoy, Istio, or Cilium. Clusters running cfgate need no public IP, no ingress controller, and no load balancer. Traffic reaches services through Cloudflare Tunnels: outbound-only connections from the cluster to Cloudflare's edge.
 
@@ -221,7 +221,7 @@ mise tasks
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup, secrets configuration, and contribution guidelines.
 
-See [docs/TESTING.md](docs/TESTING.md) for test strategy, environment variables, and test execution.
+See [docs/TESTING.md](docs/TESTING.md) for the unit-only CI coverage model, local-only E2E bootstrap paths, environment variables, and test execution.
 
 ## License
 
