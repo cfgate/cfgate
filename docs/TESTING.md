@@ -10,21 +10,15 @@ cfgate tests across two tiers: unit tests for pure functions and E2E tests again
 
 ## Unit Tests
 
-1,056 specs across 7 packages, all run with `-race`:
+Unit coverage is the primary CI coverage signal. The default unit test surface includes:
 
-| Package | Specs | What it covers |
-|---------|-------|----------------|
-| `cloudflare` | 309 | Access drift detection (20-field comparison, 14 rule types), DNS record diff, error classification |
-| `cloudflared` | 153 | ConfigMap builder (catch-all, ingress rules, annotations), Deployment builder (replicas, image, metrics) |
-| `controller` | 58 | 5 event filtering predicates (generation, deletion, annotation changes) |
-| `controller/annotations` | 171 | 14 annotation keys, ParseNamespacedName, truthy parsing, default values |
-| `controller/context` | 183 | CRD-to-controller wrappers (40 pure transformation functions) |
-| `controller/features` | 54 | Runtime CRD detection (TCPRoute, UDPRoute, GRPCRoute, ReferenceGrant) |
-| `controller/status` | 128 | MergeConditions, 3 Ready composers (Tunnel, DNS, Access), condition helpers |
+- `./api/...` for hand-written scheme registration and package initialization
+- `./cmd/...` for manager and cleanup entrypoint orchestration
+- `./internal/...` for controller helpers, annotations, status, feature detection, cloudflared builders, and Cloudflare client logic
 
 ```bash
 mise run test          # unit tests
-mise run test:cover    # unit tests with coverage (out/unit.coverprofile)
+mise run test:cover    # unit tests with coverage (out/coverage/unit.coverprofile)
 ```
 
 ## E2E Tests
@@ -87,17 +81,20 @@ mise install
 
 2. Configure secrets (see [CONTRIBUTING.md](../CONTRIBUTING.md#secrets-configuration))
 
-3. Ensure a Kubernetes cluster is available:
+3. Bootstrap a reachable local cluster. Both paths are supported equally:
 
 ```bash
-# Option A: Create a dedicated kind cluster
-mise run cluster:create
+# Path A: broader local stack bootstrap
+cd ~/production/abaddon
+mise run 000-colima
+mise run 001-kind
 
-# Option B: Use existing cluster
-export E2E_USE_EXISTING_CLUSTER=true
+# Path B: repo-local convenience helper
+cd ~/production/cfgate/cfgate
+mise run cluster:create
 ```
 
-The test suite installs CRDs and Gateway API resources automatically if not already present.
+`mise run e2e` defaults to `E2E_USE_EXISTING_CLUSTER=true`, switches to `kind-abaddon` when needed, and now fails fast if that context exists but the API server is unreachable. The test suite installs CRDs and Gateway API resources automatically if not already present.
 
 #### Run E2E Tests
 
@@ -105,12 +102,15 @@ The test suite installs CRDs and Gateway API resources automatically if not alre
 mise run e2e
 ```
 
-This runs the full suite with:
+This runs the full local suite with:
 - Ginkgo parallel execution (4 procs by default, configurable via `E2E_PROCS`)
 - Race detection enabled
-- JSON report output to `out/run.json`
-- Coverage profile to `out/coverage.out`
+- JSON report output to `out/reports/e2e.json`
+- Filtered coverage profile to `out/coverage/e2e.coverprofile`
+- Coverage instrumentation for `./api/...`, `./cmd/...`, and `./internal/...`
 - Progress polling after 15s silence
+
+E2E is intentionally local-only. The normal GitHub Actions CI workflows do not provision a cluster, do not use Cloudflare secrets, and do not upload E2E coverage to Codecov.
 
 #### Run Specific Tests
 
@@ -307,5 +307,33 @@ After running `mise run e2e`:
 
 | File | Contents |
 |------|----------|
-| `out/run.json` | Ginkgo JSON report with pass/fail per spec |
-| `out/coverage.out` | Go coverage profile |
+| `out/reports/e2e.json` | Ginkgo JSON report with pass/fail per spec |
+| `out/coverage/e2e.coverprofile` | Local E2E Go coverage profile |
+
+## Coverage
+
+Use the local aggregate task to run both unit and E2E coverage:
+
+```bash
+mise run coverage
+```
+
+Both canonical coverage profiles filter out `api/v1alpha1/zz_generated.deepcopy.go` so local `go tool cover` output matches the hand-written-code coverage contract. CI uploads only `out/coverage/unit.coverprofile` to Codecov.
+
+## Profiling
+
+Local profiling and benchmarking tasks are available through `mise`:
+
+```bash
+mise run bench
+mise run profile:bench
+mise run profile:view out/profiles/bench.cpu.pb.gz
+mise run profile:export out/profiles/bench.cpu.pb.gz
+mise run smoke
+```
+
+- `bench` runs the benchmark suite with `-benchmem`
+- `profile:bench` writes CPU and heap profiles under `out/profiles/`
+- `profile:view` launches the pprof web UI
+- `profile:export` writes `top`, `tree`, and `proto` outputs beside the selected profile
+- `smoke` runs a fast local build-plus-test sanity pass

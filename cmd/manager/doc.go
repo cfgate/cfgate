@@ -21,14 +21,12 @@
 //	-health-probe-bind-address  Address for health probes (default: :8081)
 //	-leader-elect            Enable leader election for HA deployments
 //	-metrics-secure          Serve metrics over HTTPS
-//	-enable-http2            Enable HTTP/2 for metrics and webhooks
 //	-zap-*                   Standard zap logging flags (log-level, encoder, etc.)
 //
 // Environment variables (CFGATE_ prefix) can override defaults:
 //
 //	CFGATE_METRICS_PORT    Metrics port (default: 8080)
 //	CFGATE_HEALTH_PORT     Health probe port (default: 8081)
-//	CFGATE_SYNC_PERIOD     Controller sync period (default: 5m)
 //
 // # Health Endpoints
 //
@@ -42,11 +40,11 @@
 // Build and run locally against a cluster:
 //
 //	mise run build
-//	./bin/manager --kubeconfig=$HOME/.kube/config
+//	./bin/manager
 //
 // Deploy to cluster:
 //
-//	mise run deploy
+//	mise run local:deploy
 //
 // # Logging
 //
