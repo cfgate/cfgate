@@ -26,9 +26,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: "go.mod"
+      - uses: jdx/mise-action@v4
 
       - uses: docker/setup-qemu-action@v4
       - name: Setup Blacksmith Builder
@@ -41,23 +39,23 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: version
-        run: echo "clean=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: echo "clean=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - id: channel
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           if [[ "$VERSION" == *"-alpha."* ]]; then
-            echo "level=alpha" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "level=alpha" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" == *"-beta."* ]]; then
-            echo "level=beta" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "level=beta" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" == *"-rc."* ]]; then
-            echo "level=rc" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
+            echo "level=rc" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
           else
-            echo "level=stable" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
+            echo "level=stable" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
           IS_LATEST=false
           if [[ "$VERSION" != *"-"* ]]; then
@@ -78,7 +76,10 @@ jobs:
               IS_LATEST=true
             fi
           fi
-          echo "is-latest=$IS_LATEST" >> $GITHUB_OUTPUT
+          echo "is-latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
+
+      - id: build-date
+        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - id: meta
         uses: docker/metadata-action@v6
@@ -102,6 +103,9 @@ jobs:
             org.opencontainers.image.vendor=inherent.design
             org.opencontainers.image.documentation=https://cfgate.io
 
+      - name: Generate code
+        run: mise run codegen
+
       - id: build-test
         uses: useblacksmith/build-push-action@v2
         with:
@@ -112,7 +116,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.clean }}
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.build-date.outputs.value }}
 
       - name: Smoke test
         run: docker run --rm cfgate:smoke-test --help
@@ -141,7 +145,7 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.clean }}
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+            BUILD_DATE=${{ steps.build-date.outputs.value }}
           provenance: mode=max
           sbom: true
 
@@ -152,19 +156,14 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.1
 
       - name: Sign image
         run: cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
 
-      - name: Install tools
-        run: |
-          go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.20.0
-          go install sigs.k8s.io/kustomize/kustomize/v5@latest
       - name: Generate manifests
         run: |
-          sh tasks/codegen.sh
-          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }} sh tasks/manifests.sh
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }} mise run manifests
 
       - name: Generate changelog
         id: changelog
@@ -178,7 +177,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           body: ${{ steps.changelog.outputs.content }}
-          prerelease: false
+          prerelease: ${{ steps.channel.outputs.prerelease == 'true' }}
           files: |
             dist/install.yaml
             dist/crds.yaml
@@ -188,12 +187,12 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Release Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Version: ${{ steps.version.outputs.clean }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Channel: ${{ steps.channel.outputs.level }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Latest: ${{ steps.channel.outputs.is-latest }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Digest: ${{ steps.push.outputs.digest }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Release Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: ${{ steps.version.outputs.clean }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Channel: ${{ steps.channel.outputs.level }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Latest: ${{ steps.channel.outputs.is-latest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Digest: ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: oras-project/setup-oras@v1
 

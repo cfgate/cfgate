@@ -1,7 +1,7 @@
 // Package main provides a standalone cleanup utility for orphaned E2E test resources.
 //
-// The cleanup tool scans the Cloudflare account for resources matching E2E test
-// naming patterns and deletes them. It is designed to be run before E2E test
+// The cleanup tool scans the Cloudflare account for resources matching local E2E
+// test naming patterns and deletes them. It is designed to be run before E2E
 // suites to ensure a clean environment, or after failed test runs to remove
 // orphaned resources.
 //
@@ -40,7 +40,7 @@
 //
 // Run via mise (recommended):
 //
-//	mise run cleanup
+//	mise run e2e:cleanup
 //
 // Or directly:
 //

@@ -892,36 +892,88 @@ func (r *CloudflareDNSReconciler) deleteOrphanedRecords(ctx context.Context, dns
 		if !found && prevRecord.RecordID != "" {
 			// This record was previously synced but hostname is no longer wanted
 			zoneName := cloudflare.ExtractZoneFromHostname(prevRecord.Hostname)
-			zoneID, ok := zones[zoneName]
-			if ok {
-				// Check ownership before deleting
-				existingRecord, err := dnsService.FindRecordByName(ctx, zoneID, prevRecord.Hostname, prevRecord.Type)
-				if err == nil && existingRecord != nil && cloudflare.IsOwnedByCfgate(existingRecord, ownerID) {
-					if err := dnsService.DeleteRecord(ctx, zoneID, prevRecord.RecordID); err != nil {
-						logger.Error(err, "failed to delete orphaned DNS record",
-							"hostname", prevRecord.Hostname,
-						)
-					} else {
-						logger.Info("deleted orphaned DNS record",
-							"hostname", prevRecord.Hostname,
-						)
-						r.Recorder.Eventf(dns, nil, corev1.EventTypeNormal, "RecordDeleted", "Delete", "DNS record deleted: %s", prevRecord.Hostname)
-					}
-
-					// Delete ownership TXT record if enabled
-					if r.shouldCreateTXTRecords(dns) {
-						if err := dnsService.DeleteOwnershipRecord(ctx, zoneID, prevRecord.Hostname, ownershipPrefix); err != nil {
-							logger.Error(err, "failed to delete ownership record",
-								"hostname", prevRecord.Hostname,
-							)
-						}
-					}
+			zoneID := prevRecord.ZoneID
+			if zoneID == "" {
+				var ok bool
+				zoneID, ok = zones[zoneName]
+				if !ok {
+					continue
 				}
+			}
+
+			deleted, err := r.deleteManagedStatusRecord(ctx, dns, dnsService, zoneID, prevRecord, ownerID, ownershipPrefix)
+			if err != nil {
+				logger.Error(err, "failed to delete orphaned DNS record",
+					"hostname", prevRecord.Hostname,
+					"recordID", prevRecord.RecordID,
+				)
+				continue
+			}
+			if deleted {
+				logger.Info("deleted orphaned DNS record",
+					"hostname", prevRecord.Hostname,
+					"recordID", prevRecord.RecordID,
+				)
+				r.Recorder.Eventf(dns, nil, corev1.EventTypeNormal, "RecordDeleted", "Delete", "DNS record deleted: %s", prevRecord.Hostname)
 			}
 		}
 	}
 
 	return nil
+}
+
+func (r *CloudflareDNSReconciler) deleteManagedStatusRecord(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, dnsService *cloudflare.DNSService, zoneID string, statusRecord cfgatev1alpha1.DNSRecordSyncStatus, ownerID, ownershipPrefix string) (bool, error) {
+	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
+
+	existingRecord, err := dnsService.FindRecordByName(ctx, zoneID, statusRecord.Hostname, statusRecord.Type)
+	if err != nil {
+		return false, fmt.Errorf("find current record: %w", err)
+	}
+
+	txtName := fmt.Sprintf("%s.%s", ownershipPrefix, statusRecord.Hostname)
+	txtRecord, err := dnsService.FindRecordByName(ctx, zoneID, txtName, "TXT")
+	if err != nil {
+		return false, fmt.Errorf("find ownership record: %w", err)
+	}
+	if txtRecord != nil && ownerID != "" && !cloudflare.IsOwnedByCfgate(txtRecord, ownerID) {
+		logger.Info("skipping DNS cleanup because ownership TXT belongs to a different resource",
+			"hostname", statusRecord.Hostname,
+			"recordID", statusRecord.RecordID,
+		)
+		return false, nil
+	}
+
+	if existingRecord != nil && statusRecord.RecordID != "" && existingRecord.ID != statusRecord.RecordID {
+		logger.Info("skipping DNS cleanup because record identity changed",
+			"hostname", statusRecord.Hostname,
+			"expectedRecordID", statusRecord.RecordID,
+			"currentRecordID", existingRecord.ID,
+		)
+		return false, nil
+	}
+	if existingRecord != nil && statusRecord.RecordID == "" {
+		logger.Info("skipping DNS cleanup because status record ID is missing",
+			"hostname", statusRecord.Hostname,
+			"type", statusRecord.Type,
+		)
+		return false, nil
+	}
+
+	deleted := false
+	if statusRecord.RecordID != "" {
+		if err := dnsService.DeleteRecord(ctx, zoneID, statusRecord.RecordID); err != nil {
+			return false, fmt.Errorf("delete dns record: %w", err)
+		}
+		deleted = existingRecord != nil
+	}
+
+	if r.shouldCreateTXTRecords(dns) {
+		if err := dnsService.DeleteOwnershipRecord(ctx, zoneID, statusRecord.Hostname, ownershipPrefix, ownerID); err != nil {
+			return deleted, fmt.Errorf("delete ownership record: %w", err)
+		}
+	}
+
+	return deleted, nil
 }
 
 // verifyOwnership verifies that TXT ownership records exist for all managed hostnames.
@@ -1283,7 +1335,7 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 		ownershipPrefix = dnsDefaultOwnershipPrefix
 	}
 
-	if len(dns.Spec.Zones) == 0 {
+	if len(dns.Spec.Zones) == 0 && len(dns.Status.Records) == 0 {
 		logger.Info("cleanup: no zones configured, nothing to clean", "ownerID", ownerID)
 		return nil
 	}
@@ -1296,64 +1348,135 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 	var deleteErrors []string
 	var totalDeleted int
 
-	// For each zone, find and delete managed records
-	for _, zoneConfig := range dns.Spec.Zones {
-		zoneID := zoneConfig.ID
-		if zoneID == "" {
-			zone, err := dnsService.ResolveZone(ctx, zoneConfig.Name)
-			if err != nil {
-				logger.Error(err, "failed to resolve zone for cleanup", "zone", zoneConfig.Name)
-				deleteErrors = append(deleteErrors, fmt.Sprintf("zone %s: resolve failed: %v", zoneConfig.Name, err))
+	resolveZoneID := func(zoneName string) (string, error) {
+		for _, zoneConfig := range dns.Spec.Zones {
+			if zoneConfig.Name != zoneName {
 				continue
+			}
+			if zoneConfig.ID != "" {
+				return zoneConfig.ID, nil
+			}
+			zone, err := dnsService.ResolveZone(ctx, zoneName)
+			if err != nil {
+				return "", err
 			}
 			if zone == nil {
-				logger.Info("zone not found for cleanup, skipping", "zone", zoneConfig.Name)
+				return "", fmt.Errorf("zone %s not found", zoneName)
+			}
+			return zone.ID, nil
+		}
+		if zoneName == "" {
+			return "", fmt.Errorf("zone name is empty")
+		}
+		zone, err := dnsService.ResolveZone(ctx, zoneName)
+		if err != nil {
+			return "", err
+		}
+		if zone == nil {
+			return "", fmt.Errorf("zone %s not found", zoneName)
+		}
+		return zone.ID, nil
+	}
+
+	if len(dns.Status.Records) > 0 {
+		logger.V(1).Info("cleanup: deleting records from status inventory",
+			"recordCount", len(dns.Status.Records),
+			"ownerID", ownerID,
+		)
+		for _, statusRecord := range dns.Status.Records {
+			zoneID := statusRecord.ZoneID
+			if zoneID == "" {
+				zoneName := cloudflare.ExtractZoneFromHostname(statusRecord.Hostname)
+				var err error
+				zoneID, err = resolveZoneID(zoneName)
+				if err != nil {
+					logger.Error(err, "failed to resolve zone for status-backed cleanup", "hostname", statusRecord.Hostname)
+					deleteErrors = append(deleteErrors, fmt.Sprintf("record %s: resolve failed: %v", statusRecord.Hostname, err))
+					continue
+				}
+			}
+
+			deleted, err := r.deleteManagedStatusRecord(ctx, dns, dnsService, zoneID, statusRecord, ownerID, ownershipPrefix)
+			if err != nil {
+				logger.Error(err, "failed to delete DNS record from status inventory",
+					"record", statusRecord.Hostname,
+					"recordID", statusRecord.RecordID,
+					"type", statusRecord.Type,
+				)
+				deleteErrors = append(deleteErrors, fmt.Sprintf("record %s: %v", statusRecord.Hostname, err))
 				continue
 			}
-			zoneID = zone.ID
-			logger.V(1).Info("cleanup: zone resolved", "zone", zoneConfig.Name, "zoneID", zoneID)
+			if deleted {
+				totalDeleted++
+				logger.Info("deleted DNS record",
+					"record", statusRecord.Hostname,
+					"recordID", statusRecord.RecordID,
+					"type", statusRecord.Type,
+				)
+			}
 		}
+	}
 
-		// List managed records with TXT cross-reference to prevent
-		// deleting records owned by other CloudflareDNS resources.
-		records, err := dnsService.ListManagedRecords(ctx, zoneID, ownerID, ownershipPrefix)
-		if err != nil {
-			logger.Error(err, "failed to list managed records", "zone", zoneConfig.Name)
-			deleteErrors = append(deleteErrors, fmt.Sprintf("zone %s: list failed: %v", zoneConfig.Name, err))
-			continue
-		}
+	// For each zone, find and delete managed records
+	if len(dns.Status.Records) == 0 {
+		for _, zoneConfig := range dns.Spec.Zones {
+			zoneID := zoneConfig.ID
+			if zoneID == "" {
+				zone, err := dnsService.ResolveZone(ctx, zoneConfig.Name)
+				if err != nil {
+					logger.Error(err, "failed to resolve zone for cleanup", "zone", zoneConfig.Name)
+					deleteErrors = append(deleteErrors, fmt.Sprintf("zone %s: resolve failed: %v", zoneConfig.Name, err))
+					continue
+				}
+				if zone == nil {
+					logger.Info("zone not found for cleanup, skipping", "zone", zoneConfig.Name)
+					continue
+				}
+				zoneID = zone.ID
+				logger.V(1).Info("cleanup: zone resolved", "zone", zoneConfig.Name, "zoneID", zoneID)
+			}
 
-		if len(records) == 0 {
-			logger.Info("cleanup: no managed records found in zone",
+			// List managed records with TXT cross-reference to prevent
+			// deleting records owned by other CloudflareDNS resources.
+			records, err := dnsService.ListManagedRecords(ctx, zoneID, ownerID, ownershipPrefix)
+			if err != nil {
+				logger.Error(err, "failed to list managed records", "zone", zoneConfig.Name)
+				deleteErrors = append(deleteErrors, fmt.Sprintf("zone %s: list failed: %v", zoneConfig.Name, err))
+				continue
+			}
+
+			if len(records) == 0 {
+				logger.Info("cleanup: no managed records found in zone",
+					"zone", zoneConfig.Name,
+					"ownerID", ownerID,
+				)
+				continue
+			}
+
+			logger.V(1).Info("cleanup: found managed records",
 				"zone", zoneConfig.Name,
-				"ownerID", ownerID,
+				"recordCount", len(records),
 			)
-			continue
-		}
 
-		logger.V(1).Info("cleanup: found managed records",
-			"zone", zoneConfig.Name,
-			"recordCount", len(records),
-		)
-
-		for _, record := range records {
-			// OnlyManaged nil defaults to true (only delete managed records)
-			onlyManaged := dns.Spec.CleanupPolicy.OnlyManaged == nil || *dns.Spec.CleanupPolicy.OnlyManaged
-			if cloudflare.IsOwnedByCfgate(&record, ownerID) || !onlyManaged {
-				if err := dnsService.DeleteRecord(ctx, zoneID, record.ID); err != nil {
-					logger.Error(err, "failed to delete DNS record",
-						"record", record.Name,
-						"recordID", record.ID,
-						"type", record.Type,
-					)
-					deleteErrors = append(deleteErrors, fmt.Sprintf("record %s: %v", record.Name, err))
-				} else {
-					totalDeleted++
-					logger.Info("deleted DNS record",
-						"record", record.Name,
-						"recordID", record.ID,
-						"type", record.Type,
-					)
+			for _, record := range records {
+				// OnlyManaged nil defaults to true (only delete managed records)
+				onlyManaged := dns.Spec.CleanupPolicy.OnlyManaged == nil || *dns.Spec.CleanupPolicy.OnlyManaged
+				if cloudflare.IsOwnedByCfgate(&record, ownerID) || !onlyManaged {
+					if err := dnsService.DeleteRecord(ctx, zoneID, record.ID); err != nil {
+						logger.Error(err, "failed to delete DNS record",
+							"record", record.Name,
+							"recordID", record.ID,
+							"type", record.Type,
+						)
+						deleteErrors = append(deleteErrors, fmt.Sprintf("record %s: %v", record.Name, err))
+					} else {
+						totalDeleted++
+						logger.Info("deleted DNS record",
+							"record", record.Name,
+							"recordID", record.ID,
+							"type", record.Type,
+						)
+					}
 				}
 			}
 		}

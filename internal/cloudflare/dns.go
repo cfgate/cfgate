@@ -343,22 +343,48 @@ func (s *DNSService) ListManagedRecords(ctx context.Context, zoneID, ownerID, ow
 
 	var managed []DNSRecord
 	for _, record := range records {
-		if !IsOwnedByCfgate(&record, ownerID) {
+		if ownerID == "" {
+			if !IsOwnedByCfgate(&record, ownerID) {
+				continue
+			}
+			managed = append(managed, record)
 			continue
 		}
 
-		// Cross-reference: non-TXT records matched by comment fallback need TXT
-		// verification to prevent cross-resource deletion. If a TXT ownership
-		// record exists for this hostname but belongs to a different owner, skip.
-		if ownerID != "" && ownershipPrefix != "" && isLegacyCommentOwnership(&record) {
-			if txtOwner, hasTXT := txtOwnerByHostname[record.Name]; hasTXT && txtOwner != ownerID {
-				s.log.V(1).Info("skipping record owned by different resource",
-					"record", record.Name,
-					"txtOwner", txtOwner,
-					"requestedOwner", ownerID,
-				)
+		if record.Type == "TXT" {
+			if !IsOwnedByCfgate(&record, ownerID) {
 				continue
 			}
+			managed = append(managed, record)
+			continue
+		}
+
+		if !isLegacyCommentOwnership(&record) {
+			if !IsOwnedByCfgate(&record, ownerID) {
+				continue
+			}
+			managed = append(managed, record)
+			continue
+		}
+
+		// Comment-only ownership is ambiguous in owner-scoped cleanup. Only
+		// include these records when there is a companion TXT ownership record
+		// proving the same owner.
+		txtOwner, hasTXT := txtOwnerByHostname[record.Name]
+		if !hasTXT {
+			s.log.V(1).Info("skipping comment-only managed record without companion TXT ownership",
+				"record", record.Name,
+				"requestedOwner", ownerID,
+			)
+			continue
+		}
+		if txtOwner != ownerID {
+			s.log.V(1).Info("skipping record owned by different resource",
+				"record", record.Name,
+				"txtOwner", txtOwner,
+				"requestedOwner", ownerID,
+			)
+			continue
 		}
 
 		managed = append(managed, record)
@@ -407,7 +433,7 @@ func (s *DNSService) CreateOwnershipRecord(ctx context.Context, zoneID string, p
 }
 
 // DeleteOwnershipRecord deletes the TXT record for ownership tracking.
-func (s *DNSService) DeleteOwnershipRecord(ctx context.Context, zoneID, hostname, prefix string) error {
+func (s *DNSService) DeleteOwnershipRecord(ctx context.Context, zoneID, hostname, prefix, ownerID string) error {
 	txtName := fmt.Sprintf("%s.%s", prefix, hostname)
 	record, err := s.FindRecordByName(ctx, zoneID, txtName, "TXT")
 	if err != nil {
@@ -416,6 +442,13 @@ func (s *DNSService) DeleteOwnershipRecord(ctx context.Context, zoneID, hostname
 
 	if record == nil {
 		return nil // Already deleted
+	}
+	if ownerID != "" && !IsOwnedByCfgate(record, ownerID) {
+		s.log.V(1).Info("skipping ownership record delete for different owner",
+			"hostname", hostname,
+			"requestedOwner", ownerID,
+		)
+		return nil
 	}
 
 	return s.DeleteRecord(ctx, zoneID, record.ID)

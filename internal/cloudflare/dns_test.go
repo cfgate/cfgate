@@ -1,12 +1,14 @@
 package cloudflare
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"testing"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/shared"
+	"github.com/go-logr/logr"
 )
 
 func TestRecordsMatch(t *testing.T) {
@@ -505,6 +507,152 @@ func TestParseOwnershipRecord(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestListManagedRecords(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("skips comment-only record without companion txt in owner scoped cleanup", func(t *testing.T) {
+		mock := NewMockClient()
+		mock.ListDNSRecordsFunc = func(context.Context, string) ([]DNSRecord, error) {
+			return []DNSRecord{{
+				ID:      "record-1",
+				Name:    "app.example.com",
+				Type:    "CNAME",
+				Content: "target.example.com",
+				Comment: "managed by cfgate",
+			}}, nil
+		}
+
+		records, err := NewDNSService(mock, logrDiscard()).ListManagedRecords(ctx, "zone-1", "default/dns", "_cfgate")
+		if err != nil {
+			t.Fatalf("ListManagedRecords() error = %v", err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("ListManagedRecords() = %#v, want no owner-scoped records", records)
+		}
+	})
+
+	t.Run("includes comment-only record with matching companion txt", func(t *testing.T) {
+		mock := NewMockClient()
+		mock.ListDNSRecordsFunc = func(context.Context, string) ([]DNSRecord, error) {
+			return []DNSRecord{
+				{
+					ID:      "record-1",
+					Name:    "app.example.com",
+					Type:    "CNAME",
+					Content: "target.example.com",
+					Comment: "managed by cfgate",
+				},
+				{
+					ID:      "txt-1",
+					Name:    "_cfgate.app.example.com",
+					Type:    "TXT",
+					Content: "heritage=cfgate,cfgate/owner=default/dns,cfgate/resource=CloudflareDNS/default/dns",
+					Comment: "cfgate ownership record",
+				},
+			}, nil
+		}
+
+		records, err := NewDNSService(mock, logrDiscard()).ListManagedRecords(ctx, "zone-1", "default/dns", "_cfgate")
+		if err != nil {
+			t.Fatalf("ListManagedRecords() error = %v", err)
+		}
+		if len(records) != 2 {
+			t.Fatalf("len(ListManagedRecords()) = %d, want 2", len(records))
+		}
+	})
+
+	t.Run("skips comment-only record with different companion txt owner", func(t *testing.T) {
+		mock := NewMockClient()
+		mock.ListDNSRecordsFunc = func(context.Context, string) ([]DNSRecord, error) {
+			return []DNSRecord{
+				{
+					ID:      "record-1",
+					Name:    "app.example.com",
+					Type:    "CNAME",
+					Content: "target.example.com",
+					Comment: "managed by cfgate",
+				},
+				{
+					ID:      "txt-1",
+					Name:    "_cfgate.app.example.com",
+					Type:    "TXT",
+					Content: "heritage=cfgate,cfgate/owner=default/other,cfgate/resource=CloudflareDNS/default/other",
+					Comment: "cfgate ownership record",
+				},
+			}, nil
+		}
+
+		records, err := NewDNSService(mock, logrDiscard()).ListManagedRecords(ctx, "zone-1", "default/dns", "_cfgate")
+		if err != nil {
+			t.Fatalf("ListManagedRecords() error = %v", err)
+		}
+		if len(records) != 0 {
+			t.Fatalf("ListManagedRecords() = %#v, want no matching records", records)
+		}
+	})
+}
+
+func TestDeleteOwnershipRecord(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("deletes matching ownership record", func(t *testing.T) {
+		mock := NewMockClient()
+		deleted := ""
+		mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, _, name, recordType string) ([]DNSRecord, error) {
+			if name != "_cfgate.app.example.com" || recordType != "TXT" {
+				t.Fatalf("lookup = (%q, %q), want ownership TXT lookup", name, recordType)
+			}
+			return []DNSRecord{{
+				ID:      "txt-1",
+				Name:    name,
+				Type:    "TXT",
+				Content: "heritage=cfgate,cfgate/owner=default/dns,cfgate/resource=CloudflareDNS/default/dns",
+				Comment: "cfgate ownership record",
+			}}, nil
+		}
+		mock.DeleteDNSRecordFunc = func(_ context.Context, _, recordID string) error {
+			deleted = recordID
+			return nil
+		}
+
+		if err := NewDNSService(mock, logrDiscard()).DeleteOwnershipRecord(ctx, "zone-1", "app.example.com", "_cfgate", "default/dns"); err != nil {
+			t.Fatalf("DeleteOwnershipRecord() error = %v", err)
+		}
+		if deleted != "txt-1" {
+			t.Fatalf("deleted record ID = %q, want %q", deleted, "txt-1")
+		}
+	})
+
+	t.Run("skips ownership record for different owner", func(t *testing.T) {
+		mock := NewMockClient()
+		deleted := false
+		mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, _, _, _ string) ([]DNSRecord, error) {
+			return []DNSRecord{{
+				ID:      "txt-1",
+				Name:    "_cfgate.app.example.com",
+				Type:    "TXT",
+				Content: "heritage=cfgate,cfgate/owner=default/other,cfgate/resource=CloudflareDNS/default/other",
+				Comment: "cfgate ownership record",
+			}}, nil
+		}
+		mock.DeleteDNSRecordFunc = func(context.Context, string, string) error {
+			deleted = true
+			return nil
+		}
+
+		if err := NewDNSService(mock, logrDiscard()).DeleteOwnershipRecord(ctx, "zone-1", "app.example.com", "_cfgate", "default/dns"); err != nil {
+			t.Fatalf("DeleteOwnershipRecord() error = %v", err)
+		}
+		if deleted {
+			t.Fatal("DeleteOwnershipRecord() deleted record for different owner")
+		}
+	})
+}
+
+func logrDiscard() logr.Logger {
+	return logr.Discard()
 }
 
 func cfError(statusCode int, codes ...int64) error {

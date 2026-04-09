@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- [Go 1.25+](https://go.dev/dl/)
+- [Go 1.26.2](https://go.dev/dl/)
 - [mise](https://mise.jdx.dev/) (task runner and tool manager)
 - [Docker](https://docs.docker.com/get-docker/) (container builds and kind clusters)
 - [sops](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (secrets management)
@@ -32,9 +32,15 @@ mise run lint
 | `manifests` | `dist` | Generate release manifests to `dist/` |
 | `test` | `t` | Run unit tests |
 | `test:cover` | *none* | Run unit tests with coverage report |
-| `e2e` | *none* | Run E2E tests against live Cloudflare API |
+| `e2e` | *none* | Run local E2E tests against live Cloudflare API |
 | `e2e:filter` | `fe2e` | Run E2E tests with a Ginkgo `--focus` filter |
 | `e2e:cleanup` | `clean` | Clean orphaned E2E resources from Cloudflare |
+| `coverage` | `cov` | Run local unit coverage plus local E2E coverage |
+| `bench` | *none* | Run benchmark suite with allocation stats |
+| `profile:bench` | *none* | Capture CPU and heap profiles for a benchmark package |
+| `profile:view` | *none* | Open the pprof web UI for a captured profile |
+| `profile:export` | *none* | Export text and proto views for a captured profile |
+| `smoke` | *none* | Run a fast local smoke suite |
 | `cluster:create` | *none* | Create dedicated cfgate dev cluster |
 | `cluster:delete` | *none* | Delete cfgate dev cluster |
 | `cluster:status` | *none* | Check cfgate dev cluster status |
@@ -124,22 +130,43 @@ See [docs/TESTING.md](docs/TESTING.md) for the full testing guide.
 ```bash
 mise run test              # unit tests
 mise run test:cover        # unit tests with coverage
-mise run cluster:create    # required for E2E
-mise run e2e               # E2E against live Cloudflare API
+mise run coverage          # local unit + E2E coverage aggregate
+mise run cluster:create    # repo-local helper for a dedicated kind cluster
+mise run e2e               # local E2E against live Cloudflare API
 mise run e2e:cleanup       # clean orphaned E2E resources
+mise run bench             # benchmark suite
+mise run smoke             # fast local sanity check
 ```
+
+E2E is local-only. Normal GitHub Actions CI runs lint, unit tests, build validation, and unit coverage. It does not provision a cluster or run Cloudflare-backed E2E.
+
+Two local bootstrap paths are first-class:
+
+```bash
+# Path A: broader local stack bootstrap
+cd ~/production/abaddon
+mise run 000-colima
+mise run 001-kind
+
+# Path B: repo-local convenience helper
+cd ~/production/cfgate/cfgate
+mise run cluster:create
+```
+
+`mise run e2e` defaults to `E2E_USE_EXISTING_CLUSTER=true` and expects a reachable `kind-abaddon` context, not just a kubeconfig entry with that name.
 
 ## Development Workflow
 
 ### Making Changes
 
-1. Create a feature branch from `dev`
+1. Create a feature branch from `main`
 2. Make changes
 3. Regenerate CRDs if types changed: `mise run codegen`
 4. Lint: `mise run lint`
 5. Build: `mise run build`
-6. Test: `mise run e2e`
-7. Submit PR against `dev`
+6. Test: `mise run test`
+7. Run local E2E when your change touches reconciler or Cloudflare behavior: `mise run e2e`
+8. Submit PR against `main`
 
 ### CRD Changes
 
