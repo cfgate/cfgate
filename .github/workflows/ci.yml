@@ -39,8 +39,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # dev intentionally runs a cheaper pre-main signal: lint + unit coverage only.
+  # test/build remain main and PR-only.
   lint:
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     steps:
@@ -70,6 +72,8 @@ jobs:
       - run: IMG=cfgate:ci mise run docker:build
 
   coverage:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    needs: lint
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
     steps:
