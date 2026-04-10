@@ -12,7 +12,6 @@ spec:
       name: cloudflare-credentials
   cloudflared:
     replicas: 2
-    image: cloudflare/cloudflared:2025.4.0
     protocol: auto
     resources:
       requests:
