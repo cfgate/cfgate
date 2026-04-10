@@ -31,9 +31,6 @@ on:
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
-env:
-  MISE_NO_ENV: "1"
-
 permissions:
   contents: read
 
