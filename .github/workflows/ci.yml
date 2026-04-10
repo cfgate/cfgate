@@ -16,7 +16,7 @@ on:
       - ".golangci.yml"
       - ".github/workflows/ci.yml"
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - "cmd/**"
       - "api/**"
@@ -39,8 +39,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # dev intentionally runs a cheaper pre-main signal: lint + unit coverage only.
-  # test/build remain main and PR-only.
+  # Pushes to dev intentionally run a cheaper pre-main signal: lint + unit coverage only.
+  # Pull requests still run full CI.
   lint:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     runs-on: blacksmith-4vcpu-ubuntu-2404
