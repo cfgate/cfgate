@@ -312,14 +312,7 @@ description = "Run a fast local smoke suite"
 run = """
 set -eu
 mise run build
-if ./bin/manager --help >/dev/null 2>&1; then
-  :
-else
-  status=$?
-  if [ "$status" -ne 1 ] && [ "$status" -ne 2 ]; then
-    exit "$status"
-  fi
-fi
+./bin/manager --help >/dev/null 2>&1
 go test -count=1 ./api/... ./cmd/... ./internal/...
 """
 

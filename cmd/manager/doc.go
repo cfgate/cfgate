@@ -42,6 +42,14 @@
 //	mise run build
 //	./bin/manager
 //
+// # Exit Codes
+//
+// The manager uses a small POSIX-style exit code contract:
+//
+//	0    Successful execution, including explicit -h/--help requests
+//	2    Invalid flags or invalid CFGATE_* configuration
+//	1    Runtime failures after configuration parsing succeeds
+//
 // Deploy to cluster:
 //
 //	mise run local:deploy

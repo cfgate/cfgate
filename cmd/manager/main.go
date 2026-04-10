@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -34,6 +35,9 @@ const (
 	defaultHealthPort  = 8081
 	envMetricsPort     = "CFGATE_METRICS_PORT"
 	envHealthPort      = "CFGATE_HEALTH_PORT"
+	exitCodeSuccess    = 0
+	exitCodeRuntime    = 1
+	exitCodeUsage      = 2
 )
 
 var (
@@ -64,6 +68,23 @@ type managerRuntime struct {
 	startManager        func(manager.Manager) error
 }
 
+type cliExitError struct {
+	code    int
+	err     error
+	printed bool
+}
+
+func (e cliExitError) Error() string {
+	if e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e cliExitError) Unwrap() error {
+	return e.err
+}
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(cfgatev1alpha1.AddToScheme(scheme))
@@ -72,10 +93,7 @@ func init() {
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Getenv, os.Stderr, defaultManagerRuntime()); err != nil {
-		setupLog.Error(err, "unable to run manager")
-		os.Exit(1)
-	}
+	os.Exit(execute(os.Args[1:], os.Getenv, os.Stderr, defaultManagerRuntime()))
 }
 
 func defaultManagerRuntime() managerRuntime {
@@ -159,15 +177,36 @@ func run(args []string, getenv func(string) string, stderr io.Writer, runtime ma
 	return nil
 }
 
+func execute(args []string, getenv func(string) string, stderr io.Writer, runtime managerRuntime) int {
+	err := run(args, getenv, stderr, runtime)
+	if err == nil {
+		return exitCodeSuccess
+	}
+
+	var cliErr cliExitError
+	if errors.As(err, &cliErr) {
+		if cliErr.code == exitCodeSuccess {
+			return exitCodeSuccess
+		}
+		if cliErr.err != nil && !cliErr.printed {
+			_, _ = fmt.Fprintln(stderr, cliErr.err)
+		}
+		return cliErr.code
+	}
+
+	setupLog.Error(err, "unable to run manager")
+	return exitCodeRuntime
+}
+
 func parseManagerConfig(args []string, getenv func(string) string, stderr io.Writer) (managerConfig, error) {
 	metricsPort, err := parsePortEnv(getenv, envMetricsPort, defaultMetricsPort)
 	if err != nil {
-		return managerConfig{}, err
+		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
 	}
 
 	probePort, err := parsePortEnv(getenv, envHealthPort, defaultHealthPort)
 	if err != nil {
-		return managerConfig{}, err
+		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
 	}
 
 	cfg := managerConfig{
@@ -191,7 +230,10 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 	cfg.ZapOptions.BindFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
-		return managerConfig{}, err
+		if errors.Is(err, flag.ErrHelp) {
+			return managerConfig{}, cliExitError{code: exitCodeSuccess, err: err, printed: true}
+		}
+		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err, printed: true}
 	}
 
 	return cfg, nil
