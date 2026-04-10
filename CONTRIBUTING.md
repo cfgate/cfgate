@@ -238,7 +238,7 @@ For contributor PRs, the maintainer squash-merges with a clean conventional subj
 
 ## Changelog
 
-Release notes are generated via [git-cliff](https://git-cliff.org/) from commit history. Configuration is in `cliff.toml`. Do not edit CHANGELOG.md manually. Tagged releases regenerate `CHANGELOG.md` and commit the updated file back to `main` from the release workflow.
+Release notes are generated via [git-cliff](https://git-cliff.org/) from commit history. Configuration is in `cliff.toml`. Do not edit `CHANGELOG.md` manually; regenerate it locally with `git-cliff` when you need to refresh the repo changelog.
 
 ## Code Style
 
