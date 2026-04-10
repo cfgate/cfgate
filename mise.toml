@@ -248,6 +248,22 @@ set -eu
 E2E_FOCUS="{{arg(name='filter')}}" mise run e2e
 """
 
+[tasks."e2e:preflight"]
+hide = true
+description = "Validate release E2E secrets"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
+run = """
+set -eu
+required_vars="CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_NAME CLOUDFLARE_IDP_ID CLOUDFLARE_TEST_EMAIL CLOUDFLARE_TEST_GROUP"
+for var in $required_vars; do
+  if [ -z "${!var:-}" ]; then
+    echo "${var} is required for release E2E" >&2
+    exit 1
+  fi
+done
+echo "Release E2E secret preflight passed"
+"""
+
 [tasks."e2e:cleanup"]
 alias = ["clean"]
 description = "Clean up orphaned E2E test resources from Cloudflare"
