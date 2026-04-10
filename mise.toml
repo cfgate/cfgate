@@ -2,10 +2,6 @@
 
 [env]
 _.file = ".env"
-IMG = "cfgate:local"
-REGISTRY = "ghcr.io/cfgate/cfgate"
-CLUSTER_NAME = "abaddon"
-GATEWAY_API_VERSION = "v1.4.1"
 
 [tools]
 go = "1.26.2"
@@ -335,27 +331,36 @@ go test -count=1 ./api/... ./cmd/... ./internal/...
 description = "Create dedicated cfgate dev cluster"
 run = """
 set -eu
+cluster_name="${CLUSTER_NAME:-abaddon}"
 if ! docker info >/dev/null 2>&1; then
   echo "Docker/Colima is not reachable for kind cluster creation." >&2
   echo "Start Colima first, or use ~/production/abaddon with 'mise run 000-colima' then 'mise run 001-kind'." >&2
   exit 1
 fi
-if kind get clusters 2>/dev/null | grep -qx "${CLUSTER_NAME}"; then
-  echo "Cluster '${CLUSTER_NAME}' already exists"
+if kind get clusters 2>/dev/null | grep -qx "${cluster_name}"; then
+  echo "Cluster '${cluster_name}' already exists"
 else
-  kind create cluster --name "${CLUSTER_NAME}" --wait 5m
+  kind create cluster --name "${cluster_name}" --wait 5m
 fi
-kubectl config use-context "kind-${CLUSTER_NAME}"
+kubectl config use-context "kind-${cluster_name}"
 kubectl cluster-info
 """
 
 [tasks."cluster:delete"]
 description = "Delete cfgate dev cluster"
-run = "kind delete cluster --name ${CLUSTER_NAME}"
+run = """
+set -eu
+cluster_name="${CLUSTER_NAME:-abaddon}"
+kind delete cluster --name "${cluster_name}"
+"""
 
 [tasks."cluster:status"]
 description = "Check cfgate dev cluster status"
-run = "kind get clusters | grep -qx ${CLUSTER_NAME} && kubectl --context kind-${CLUSTER_NAME} get nodes || echo '${CLUSTER_NAME} cluster not found'"
+run = """
+set -eu
+cluster_name="${CLUSTER_NAME:-abaddon}"
+kind get clusters | grep -qx "${cluster_name}" && kubectl --context "kind-${cluster_name}" get nodes || echo "${cluster_name} cluster not found"
+"""
 
 #
 # Deploy - Local Development
@@ -365,7 +370,9 @@ run = "kind get clusters | grep -qx ${CLUSTER_NAME} && kubectl --context kind-${
 description = "Install Gateway API and cfgate CRDs"
 depends = ["codegen"]
 run = """
-kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml"
+set -eu
+gateway_api_version="${GATEWAY_API_VERSION:-v1.4.1}"
+kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${gateway_api_version}/standard-install.yaml"
 kubectl apply -k config/crd
 """
 
@@ -374,6 +381,8 @@ description = "Deploy controller to current cluster"
 depends = ["codegen", "docker:build"]
 run = """
 set -eu
+image="${IMG:-cfgate:local}"
+cluster_name="${CLUSTER_NAME:-abaddon}"
 backup="$(mktemp)"
 cp config/manager/kustomization.yaml "$backup"
 cleanup() {
@@ -381,8 +390,8 @@ cleanup() {
   rm -f "$backup"
 }
 trap cleanup EXIT
-kind load docker-image ${IMG} --name ${CLUSTER_NAME}
-cd config/manager && kustomize edit set image controller=${IMG} && cd ../..
+kind load docker-image "${image}" --name "${cluster_name}"
+cd config/manager && kustomize edit set image "controller=${image}" && cd ../..
 kubectl apply -k config/default
 """
 
@@ -393,8 +402,10 @@ run = "kubectl delete -k config/default --ignore-not-found"
 [tasks."local:uninstall"]
 description = "Uninstall CRDs from current cluster"
 run = """
+set -eu
+gateway_api_version="${GATEWAY_API_VERSION:-v1.4.1}"
 kubectl delete -k config/crd --ignore-not-found
-kubectl delete -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml" --ignore-not-found 2>/dev/null || true
+kubectl delete -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${gateway_api_version}/standard-install.yaml" --ignore-not-found 2>/dev/null || true
 """
 
 #
@@ -440,6 +451,8 @@ alias = "dp"
 description = "Push Docker image to registry"
 run = """
 set -eu
+image="${IMG:-cfgate:local}"
+registry="${REGISTRY:-ghcr.io/cfgate/cfgate}"
 tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
@@ -452,13 +465,13 @@ if [ -n "${VERSION_SUFFIX:-}" ]; then
   version="${version}${VERSION_SUFFIX}"
 fi
 if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
-  docker tag ${IMG} ${REGISTRY}:${version}
-  docker tag ${IMG} ${REGISTRY}:latest
-  docker push ${REGISTRY}:${version}
-  docker push ${REGISTRY}:latest
+  docker tag "${image}" "${registry}:${version}"
+  docker tag "${image}" "${registry}:latest"
+  docker push "${registry}:${version}"
+  docker push "${registry}:latest"
 else
-  docker tag ${IMG} ${REGISTRY}:dev
-  docker push ${REGISTRY}:dev
+  docker tag "${image}" "${registry}:dev"
+  docker push "${registry}:dev"
 fi
 """
 
@@ -466,6 +479,7 @@ fi
 description = "Build multi-arch image (amd64 + arm64)"
 run = """
 set -eu
+registry="${REGISTRY:-ghcr.io/cfgate/cfgate}"
 tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
 commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -479,9 +493,9 @@ if [ -n "${VERSION_SUFFIX:-}" ]; then
   version="${version}${VERSION_SUFFIX}"
 fi
 if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
-  tags="-t ${REGISTRY}:${version} -t ${REGISTRY}:latest"
+  tags="-t ${registry}:${version} -t ${registry}:latest"
 else
-  tags="-t ${REGISTRY}:dev"
+  tags="-t ${registry}:dev"
 fi
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
