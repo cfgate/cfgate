@@ -103,14 +103,16 @@ jobs:
           else
             HAS_STABLE=false
             HAS_BETA=false
+            HAS_RC=false
             for tag in $(git tag -l 'v*' | grep -v "^${GITHUB_REF_NAME}$"); do
               v="${tag#v}"
               [[ "$v" != *"-"* ]] && HAS_STABLE=true
-              [[ "$v" == *"-beta."* || "$v" == *"-rc."* ]] && HAS_BETA=true
+              [[ "$v" == *"-beta."* ]] && HAS_BETA=true
+              [[ "$v" == *"-rc."* ]] && HAS_RC=true
             done
-            if [[ "$VERSION" == *"-alpha."* && "$HAS_BETA" == "false" && "$HAS_STABLE" == "false" ]]; then
+            if [[ "$VERSION" == *"-alpha."* && "$HAS_BETA" == "false" && "$HAS_RC" == "false" && "$HAS_STABLE" == "false" ]]; then
               IS_LATEST=true
-            elif [[ "$VERSION" == *"-beta."* && "$HAS_STABLE" == "false" ]]; then
+            elif [[ "$VERSION" == *"-beta."* && "$HAS_STABLE" == "false" && "$HAS_RC" == "false" ]]; then
               IS_LATEST=true
             elif [[ "$VERSION" == *"-rc."* && "$HAS_STABLE" == "false" ]]; then
               IS_LATEST=true
@@ -214,26 +216,9 @@ jobs:
         env:
           GITHUB_REPO: ${{ github.repository }}
 
-      - name: Generate full changelog
-        uses: orhun/git-cliff-action@v4
-        with:
-          config: cliff.toml
-          args: --output CHANGELOG.md
-        env:
-          GITHUB_REPO: ${{ github.repository }}
-
-      - name: Commit changelog to main
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout main
-          git add CHANGELOG.md
-          git diff --cached --quiet || git commit -m "chore: update changelog for ${{ steps.version.outputs.clean }}"
-          git push origin main
-
       - uses: softprops/action-gh-release@v2
         with:
-          body_path: ${{ steps.changelog.outputs.changelog }}
+          body: ${{ steps.changelog.outputs.content }}
           prerelease: ${{ steps.channel.outputs.prerelease == 'true' }}
           files: |
             dist/install.yaml
