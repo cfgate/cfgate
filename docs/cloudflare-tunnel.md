@@ -106,7 +106,6 @@ Controls the cloudflared daemon Deployment. The controller creates a Deployment 
 spec:
   cloudflared:
     replicas: 3
-    image: cloudflare/cloudflared:2026.3.0
     imagePullPolicy: IfNotPresent
     protocol: quic
     resources:
@@ -256,7 +255,6 @@ spec:
       apiToken: CF_TOKEN
   cloudflared:
     replicas: 3
-    image: cloudflare/cloudflared:2026.3.0
     protocol: quic
     resources:
       requests:

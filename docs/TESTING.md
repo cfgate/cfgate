@@ -219,7 +219,7 @@ Eventually(func() error {
     if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(tunnel), &current); err != nil {
         return err
     }
-    current.Spec.Cloudflared.Image = "cloudflare/cloudflared:2025.1.0"
+    current.Spec.Cloudflared.Image = "cloudflare/cloudflared:2026.3.0"
     return k8sClient.Update(ctx, &current)
 }, DefaultTimeout, DefaultInterval).Should(Succeed())
 ```
