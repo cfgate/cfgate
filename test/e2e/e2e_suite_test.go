@@ -58,6 +58,9 @@ const (
 	EnvSkipCleanup         = "E2E_SKIP_CLEANUP"
 	EnvUseExistingCluster  = "E2E_USE_EXISTING_CLUSTER"
 	EnvKubeconfig          = "KUBECONFIG"
+
+	e2eFallbackCredentialsNamespace = "cfgate-e2e-system"
+	e2eFallbackCredentialsSecret    = "cloudflare-credentials"
 )
 
 var (
@@ -178,6 +181,9 @@ var _ = SynchronizedBeforeSuite(
 
 		// Install CRDs.
 		installCRDs()
+
+		// Create suite-scoped fallback credentials used during namespace teardown.
+		ensureFallbackCredentialsSecret()
 
 		// Start controller manager in-process (Process 1 only).
 		By("Starting controller manager in-process")
@@ -350,22 +356,55 @@ func cleanOrphanedTestNamespaces() {
 		return
 	}
 
-	// Delete namespaces and let the running controller process finalizers.
 	for _, ns := range nsList.Items {
-		if err := k8sClient.Delete(ctx, &ns); err != nil && !apierrors.IsNotFound(err) {
-			GinkgoWriter.Printf("Warning: failed to delete namespace %s: %v\n", ns.Name, err)
-		}
+		deleteTestNamespace(ns.DeepCopy())
+	}
+}
+
+func ensureFallbackCredentialsSecret() {
+	if testEnv == nil || testEnv.CloudflareAPIToken == "" {
+		return
 	}
 
-	// Wait for namespaces to terminate (controller processes finalizers during this wait).
-	for _, ns := range nsList.Items {
-		Eventually(func() bool {
-			var check corev1.Namespace
-			err := k8sClient.Get(ctx, client.ObjectKey{Name: ns.Name}, &check)
-			return apierrors.IsNotFound(err)
-		}, 60*time.Second, 1*time.Second).Should(BeTrue(),
-			"Namespace %s did not terminate", ns.Name)
+	fallbackNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: e2eFallbackCredentialsNamespace,
+		},
 	}
+	if err := k8sClient.Create(ctx, fallbackNS); err != nil && !apierrors.IsAlreadyExists(err) {
+		Expect(err).NotTo(HaveOccurred(), "failed to create fallback credentials namespace")
+	}
+
+	secretKey := client.ObjectKey{
+		Name:      e2eFallbackCredentialsSecret,
+		Namespace: e2eFallbackCredentialsNamespace,
+	}
+	var existing corev1.Secret
+	err := k8sClient.Get(ctx, secretKey, &existing)
+	if apierrors.IsNotFound(err) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      e2eFallbackCredentialsSecret,
+				Namespace: e2eFallbackCredentialsNamespace,
+			},
+			Type: corev1.SecretTypeOpaque,
+			StringData: map[string]string{
+				"CLOUDFLARE_API_TOKEN": testEnv.CloudflareAPIToken,
+			},
+		}
+		Expect(k8sClient.Create(ctx, secret)).To(Succeed(), "failed to create fallback credentials secret")
+		return
+	}
+	Expect(err).NotTo(HaveOccurred(), "failed to get fallback credentials secret")
+
+	if string(existing.Data["CLOUDFLARE_API_TOKEN"]) == testEnv.CloudflareAPIToken {
+		return
+	}
+
+	existing.StringData = map[string]string{
+		"CLOUDFLARE_API_TOKEN": testEnv.CloudflareAPIToken,
+	}
+	Expect(k8sClient.Update(ctx, &existing)).To(Succeed(), "failed to update fallback credentials secret")
 }
 
 // cleanOrphanedE2EResources deletes all E2E test resources from Cloudflare.
@@ -756,7 +795,11 @@ func createTestNamespace(prefix string) *corev1.Namespace {
 // tunnel's credentials for Cloudflare API cleanup), then Tunnels, then the
 // namespace itself. Each phase waits for completion before proceeding.
 func deleteTestNamespace(ns *corev1.Namespace) {
-	if testEnv.SkipCleanup {
+	if testEnv.SkipCleanup || ns == nil {
+		return
+	}
+
+	if namespaceGone(ns.Name) {
 		return
 	}
 
@@ -782,8 +825,14 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
 		dErr := k8sClient.List(ctx, &dCheck, client.InNamespace(ns.Name))
 		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
-		dDone := dErr != nil || len(dCheck.Items) == 0
-		pDone := pErr != nil || len(pCheck.Items) == 0
+		dDone := dErr == nil && len(dCheck.Items) == 0
+		pDone := pErr == nil && len(pCheck.Items) == 0
+		if apierrors.IsNotFound(dErr) {
+			dDone = true
+		}
+		if apierrors.IsNotFound(pErr) {
+			pDone = true
+		}
 		return dDone && pDone
 	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
 		"DNS/Access CRs in namespace %s did not terminate", ns.Name)
@@ -799,19 +848,34 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 	Eventually(func() bool {
 		var tCheck cfgatev1alpha1.CloudflareTunnelList
 		tErr := k8sClient.List(ctx, &tCheck, client.InNamespace(ns.Name))
-		return tErr != nil || len(tCheck.Items) == 0
+		if apierrors.IsNotFound(tErr) {
+			return true
+		}
+		return tErr == nil && len(tCheck.Items) == 0
 	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
 		"Tunnel CRs in namespace %s did not terminate", ns.Name)
 
 	// Phase 3: Delete namespace after all CRs are gone.
-	Expect(k8sClient.Delete(ctx, ns)).To(Succeed())
+	currentNS, err := k8sClientset.CoreV1().Namespaces().Get(ctx, ns.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return
+	}
+	Expect(err).NotTo(HaveOccurred(), "failed to get namespace before deletion")
+	if currentNS.DeletionTimestamp == nil {
+		err = k8sClient.Delete(ctx, ns)
+		Expect(err == nil || apierrors.IsNotFound(err)).To(BeTrue(), "failed to delete namespace %s", ns.Name)
+	}
 
 	Eventually(func() bool {
-		var check corev1.Namespace
-		err := k8sClient.Get(ctx, client.ObjectKey{Name: ns.Name}, &check)
+		_, err := k8sClientset.CoreV1().Namespaces().Get(ctx, ns.Name, metav1.GetOptions{})
 		return apierrors.IsNotFound(err)
 	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
 		"Namespace %s did not terminate", ns.Name)
+}
+
+func namespaceGone(name string) bool {
+	_, err := k8sClientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
+	return apierrors.IsNotFound(err)
 }
 
 // createCloudflareCredentialsSecret creates the Cloudflare credentials secret.
