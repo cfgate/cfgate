@@ -110,7 +110,7 @@ This runs the full local suite with:
 - Coverage instrumentation for `./api/...`, `./cmd/...`, and `./internal/...`
 - Progress polling after 15s silence
 
-E2E is intentionally local-only. The normal GitHub Actions CI workflows do not provision a cluster, do not use Cloudflare secrets, and do not upload E2E coverage to Codecov.
+E2E remains excluded from normal PR and push CI because of cost and Cloudflare rate-limit pressure. Tag-triggered releases are the only GitHub Actions workflow that provisions kind, decrypts release secrets, runs the Cloudflare-backed E2E suite, and uploads E2E coverage to Codecov.
 
 #### Run Specific Tests
 
