@@ -6,6 +6,7 @@ on:
       - "v*"
 
 env:
+  MISE_NO_ENV: "1"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
