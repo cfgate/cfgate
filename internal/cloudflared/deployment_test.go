@@ -603,6 +603,7 @@ func TestBuildDeploymentExtended(t *testing.T) {
 		ref := container.Env[0].ValueFrom.SecretKeyRef
 		if ref == nil {
 			t.Fatal("env var should reference a secret")
+			return
 		}
 		if ref.Key != TokenSecretKey {
 			t.Errorf("secret key = %q, want %q", ref.Key, TokenSecretKey)
