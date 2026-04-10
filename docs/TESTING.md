@@ -336,4 +336,4 @@ mise run smoke
 - `profile:bench` writes CPU and heap profiles under `out/profiles/`
 - `profile:view` launches the pprof web UI
 - `profile:export` writes `top`, `tree`, and `proto` outputs beside the selected profile
-- `smoke` runs a fast local build-plus-test sanity pass
+- `smoke` builds `bin/manager`, verifies `./bin/manager --help` exits successfully, then runs a fast local package test pass

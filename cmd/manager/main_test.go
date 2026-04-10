@@ -136,7 +136,7 @@ func TestBuildManagerOptions(t *testing.T) {
 	}
 }
 
-func TestRunManager(t *testing.T) {
+func TestExecuteManager(t *testing.T) {
 	t.Run("success path", func(t *testing.T) {
 		var calls []string
 		gotMetrics := ""
@@ -167,8 +167,8 @@ func TestRunManager(t *testing.T) {
 			},
 		}
 
-		if err := run(nil, func(string) string { return "" }, io.Discard, runtime); err != nil {
-			t.Fatalf("run() error = %v", err)
+		if code := execute(nil, func(string) string { return "" }, io.Discard, runtime); code != exitCodeSuccess {
+			t.Fatalf("execute() = %d, want %d", code, exitCodeSuccess)
 		}
 
 		wantCalls := []string{
@@ -187,14 +187,32 @@ func TestRunManager(t *testing.T) {
 		}
 	})
 
-	t.Run("returns parse errors", func(t *testing.T) {
-		err := run(nil, func(string) string { return "bad" }, io.Discard, managerRuntime{})
-		if err == nil || !strings.Contains(err.Error(), envMetricsPort) {
-			t.Fatalf("run() error = %v, want %q in error", err, envMetricsPort)
+	t.Run("help exits zero", func(t *testing.T) {
+		for _, arg := range []string{"--help", "-h"} {
+			t.Run(arg, func(t *testing.T) {
+				stderr := &bytes.Buffer{}
+				if code := execute([]string{arg}, func(string) string { return "" }, stderr, managerRuntime{}); code != exitCodeSuccess {
+					t.Fatalf("execute() = %d, want %d", code, exitCodeSuccess)
+				}
+				if stderr.Len() == 0 {
+					t.Fatal("stderr was empty, want help output")
+				}
+			})
 		}
 	})
 
-	t.Run("returns runtime errors", func(t *testing.T) {
+	t.Run("bad env returns usage exit code", func(t *testing.T) {
+		stderr := &bytes.Buffer{}
+		code := execute(nil, func(string) string { return "bad" }, stderr, managerRuntime{})
+		if code != exitCodeUsage {
+			t.Fatalf("execute() = %d, want %d", code, exitCodeUsage)
+		}
+		if !strings.Contains(stderr.String(), envMetricsPort) {
+			t.Fatalf("stderr = %q, want %q in error", stderr.String(), envMetricsPort)
+		}
+	})
+
+	t.Run("runtime errors return runtime exit code", func(t *testing.T) {
 		runtime := managerRuntime{
 			setLogger: func(logr.Logger) {},
 			createManager: func(managerConfig) (manager.Manager, *rest.Config, error) {
@@ -205,20 +223,22 @@ func TestRunManager(t *testing.T) {
 			},
 		}
 
-		err := run(nil, func(string) string { return "" }, io.Discard, runtime)
-		if err == nil || !strings.Contains(err.Error(), "detect failed") {
-			t.Fatalf("run() error = %v, want detect failure", err)
+		if code := execute(nil, func(string) string { return "" }, io.Discard, runtime); code != exitCodeRuntime {
+			t.Fatalf("execute() = %d, want %d", code, exitCodeRuntime)
 		}
 	})
 
-	t.Run("passes flagset errors through", func(t *testing.T) {
+	t.Run("unknown flags return usage exit code", func(t *testing.T) {
 		stderr := &bytes.Buffer{}
-		err := run([]string{"--unknown-flag"}, func(string) string { return "" }, stderr, managerRuntime{})
-		if err == nil {
-			t.Fatal("run() error = nil, want flag parsing error")
+		if code := execute([]string{"--unknown-flag"}, func(string) string { return "" }, stderr, managerRuntime{}); code != exitCodeUsage {
+			t.Fatalf("execute() = %d, want %d", code, exitCodeUsage)
 		}
-		if stderr.Len() == 0 {
+		output := stderr.String()
+		if output == "" {
 			t.Fatal("stderr was empty, want flag usage output")
+		}
+		if !strings.Contains(output, "flag provided but not defined") {
+			t.Fatalf("stderr = %q, want unknown flag error", output)
 		}
 	})
 }
