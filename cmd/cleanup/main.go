@@ -61,8 +61,8 @@ type cloudflareCleanupClient struct {
 func main() {
 	cfg, err := loadCleanupConfig(os.Getenv)
 	if err != nil {
-		fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
-		fmt.Fprintln(os.Stdout, "Usage: mise run e2e:cleanup")
+		_, _ = fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
+		_, _ = fmt.Fprintln(os.Stdout, "Usage: mise run e2e:cleanup")
 		os.Exit(1)
 	}
 
@@ -93,9 +93,9 @@ func loadCleanupConfig(getenv func(string) string) (cleanupConfig, error) {
 func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, out io.Writer) (cleanupSummary, error) {
 	summary := cleanupSummary{}
 
-	fmt.Fprintln(out, "=== cfgate E2E Resource Cleanup ===")
-	fmt.Fprintf(out, "Account ID: %s\n", cfg.AccountID)
-	fmt.Fprintf(out, "Zone: %s\n\n", cfg.ZoneName)
+	_, _ = fmt.Fprintln(out, "=== cfgate E2E Resource Cleanup ===")
+	_, _ = fmt.Fprintf(out, "Account ID: %s\n", cfg.AccountID)
+	_, _ = fmt.Fprintf(out, "Zone: %s\n\n", cfg.ZoneName)
 
 	tunnels, err := client.ListOrphanedTunnels(ctx, cfg.AccountID)
 	printScanSection(out, "Tunnels", tunnels, err)
@@ -117,24 +117,24 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 	summary.Found += len(tokens)
 
 	if summary.Found == 0 {
-		fmt.Fprintln(out, "=== No orphaned E2E resources found ===")
+		_, _ = fmt.Fprintln(out, "=== No orphaned E2E resources found ===")
 		return summary, nil
 	}
 
-	fmt.Fprintf(out, "=== Found %d orphaned resources ===\n\n", summary.Found)
-	fmt.Fprintln(out, "--- Deleting Resources ---")
+	_, _ = fmt.Fprintf(out, "=== Found %d orphaned resources ===\n\n", summary.Found)
+	_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
 
 	deleteResources := func(resources []resource, label string, deleteFn func(resource) error) {
 		for _, res := range resources {
-			fmt.Fprintf(out, "  Deleting %s: %s ... ", label, res.Name)
+			_, _ = fmt.Fprintf(out, "  Deleting %s: %s ... ", label, res.Name)
 			if err := deleteFn(res); err != nil {
-				fmt.Fprintf(out, "FAILED: %v\n", err)
+				_, _ = fmt.Fprintf(out, "FAILED: %v\n", err)
 				summary.Failed++
 				summary.FailedResources = append(summary.FailedResources, res)
 				continue
 			}
 
-			fmt.Fprintln(out, "OK")
+			_, _ = fmt.Fprintln(out, "OK")
 			summary.Deleted++
 		}
 	}
@@ -146,7 +146,7 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 	if cfg.ZoneName != "" && len(records) > 0 {
 		zoneID, err := client.ResolveZoneID(ctx, cfg.ZoneName)
 		if err != nil {
-			fmt.Fprintf(out, "Warning: failed to resolve zone ID for %s: %v\n", cfg.ZoneName, err)
+			_, _ = fmt.Fprintf(out, "Warning: failed to resolve zone ID for %s: %v\n", cfg.ZoneName, err)
 		} else {
 			deleteResources(records, "DNS record", func(res resource) error {
 				return client.DeleteDNSRecord(ctx, zoneID, res.ID)
@@ -162,15 +162,15 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 		return client.DeleteServiceToken(ctx, cfg.AccountID, res.ID)
 	})
 
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "=== Cleanup Summary ===")
-	fmt.Fprintf(out, "Deleted: %d\n", summary.Deleted)
-	fmt.Fprintf(out, "Failed:  %d\n", summary.Failed)
+	_, _ = fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out, "=== Cleanup Summary ===")
+	_, _ = fmt.Fprintf(out, "Deleted: %d\n", summary.Deleted)
+	_, _ = fmt.Fprintf(out, "Failed:  %d\n", summary.Failed)
 
 	if summary.Failed > 0 {
-		fmt.Fprintln(out, "\nFailed resources:")
+		_, _ = fmt.Fprintln(out, "\nFailed resources:")
 		for _, res := range summary.FailedResources {
-			fmt.Fprintf(out, "  - %s: %s (ID: %s)\n", res.Type, res.Name, res.ID)
+			_, _ = fmt.Fprintf(out, "  - %s: %s (ID: %s)\n", res.Type, res.Name, res.ID)
 		}
 		return summary, fmt.Errorf("cleanup failed for %d resource(s)", summary.Failed)
 	}
@@ -179,17 +179,17 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 }
 
 func printScanSection(out io.Writer, title string, resources []resource, err error) {
-	fmt.Fprintf(out, "--- Scanning %s ---\n", title)
+	_, _ = fmt.Fprintf(out, "--- Scanning %s ---\n", title)
 	if err != nil {
-		fmt.Fprintf(out, "  Warning: %v\n", err)
+		_, _ = fmt.Fprintf(out, "  Warning: %v\n", err)
 	}
 	for _, res := range resources {
-		fmt.Fprintf(out, "  Found: %s (ID: %s)\n", res.Name, res.ID)
+		_, _ = fmt.Fprintf(out, "  Found: %s (ID: %s)\n", res.Name, res.ID)
 	}
 	if len(resources) == 0 {
-		fmt.Fprintf(out, "  No orphaned %s found\n", strings.ToLower(title))
+		_, _ = fmt.Fprintf(out, "  No orphaned %s found\n", strings.ToLower(title))
 	}
-	fmt.Fprintln(out)
+	_, _ = fmt.Fprintln(out)
 }
 
 func (c *cloudflareCleanupClient) ListOrphanedTunnels(ctx context.Context, accountID string) ([]resource, error) {

@@ -914,20 +914,17 @@ func waitForDNSRecordID(ctx context.Context, cfClient *cloudflare.Client, zoneID
 // dnsRecordByIDStillExists uses the direct record lookup API to reduce flakiness
 // from exact-name list calls under parallel E2E load.
 func dnsRecordByIDStillExists(ctx context.Context, cfClient *cloudflare.Client, zoneID, recordID string) bool {
-	for range 3 {
-		record, err := cfClient.DNS.Records.Get(ctx, recordID, dns.RecordGetParams{
-			ZoneID: cloudflare.F(zoneID),
-		})
-		if err == nil {
-			return record != nil
-		}
-		if strings.Contains(strings.ToLower(err.Error()), "not found") {
-			return false
-		}
-		GinkgoWriter.Printf("DNS record get-by-ID error (treating as still-exists): id=%s err=%v\n", recordID, err)
-		return true
+	record, err := cfClient.DNS.Records.Get(ctx, recordID, dns.RecordGetParams{
+		ZoneID: cloudflare.F(zoneID),
+	})
+	if err == nil {
+		return record != nil
 	}
-	return false
+	if strings.Contains(strings.ToLower(err.Error()), "not found") {
+		return false
+	}
+	GinkgoWriter.Printf("DNS record get-by-ID error (treating as still-exists): id=%s err=%v\n", recordID, err)
+	return true
 }
 
 // cleanupDNSRecord manually deletes a DNS record for test hygiene.

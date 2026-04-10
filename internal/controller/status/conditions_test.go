@@ -281,6 +281,7 @@ func TestFindCondition(t *testing.T) {
 			}
 			if got == nil {
 				t.Fatal("FindCondition() = nil, want non-nil")
+				return
 			}
 			if got.Status != tt.wantStatus {
 				t.Errorf("FindCondition().Status = %q, want %q", got.Status, tt.wantStatus)

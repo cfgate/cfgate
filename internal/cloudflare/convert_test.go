@@ -44,6 +44,7 @@ func TestCORSHeadersFromSDK(t *testing.T) {
 	got := corsHeadersFromSDK(input)
 	if got == nil {
 		t.Fatal("corsHeadersFromSDK() = nil")
+		return
 	}
 	if !got.AllowAllHeaders || !got.AllowAllOrigins || !got.AllowCredentials {
 		t.Fatalf("corsHeadersFromSDK() flags = %+v", got)
