@@ -1,7 +1,7 @@
 # cfgate mise configuration
 
 [env]
-_.file = ["secrets.enc.yaml", ".env"]
+_.file = ".env"
 IMG = "cfgate:local"
 REGISTRY = "ghcr.io/cfgate/cfgate"
 CLUSTER_NAME = "abaddon"
@@ -154,6 +154,7 @@ go tool cover -func=out/coverage/unit.coverprofile | tail -1
 
 [tasks.e2e]
 description = "Run E2E tests against live Cloudflare API"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = """
 set -eu
 export E2E_USE_EXISTING_CLUSTER="${E2E_USE_EXISTING_CLUSTER:-true}"
@@ -254,6 +255,7 @@ E2E_FOCUS="{{arg(name='filter')}}" mise run e2e
 [tasks."e2e:cleanup"]
 alias = ["clean"]
 description = "Clean up orphaned E2E test resources from Cloudflare"
+env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = "go run ./cmd/cleanup"
 
 [tasks.coverage]
