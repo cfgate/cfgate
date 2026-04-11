@@ -48,6 +48,8 @@ jobs:
           files: out/coverage/e2e.coverprofile
           flags: e2e,release
           fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   release:
     needs: e2e
