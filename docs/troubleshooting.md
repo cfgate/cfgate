@@ -74,8 +74,10 @@
 | Zone not configured | Add the zone to `spec.zones[]`. The zone name must match the domain suffix of your hostnames. |
 | API token missing DNS:Edit permission | Add Zone-level `DNS: Edit` permission to your Cloudflare API token. |
 | annotationFilter mismatch | Verify the annotation key and value on your HTTPRoutes matches the filter exactly. See [Annotations Reference](annotations.md#notes-on-annotationfilter). |
-| No routes found | Ensure `spec.source.gatewayRoutes.enabled: true` and routes have `parentRefs` pointing to a Gateway with `cfgate.io/tunnel-ref`. |
+| No routes found | Ensure `spec.source.gatewayRoutes` is present and routes have `parentRefs` pointing to a Gateway with `cfgate.io/tunnel-ref`. |
 | Gateway missing tunnel-ref | Add `cfgate.io/tunnel-ref: namespace/name` annotation to the Gateway resource. |
+
+Route discovery is only available for `tunnelRef`-backed CloudflareDNS resources. In `externalTarget` mode, route discovery is ignored and hostnames must be defined under `spec.source.explicit[]`.
 
 ---
 
@@ -415,6 +417,7 @@ kubectl logs -n cfgate-system deploy/cfgate -c manager | grep httproute
 | `"retry budget exhausted"` | Deletion failed after the retry budget (tunnel: 2min, DNS: 1min, Access: 1min). Events escalate from `CleanupFailed` to `CleanupBlocked`. Controller continues retrying indefinitely; set `cfgate.io/deletion-policy=orphan` to skip cleanup. |
 | `"orphaning tunnel due to deletion policy"` | `cfgate.io/deletion-policy: orphan` was set |
 | `"no hostnames discovered with gatewayRoutes enabled"` | DNS controller found no routes; will retry in 10s |
+| `"gatewayRoutes.enabled=true has no effect in externalTarget mode; route discovery requires tunnelRef"` | Route discovery was configured on an `externalTarget` DNS resource and will be ignored. |
 | `"failed to resolve credentials for deletion"` | Credentials unavailable during cleanup; controller blocks and requeues. Set `cfgate.io/deletion-policy=orphan` to proceed. |
 
 ### Event Reasons
