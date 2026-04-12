@@ -35,7 +35,7 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.source.gatewayRoutes.namespaceSelector.matchNames` | `[]string` | *none* | No | Select namespaces by name. Max 50 items. At least one of `matchLabels` or `matchNames` required when `namespaceSelector` is set. |
 | `spec.source.explicit[]` | `[]DNSExplicitHostname` | *none* | No | Explicitly defined hostnames to sync. Max 100 items. |
 | `spec.source.explicit[].hostname` | `string` | *none* | Yes | DNS hostname to create. 1-255 chars. |
-| `spec.source.explicit[].target` | `string` | *(tunnel domain when tunnelRef set)* | No | CNAME target. Supports `{{ .TunnelDomain }}` template variable. Max 255 chars. |
+| `spec.source.explicit[].target` | `string` | *(resource-level resolved target)* | No | Per-hostname target override. Supports `{{ .TunnelDomain }}` when using `tunnelRef`. Max 255 chars. |
 | `spec.source.explicit[].proxied` | `*bool` | *(inherits from zone or defaults)* | No | Per-hostname Cloudflare proxy setting. `nil` inherits from zone then defaults. |
 | `spec.source.explicit[].ttl` | `int32` | `1` | No | DNS record TTL in seconds. `1` = auto (Cloudflare-managed, typically 300s). Explicit range: 60-86400. |
 | `spec.defaults.proxied` | `bool` | `true` | No | Default Cloudflare proxy setting for all records. |
@@ -152,9 +152,9 @@ spec:
 
 ### `spec.source.explicit`
 
-Defines explicit hostnames to sync without depending on Gateway API route discovery. Both sources (gatewayRoutes and explicit) can be used together; explicit hostnames take precedence over route-discovered hostnames when there are conflicts.
+Defines explicit hostnames to sync without depending on Gateway API route discovery. Route discovery can add hostnames, but when the same hostname appears in both sources, the explicit entry wins for target, proxied, and ttl.
 
-The `target` field supports the `{{ .TunnelDomain }}` template variable, which resolves to the tunnel's CNAME target domain when `tunnelRef` is set. When `target` is omitted and `tunnelRef` is set, it defaults to the tunnel domain.
+The `target` field overrides the resource-level resolved target for that hostname. It supports the `{{ .TunnelDomain }}` template variable, which resolves to the tunnel's CNAME target domain when `tunnelRef` is set. When `target` is omitted, the resource-level resolved target is used.
 
 ```yaml
 spec:
@@ -165,6 +165,20 @@ spec:
         proxied: true
         ttl: 1
       - hostname: api.example.com
+        proxied: false
+        ttl: 300
+```
+
+Mixed sources remain additive. In the example below, route discovery can still add other hostnames, but the explicit `app.example.com` entry wins if a route also advertises that hostname:
+
+```yaml
+spec:
+  source:
+    gatewayRoutes:
+      enabled: true
+    explicit:
+      - hostname: app.example.com
+        target: app-origin.example.net
         proxied: false
         ttl: 300
 ```

@@ -708,6 +708,78 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			}, DefaultTimeout, DefaultInterval).Should(BeTrue())
 		})
 
+		It("should let explicit hostnames override colliding route-discovered hostnames while still adding route-only hostnames", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+			By("Creating Gateway-backed discovery resources")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gw")
+			tunnelRef := fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name)
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, tunnelRef)
+
+			By("Creating an HTTPRoute with one colliding hostname and one route-only hostname")
+			serviceName := testID("svc")
+			createTestService(ctx, k8sClient, serviceName, namespace.Name, 8080)
+			explicitHostname := fmt.Sprintf("%s.%s", testID("explicit-wins"), testEnv.CloudflareZoneName)
+			routeOnlyHostname := fmt.Sprintf("%s.%s", testID("route-adds"), testEnv.CloudflareZoneName)
+			route := createHTTPRoute(ctx, k8sClient, testID("route"), namespace.Name, gatewayName, []string{explicitHostname, routeOnlyHostname}, serviceName, 8080)
+			updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+				annotations["e2e.dns/merge"] = "enabled"
+				annotations["cfgate.io/cloudflare-proxied"] = "true"
+			})
+
+			By("Creating CloudflareDNS with colliding explicit hostname settings")
+			customTarget := "custom-origin.example.net"
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-explicit-precedence"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: sharedTunnel.Name},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Defaults: cfgatev1alpha1.DNSRecordDefaults{
+						Proxied: false,
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
+							Enabled:          true,
+							AnnotationFilter: "e2e.dns/merge=enabled",
+						},
+						Explicit: []cfgatev1alpha1.DNSExplicitHostname{{
+							Hostname: explicitHostname,
+							Target:   customTarget,
+							Proxied:  ptrTo(false),
+							TTL:      300,
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+
+			By("Verifying the colliding hostname uses explicit target, ttl, and proxied settings")
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, explicitHostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil())
+				g.Expect(record.Content).To(Equal(customTarget))
+				g.Expect(record.Proxied).To(BeFalse())
+				g.Expect(record.TTL).To(Equal(float64(300)))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Verifying route discovery still adds non-conflicting hostnames")
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, routeOnlyHostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil())
+				g.Expect(record.Content).To(Equal(sharedTunnel.Status.TunnelDomain))
+				g.Expect(record.Proxied).To(BeTrue())
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+		})
+
 		It("should use fallback credentials during DNS deletion when primary tunnel credentials disappear", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
 			By("Creating dedicated primary credentials for a deletion-path tunnel")
 			primarySecretName := testID("primary-creds")

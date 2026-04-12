@@ -139,7 +139,7 @@ mise run fe2e "Combined"
 mise run fe2e "CEL Validation"
 ```
 
-The filter argument is a Ginkgo `--focus` regex. It is required.
+The filter argument is passed directly through as Ginkgo's `--focus` regex. It is required.
 
 #### Adjust Parallelism
 

@@ -75,9 +75,12 @@ func extractDNSGatewayRoutesEnabled(obj client.Object) []string {
 	return nil
 }
 
-// HostnameConfig holds per-hostname DNS configuration from route annotations,
-// passing TTL and Proxied settings from HTTPRoute annotations to syncRecords.
+// HostnameConfig holds the effective DNS configuration for a hostname after
+// merging route-discovered and explicit configuration sources.
 type HostnameConfig struct {
+	// Target overrides the resource-level resolved target for this hostname.
+	// Empty means use the resource-level target passed to syncRecords.
+	Target string
 	// TTL is the DNS record TTL in seconds (0 means use default)
 	TTL int32
 	// Proxied indicates if Cloudflare proxy should be enabled (nil means use default)
@@ -511,25 +514,51 @@ func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfg
 		recordType = string(dns.Spec.ExternalTarget.Type)
 	}
 
-	// Collect from explicit hostnames (no route-level config)
-	for _, explicit := range dns.Spec.Source.Explicit {
-		hostnames[explicit.Hostname] = HostnameConfig{RecordType: recordType}
-	}
-
-	// Collect from Gateway routes if enabled
+	// Collect from Gateway routes first.
 	if dns.Spec.Source.GatewayRoutes != nil && dns.Spec.Source.GatewayRoutes.Enabled {
 		routeHostnames, err := r.collectHostnamesFromRoutes(ctx, dns, tunnel)
 		if err != nil {
 			return nil, err
 		}
-		// Merge route hostnames (route annotations override explicit)
 		for h, config := range routeHostnames {
 			config.RecordType = recordType
 			hostnames[h] = config
 		}
 	}
 
+	// Overlay explicit hostnames last so user-authored config wins on collisions.
+	for _, explicit := range dns.Spec.Source.Explicit {
+		hostnames[explicit.Hostname] = HostnameConfig{
+			Target:     resolveExplicitHostnameTarget(dns, tunnel, explicit),
+			TTL:        explicit.TTL,
+			Proxied:    explicit.Proxied,
+			RecordType: recordType,
+		}
+	}
+
 	return hostnames, nil
+}
+
+func resolveExplicitHostnameTarget(dns *cfgatev1alpha1.CloudflareDNS, tunnel *cfgatev1alpha1.CloudflareTunnel, explicit cfgatev1alpha1.DNSExplicitHostname) string {
+	if explicit.Target == "" {
+		switch {
+		case tunnel != nil && tunnel.Status.TunnelDomain != "":
+			return tunnel.Status.TunnelDomain
+		case dns.Spec.ExternalTarget != nil:
+			return dns.Spec.ExternalTarget.Value
+		default:
+			return ""
+		}
+	}
+
+	if dns.Spec.TunnelRef == nil || tunnel == nil || tunnel.Status.TunnelDomain == "" {
+		return explicit.Target
+	}
+
+	target := explicit.Target
+	target = strings.ReplaceAll(target, "{{ .TunnelDomain }}", tunnel.Status.TunnelDomain)
+	target = strings.ReplaceAll(target, "{{.TunnelDomain}}", tunnel.Status.TunnelDomain)
+	return target
 }
 
 // resolveSelectedNamespaces returns the set of namespace names that match the given selector.
@@ -721,7 +750,8 @@ func (r *CloudflareDNSReconciler) resolveZones(ctx context.Context, dns *cfgatev
 
 // syncRecords syncs DNS records to Cloudflare.
 // Compares desired state with actual state and applies changes respecting policy.
-// The hostnameConfigs map provides per-hostname TTL and Proxied settings from route annotations.
+// The hostnameConfigs map provides the effective per-hostname target, TTL,
+// proxied, and record type after source merging.
 func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, target string, hostnameConfigs map[string]HostnameConfig, zones map[string]string, dnsService *cloudflare.DNSService) error {
 	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
 
@@ -773,21 +803,10 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			ttl = 1 // auto
 		}
 		proxied := dns.Spec.Defaults.Proxied
-
-		// Check per-hostname overrides (explicit hostnames in spec)
-		for _, explicit := range dns.Spec.Source.Explicit {
-			if explicit.Hostname == hostname {
-				if explicit.TTL != 0 {
-					ttl = explicit.TTL
-				}
-				if explicit.Proxied != nil {
-					proxied = *explicit.Proxied
-				}
-				break
-			}
+		recordTarget := target
+		if hostnameConfig.Target != "" {
+			recordTarget = hostnameConfig.Target
 		}
-
-		// Apply route annotation overrides (highest priority)
 		if hostnameConfig.TTL != 0 {
 			ttl = hostnameConfig.TTL
 		}
@@ -796,7 +815,7 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 		}
 
 		comment := "managed by cfgate"
-		desired := cloudflare.BuildDNSRecord(hostname, target, recordType, proxied, int(ttl), comment)
+		desired := cloudflare.BuildDNSRecord(hostname, recordTarget, recordType, proxied, int(ttl), comment)
 
 		// Warn on deep subdomains unless suppressed by annotation
 		if cloudflare.ValidateHostnameDepth(hostname, zoneName) {
