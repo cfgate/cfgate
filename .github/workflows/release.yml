@@ -10,7 +10,49 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  e2e:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      MISE_SOPS_AGE_KEY: ${{ secrets.MISE_SOPS_AGE_KEY }}
+      MISE_SOPS_ROPS: "true"
+      E2E_USE_EXISTING_CLUSTER: "false"
+      E2E_PROCS: "2"
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: jdx/mise-action@v4
+
+      - name: Validate release E2E secrets
+        run: mise run e2e:preflight
+
+      - name: Run release E2E
+        run: mise run e2e
+
+      - name: Upload E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-e2e-${{ github.ref_name }}
+          path: |
+            out/reports/e2e.json
+            out/coverage/e2e.coverprofile
+          if-no-files-found: warn
+
+      - name: Upload E2E coverage to Codecov
+        if: always() && hashFiles('out/coverage/e2e.coverprofile') != ''
+        uses: codecov/codecov-action@v6
+        with:
+          files: out/coverage/e2e.coverprofile
+          flags: e2e,release
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
   release:
+    needs: e2e
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 30
     permissions:
@@ -63,14 +105,16 @@ jobs:
           else
             HAS_STABLE=false
             HAS_BETA=false
+            HAS_RC=false
             for tag in $(git tag -l 'v*' | grep -v "^${GITHUB_REF_NAME}$"); do
               v="${tag#v}"
               [[ "$v" != *"-"* ]] && HAS_STABLE=true
-              [[ "$v" == *"-beta."* || "$v" == *"-rc."* ]] && HAS_BETA=true
+              [[ "$v" == *"-beta."* ]] && HAS_BETA=true
+              [[ "$v" == *"-rc."* ]] && HAS_RC=true
             done
-            if [[ "$VERSION" == *"-alpha."* && "$HAS_BETA" == "false" && "$HAS_STABLE" == "false" ]]; then
+            if [[ "$VERSION" == *"-alpha."* && "$HAS_BETA" == "false" && "$HAS_RC" == "false" && "$HAS_STABLE" == "false" ]]; then
               IS_LATEST=true
-            elif [[ "$VERSION" == *"-beta."* && "$HAS_STABLE" == "false" ]]; then
+            elif [[ "$VERSION" == *"-beta."* && "$HAS_STABLE" == "false" && "$HAS_RC" == "false" ]]; then
               IS_LATEST=true
             elif [[ "$VERSION" == *"-rc."* && "$HAS_STABLE" == "false" ]]; then
               IS_LATEST=true
@@ -165,7 +209,7 @@ jobs:
         run: |
           IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }} mise run manifests
 
-      - name: Generate changelog
+      - name: Generate release notes
         id: changelog
         uses: orhun/git-cliff-action@v4
         with:

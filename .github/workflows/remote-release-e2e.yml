@@ -1,0 +1,178 @@
+name: Remote Release E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to check out and test
+        required: true
+        default: main
+        type: string
+      e2e_procs:
+        description: Ginkgo parallelism for the E2E suite
+        required: true
+        default: "2"
+        type: string
+
+concurrency:
+  group: remote-release-e2e-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      MISE_SOPS_AGE_KEY: ${{ secrets.MISE_SOPS_AGE_KEY }}
+      MISE_SOPS_ROPS: "true"
+      E2E_USE_EXISTING_CLUSTER: "false"
+      E2E_PROCS: ${{ inputs.e2e_procs }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: jdx/mise-action@v4
+
+      - name: Capture ref metadata
+        id: metadata
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Record start time
+        id: start
+        shell: bash
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate manual remote E2E secrets
+        id: preflight
+        continue-on-error: true
+        shell: bash
+        run: |
+          start="$(date +%s)"
+          set +e
+          mise run e2e:preflight
+          status=$?
+          set -e
+          end="$(date +%s)"
+          echo "duration=$((end - start))" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Run manual remote E2E
+        id: e2e-run
+        if: steps.preflight.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          start="$(date +%s)"
+          set +e
+          mise run e2e
+          status=$?
+          set -e
+          end="$(date +%s)"
+          echo "duration=$((end - start))" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Write timing metadata
+        id: timing
+        if: always()
+        shell: bash
+        env:
+          START_EPOCH: ${{ steps.start.outputs.epoch }}
+          PREFLIGHT_DURATION: ${{ steps.preflight.outputs.duration }}
+          PREFLIGHT_STATUS: ${{ steps.preflight.outcome }}
+          E2E_DURATION: ${{ steps.e2e-run.outputs.duration }}
+          E2E_STATUS: ${{ steps.e2e-run.outcome }}
+          TEST_REF: ${{ inputs.ref }}
+          TEST_SHA: ${{ steps.metadata.outputs.sha }}
+        run: |
+          mkdir -p out/reports
+          finish="$(date +%s)"
+          total="$((finish - START_EPOCH))"
+          preflight_duration="${PREFLIGHT_DURATION:-0}"
+          e2e_duration="${E2E_DURATION:-0}"
+          preflight_status="${PREFLIGHT_STATUS:-skipped}"
+          e2e_status="${E2E_STATUS:-skipped}"
+          cat > out/reports/remote-e2e-timing.json <<EOF
+          {
+            "ref": "${TEST_REF}",
+            "sha": "${TEST_SHA}",
+            "e2e_procs": "${E2E_PROCS}",
+            "preflight_status": "${preflight_status}",
+            "preflight_seconds": ${preflight_duration},
+            "e2e_status": "${e2e_status}",
+            "e2e_seconds": ${e2e_duration},
+            "total_seconds": ${total}
+          }
+          EOF
+          echo "preflight=${preflight_duration}" >> "$GITHUB_OUTPUT"
+          echo "e2e=${e2e_duration}" >> "$GITHUB_OUTPUT"
+          echo "total=${total}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload manual remote E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: manual-remote-e2e-${{ github.run_id }}
+          path: |
+            out/reports/e2e.json
+            out/coverage/e2e.coverprofile
+            out/reports/remote-e2e-timing.json
+          if-no-files-found: warn
+
+      - name: Upload E2E coverage to Codecov
+        id: codecov
+        if: always() && hashFiles('out/coverage/e2e.coverprofile') != ''
+        uses: codecov/codecov-action@v6
+        with:
+          files: out/coverage/e2e.coverprofile
+          flags: e2e,manual
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Summary
+        if: always()
+        shell: bash
+        env:
+          TEST_REF: ${{ inputs.ref }}
+          TEST_SHA: ${{ steps.metadata.outputs.sha }}
+          PREFLIGHT_STATUS: ${{ steps.preflight.outcome }}
+          PREFLIGHT_DURATION: ${{ steps.timing.outputs.preflight }}
+          E2E_STATUS: ${{ steps.e2e-run.outcome }}
+          E2E_DURATION: ${{ steps.timing.outputs.e2e }}
+          TOTAL_DURATION: ${{ steps.timing.outputs.total }}
+          CODECOV_STATUS: ${{ steps.codecov.outcome }}
+        run: |
+          echo "## Manual Remote E2E Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ref: ${TEST_REF}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SHA: ${TEST_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- E2E_PROCS: ${E2E_PROCS}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Preflight: ${PREFLIGHT_STATUS:-skipped} (${PREFLIGHT_DURATION:-0}s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- E2E: ${E2E_STATUS:-skipped} (${E2E_DURATION:-0}s)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Total: ${TOTAL_DURATION:-0}s" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Artifact: manual-remote-e2e-${GITHUB_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f out/coverage/e2e.coverprofile ]; then
+            echo "- Codecov: ${CODECOV_STATUS:-success} with flags e2e,manual" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- Codecov: skipped because out/coverage/e2e.coverprofile was not produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Fail if preflight or E2E failed
+        if: always()
+        shell: bash
+        env:
+          PREFLIGHT_STATUS: ${{ steps.preflight.outcome }}
+          E2E_STATUS: ${{ steps.e2e-run.outcome }}
+        run: |
+          if [ "${PREFLIGHT_STATUS}" != "success" ]; then
+            echo "Preflight failed with status: ${PREFLIGHT_STATUS}" >&2
+            exit 1
+          fi
+          if [ "${E2E_STATUS}" != "success" ]; then
+            echo "E2E failed with status: ${E2E_STATUS:-skipped}" >&2
+            exit 1
+          fi

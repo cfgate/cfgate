@@ -138,7 +138,11 @@ mise run bench             # benchmark suite
 mise run smoke             # fast local sanity check
 ```
 
-E2E is local-only. Normal GitHub Actions CI runs lint, unit tests, build validation, and unit coverage. It does not provision a cluster or run Cloudflare-backed E2E.
+Normal GitHub Actions CI runs lint, unit tests, build validation, and unit coverage. It does not provision a cluster or run Cloudflare-backed E2E.
+
+A manual GitHub Actions workflow named `Remote Release E2E` exists for release-grade remote E2E timing and Codecov upload without publishing release artifacts.
+
+`mise run smoke` builds `bin/manager`, requires `./bin/manager --help` to exit successfully, then runs the fast package test set. `cmd/cleanup` is not part of the smoke or release CLI contract in this pass.
 
 Two local bootstrap paths are first-class:
 
@@ -236,7 +240,7 @@ For contributor PRs, the maintainer squash-merges with a clean conventional subj
 
 ## Changelog
 
-Release notes are generated via [git-cliff](https://git-cliff.org/) from commit history. Configuration is in `cliff.toml`. Do not edit CHANGELOG.md manually.
+Release notes are generated via [git-cliff](https://git-cliff.org/) from commit history. Configuration is in `cliff.toml`. Do not edit `CHANGELOG.md` manually; regenerate it locally with `git-cliff` when you need to refresh the repo changelog.
 
 ## Code Style
 
