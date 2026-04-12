@@ -173,12 +173,13 @@ Run cleanup before E2E tests to ensure a clean slate if previous runs left orpha
 test/e2e/
   e2e_suite_test.go     # Suite setup, framework init, cleanup helpers
   helpers_test.go       # Wait functions, resource creators, CF API verifiers
-  tunnel_test.go        # CloudflareTunnel lifecycle (17 specs)
-  dns_test.go           # CloudflareDNS sync, policies, ownership (19 specs)
-  access_test.go        # CloudflareAccessPolicy rules and applications (26 specs)
+  tunnel_test.go        # CloudflareTunnel lifecycle and recovery paths (~20 specs)
+  dns_test.go           # CloudflareDNS sync, cleanup, ownership, and fallback paths (~27 specs)
+  access_test.go        # CloudflareAccessPolicy targets, rules, and service tokens (~29 specs)
   annotations_test.go   # HTTPRoute annotation parsing and propagation (16 specs)
   combined_test.go      # Multi-CRD interaction and cross-resource tests (7 specs)
-  invariants_test.go    # Structural invariants across all CRDs (10 specs, 45 assertions)
+  gateway_route_status_test.go # Gateway / HTTPRoute negative and status coverage (7 specs)
+  invariants_test.go    # Structural invariants across tunnel, DNS, Access, Gateway, and HTTPRoute (10 specs)
   validation_test.go    # CEL validation rules, no Cloudflare API needed (12 specs)
 ```
 
@@ -249,14 +250,19 @@ Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller 
 | `waitForTunnelReady` | Tunnel status Ready=True |
 | `waitForTunnelCondition` | Specific condition on tunnel |
 | `waitForTunnelDeleted` | Tunnel removed from K8s |
-| `waitForTunnelDeletedFromCloudflare` | Tunnel removed from Cloudflare API |
+| `waitForTunnelDeletedByIDFromCloudflare` | Tunnel removed from Cloudflare API by tunnel ID |
 | `waitForDeploymentSpec` | cloudflared Deployment matches expected replicas |
 | `waitForDNSReady` | DNS status Ready=True (defined in dns_test.go) |
 | `waitForDNSDeleted` | DNS resource removed from K8s (defined in dns_test.go) |
 | `waitForAccessPolicyReady` | Access policy status Ready=True |
+| `waitForAccessPolicyCondition` | Specific condition on Access policy |
 | `waitForAccessPolicyDeleted` | Access policy removed from K8s |
+| `waitForGatewayCondition` | Specific condition on Gateway |
+| `waitForHTTPRouteParentCondition` | Specific parent condition on HTTPRoute |
 | `waitForAccessApplicationDeletedFromCloudflare` | Access app removed from Cloudflare API |
+| `waitForServiceTokenDeletedFromCloudflare` | Service token removed from Cloudflare API |
 | `waitForServiceTokenSecretCreated` | Service token Secret created in K8s |
+| `waitForEventReason` | Matching Kubernetes event emitted |
 
 #### Resource Creators
 
@@ -268,22 +274,25 @@ Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller 
 | `createCloudflareDNSWithGatewayRoutes` | CloudflareDNS with gateway route discovery |
 | `createCloudflareAccessPolicy` | Basic Access policy |
 | `createCloudflareAccessPolicyWith*` | Access policy with specific rule type (IP, country, email, OIDC, GSuite) |
+| `createGatewayClassWithController` | GatewayClass with explicit controllerName |
 | `createGatewayClass` | GatewayClass for cfgate |
 | `createGateway` | Gateway with tunnel reference |
 | `createHTTPRoute` | HTTPRoute with hostname and backend |
 | `createTestService` | ClusterIP Service for backends |
+| `createCloudflareCredentialsSecret` | Secret with Cloudflare API token for test namespaces |
 
 #### Invariant Tests
 
 Invariant tests (`invariants_test.go`) verify structural properties that MUST hold whenever a resource reaches a known state. Unlike scenario tests ("do X, expect Y"), invariant tests verify "whenever state S holds, properties P1..Pn MUST hold" regardless of how the resource reached that state.
 
-Eight test contexts cover 45 assertions:
+The current invariant suite covers these resource families:
 
 | Context | IDs | What it verifies |
 |---------|-----|-----------------|
 | CloudflareTunnel Ready | INV-T1..T9 | Sub-conditions, TunnelID, TunnelDomain format, finalizer, deployment, config-hash |
 | CloudflareDNS Ready | INV-D1..D8 | Sub-conditions, SyncedRecords, ResolvedTarget, CF API CNAME, OwnershipVerified |
 | CloudflareAccessPolicy Ready | INV-A1..A8 | Sub-conditions, ApplicationID, targets, finalizer, CF API app |
+| Service token invariants | INV-ST1..ST4 | Service token Secret shape, status IDs, Cloudflare token presence |
 | Gateway status | INV-GW1..GW4 | Accepted, Programmed, addresses, supportedKinds |
 | HTTPRoute parent status | INV-HR1..HR3 | parents[] controllerName, Accepted, ResolvedRefs |
 | GatewayClass | INV-GC1..GC2 | controllerName match, Accepted |
