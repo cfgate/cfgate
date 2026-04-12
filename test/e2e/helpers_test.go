@@ -23,6 +23,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
@@ -825,6 +826,24 @@ func createHTTPRoute(ctx context.Context, k8sClient client.Client, name, namespa
 
 	Expect(k8sClient.Create(ctx, hr)).To(Succeed())
 	return hr
+}
+
+// updateHTTPRouteAnnotations refetches and updates annotations with conflict retry.
+func updateHTTPRouteAnnotations(ctx context.Context, k8sClient client.Client, name, namespace string, mutate func(map[string]string)) *gatewayv1.HTTPRoute {
+	var updated gatewayv1.HTTPRoute
+	Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &updated); err != nil {
+			return err
+		}
+		annotations := updated.Annotations
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		mutate(annotations)
+		updated.Annotations = annotations
+		return k8sClient.Update(ctx, &updated)
+	})).To(Succeed())
+	return updated.DeepCopy()
 }
 
 // createTestService creates a simple Service for testing.
