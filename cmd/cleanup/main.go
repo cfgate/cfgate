@@ -63,6 +63,7 @@ type cleanupRuntime struct {
 }
 
 var (
+	// Test hooks below are intentionally swappable in serial tests; do not use with t.Parallel().
 	listOrphanedTunnelsFn            = listOrphanedTunnels
 	listOrphanedDNSRecordsFn         = listOrphanedDNSRecords
 	listOrphanedAccessApplicationsFn = listOrphanedAccessApplications

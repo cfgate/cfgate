@@ -80,6 +80,7 @@ type cliExitError struct {
 }
 
 var (
+	// Test hooks below are intentionally swappable in serial tests; do not use with t.Parallel().
 	setupTunnelController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache) error {
 		return (&controller.CloudflareTunnelReconciler{
 			Client:          mgr.GetClient(),

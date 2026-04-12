@@ -148,7 +148,7 @@ Normal GitHub Actions CI runs lint, unit tests, build validation, and unit cover
 
 A manual GitHub Actions workflow named `Remote Release E2E` exists for release-grade remote E2E timing and Codecov upload without publishing release artifacts.
 
-For local coverage work, treat `out/coverage/merged.coverprofile` as the canonical `100%` ledger and `out/reports/assurance-score.json` as the canonical `200%` dual-ledger artifact.
+For local coverage work, treat `out/coverage/merged.coverprofile` as the canonical `100%` ledger and `out/reports/assurance-score.json` as the canonical `200%` dual-ledger artifact. In the assurance artifact, `possible` is the full rubric ceiling and `automated_possible` is the portion the current script can verify. Today that means behavioral automation tops out at `70/100`, not `100/100`.
 
 `mise run smoke` builds `bin/manager`, requires `./bin/manager --help` to exit successfully, then runs the fast package test set. `cmd/cleanup` is not part of the smoke or release CLI contract in this pass.
 

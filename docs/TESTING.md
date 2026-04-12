@@ -330,6 +330,8 @@ mise run coverage:score
 
 Both canonical source coverage profiles filter out `api/v1alpha1/zz_generated.deepcopy.go` so local `go tool cover` output matches the hand-written-code coverage contract. `out/coverage/merged.coverprofile` is the canonical `100%` coverage ledger for hand-written Go code on `main`, and `out/reports/assurance-score.json` is the canonical `200%` dual-ledger report.
 
+In `assurance-score.json`, each rubric `possible` value is the full behavioral ceiling, while `automated_possible` is the portion the current script can verify. Today the script can verify `70/100` behavioral points, so a fully green automated behavioral run tops out at `70`, not `100`.
+
 Normal CI uploads only `out/coverage/unit.coverprofile` to Codecov. The manual `Remote Release E2E` workflow uploads `out/coverage/e2e.coverprofile` with `e2e,manual` flags. Merged coverage and assurance scoring are local synthesis artifacts built from those canonical unit and E2E profiles.
 
 After running `mise run coverage`:
