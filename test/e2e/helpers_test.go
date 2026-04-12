@@ -989,7 +989,7 @@ func createCloudflareDNSWithGatewayRoutes(ctx context.Context, k8sClient client.
 			Zones:  dnsZones,
 			Policy: cfgatev1alpha1.DNSPolicySync,
 			Source: cfgatev1alpha1.DNSHostnameSource{
-				GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+				GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
 					Enabled:          true,
 					AnnotationFilter: annotationFilter,
 				},

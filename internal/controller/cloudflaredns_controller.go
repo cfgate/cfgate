@@ -69,7 +69,7 @@ func extractDNSGatewayRoutesEnabled(obj client.Object) []string {
 	if !ok {
 		return nil
 	}
-	if dns.Spec.Source.GatewayRoutes.Enabled {
+	if dns.Spec.Source.GatewayRoutes != nil && dns.Spec.Source.GatewayRoutes.Enabled {
 		return []string{"true"}
 	}
 	return nil
@@ -204,7 +204,12 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// gateway route discovery is structurally unavailable and 0 hostnames is
 	// permanent, not transient.
 	hasPreviouslySyncedRecords := dns.Status.SyncedRecords > 0 || len(dns.Status.Records) > 0
-	if tunnel != nil && dns.Spec.Source.GatewayRoutes.Enabled && len(hostnames) == 0 && len(dns.Spec.Source.Explicit) == 0 && !hasPreviouslySyncedRecords {
+	if tunnel != nil &&
+		dns.Spec.Source.GatewayRoutes != nil &&
+		dns.Spec.Source.GatewayRoutes.Enabled &&
+		len(hostnames) == 0 &&
+		len(dns.Spec.Source.Explicit) == 0 &&
+		!hasPreviouslySyncedRecords {
 		logger.Info("no hostnames discovered with gatewayRoutes enabled, requeueing",
 			"requeueAfter", "10s",
 		)
@@ -512,7 +517,7 @@ func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfg
 	}
 
 	// Collect from Gateway routes if enabled
-	if dns.Spec.Source.GatewayRoutes.Enabled {
+	if dns.Spec.Source.GatewayRoutes != nil && dns.Spec.Source.GatewayRoutes.Enabled {
 		routeHostnames, err := r.collectHostnamesFromRoutes(ctx, dns, tunnel)
 		if err != nil {
 			return nil, err
@@ -581,11 +586,15 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 	if tunnel == nil {
 		return nil, nil
 	}
+	if dns.Spec.Source.GatewayRoutes == nil {
+		return nil, nil
+	}
 
+	gatewayRoutes := dns.Spec.Source.GatewayRoutes
 	var allowedNamespaces map[string]bool
-	if dns.Spec.Source.GatewayRoutes.NamespaceSelector != nil {
+	if gatewayRoutes.NamespaceSelector != nil {
 		var err error
-		allowedNamespaces, err = r.resolveSelectedNamespaces(ctx, dns.Spec.Source.GatewayRoutes.NamespaceSelector)
+		allowedNamespaces, err = r.resolveSelectedNamespaces(ctx, gatewayRoutes.NamespaceSelector)
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve namespace selector: %w", err)
 		}
@@ -629,7 +638,7 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 			if allowedNamespaces != nil && !allowedNamespaces[route.Namespace] {
 				continue
 			}
-			if filter := dns.Spec.Source.GatewayRoutes.AnnotationFilter; filter != "" {
+			if filter := gatewayRoutes.AnnotationFilter; filter != "" {
 				if parts := strings.SplitN(filter, "=", 2); len(parts) == 2 {
 					if val, ok := route.Annotations[parts[0]]; !ok || val != parts[1] {
 						continue

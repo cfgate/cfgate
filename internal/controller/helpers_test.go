@@ -41,7 +41,7 @@ func TestDNSHelperFunctions(t *testing.T) {
 		dns := &cfgatev1alpha1.CloudflareDNS{
 			Spec: cfgatev1alpha1.CloudflareDNSSpec{
 				Source: cfgatev1alpha1.DNSHostnameSource{
-					GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: true},
+					GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: true},
 				},
 			},
 		}
@@ -49,6 +49,18 @@ func TestDNSHelperFunctions(t *testing.T) {
 		keys := extractDNSGatewayRoutesEnabled(dns)
 		if len(keys) != 1 || keys[0] != "true" {
 			t.Fatalf("extractDNSGatewayRoutesEnabled() = %#v", keys)
+		}
+	})
+
+	t.Run("ignores nil gateway routes source", func(t *testing.T) {
+		dns := &cfgatev1alpha1.CloudflareDNS{
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				Source: cfgatev1alpha1.DNSHostnameSource{},
+			},
+		}
+
+		if keys := extractDNSGatewayRoutesEnabled(dns); len(keys) != 0 {
+			t.Fatalf("extractDNSGatewayRoutesEnabled() = %#v, want nil", keys)
 		}
 	})
 

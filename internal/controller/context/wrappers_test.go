@@ -689,12 +689,13 @@ func TestGetZoneID(t *testing.T) {
 
 func TestHasGatewayRoutesEnabled(t *testing.T) {
 	tests := []struct {
-		name    string
-		enabled bool
-		want    bool
+		name          string
+		gatewayRoutes *cfgatev1alpha1.DNSGatewayRoutesSource
+		want          bool
 	}{
-		{"enabled", true, true},
-		{"disabled", false, false},
+		{"nil", nil, false},
+		{"enabled", &cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: true}, true},
+		{"disabled", &cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: false}, false},
 	}
 
 	for _, tt := range tests {
@@ -703,7 +704,7 @@ func TestHasGatewayRoutesEnabled(t *testing.T) {
 				CloudflareDNS: &cfgatev1alpha1.CloudflareDNS{
 					Spec: cfgatev1alpha1.CloudflareDNSSpec{
 						Source: cfgatev1alpha1.DNSHostnameSource{
-							GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: tt.enabled},
+							GatewayRoutes: tt.gatewayRoutes,
 						},
 					},
 				},
@@ -717,12 +718,13 @@ func TestHasGatewayRoutesEnabled(t *testing.T) {
 
 func TestGetAnnotationFilter(t *testing.T) {
 	tests := []struct {
-		name   string
-		filter string
-		want   string
+		name          string
+		gatewayRoutes *cfgatev1alpha1.DNSGatewayRoutesSource
+		want          string
 	}{
-		{"set", "cfgate.io/dns-sync", "cfgate.io/dns-sync"},
-		{"empty", "", ""},
+		{"nil", nil, ""},
+		{"set", &cfgatev1alpha1.DNSGatewayRoutesSource{AnnotationFilter: "cfgate.io/dns-sync"}, "cfgate.io/dns-sync"},
+		{"empty", &cfgatev1alpha1.DNSGatewayRoutesSource{AnnotationFilter: ""}, ""},
 	}
 
 	for _, tt := range tests {
@@ -731,7 +733,7 @@ func TestGetAnnotationFilter(t *testing.T) {
 				CloudflareDNS: &cfgatev1alpha1.CloudflareDNS{
 					Spec: cfgatev1alpha1.CloudflareDNSSpec{
 						Source: cfgatev1alpha1.DNSHostnameSource{
-							GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{AnnotationFilter: tt.filter},
+							GatewayRoutes: tt.gatewayRoutes,
 						},
 					},
 				},

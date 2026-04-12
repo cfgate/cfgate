@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -260,6 +261,37 @@ func TestParsePolicyRef(t *testing.T) {
 	}
 }
 
+func TestHTTPRouteReconcileSkipsEmptyParentStatusWrite(t *testing.T) {
+	scheme := controllerTestScheme(t)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "app",
+		},
+	}
+
+	baseClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+	statusWriter := &countingStatusWriter{}
+	r := &HTTPRouteReconciler{
+		Client:   &statusTrackingClient{Client: baseClient, writer: statusWriter},
+		Scheme:   scheme,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "app", Name: "route"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if statusWriter.updates != 0 {
+		t.Fatalf("Status().Update() called %d times, want 0", statusWriter.updates)
+	}
+	if result.RequeueAfter != 5*time.Minute {
+		t.Fatalf("Reconcile() RequeueAfter = %v, want %v", result.RequeueAfter, 5*time.Minute)
+	}
+}
+
 func newHTTPRouteTestReconciler(t *testing.T, scheme *runtime.Scheme, objects ...client.Object) *HTTPRouteReconciler {
 	t.Helper()
 	return newHTTPRouteTestReconcilerWithRecorder(t, scheme, &fakeEventRecorder{}, objects...)
@@ -323,4 +355,34 @@ func (r *fakeEventRecorder) Eventf(regarding runtime.Object, related runtime.Obj
 		action,
 		note,
 	}, " "))
+}
+
+type statusTrackingClient struct {
+	client.Client
+	writer client.StatusWriter
+}
+
+func (c *statusTrackingClient) Status() client.StatusWriter {
+	return c.writer
+}
+
+type countingStatusWriter struct {
+	updates int
+}
+
+func (w *countingStatusWriter) Create(ctx context.Context, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
+	return nil
+}
+
+func (w *countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	w.updates++
+	return nil
+}
+
+func (w *countingStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+	return nil
+}
+
+func (w *countingStatusWriter) Apply(ctx context.Context, obj runtime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	return nil
 }

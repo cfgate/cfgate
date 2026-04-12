@@ -119,7 +119,7 @@ spec:
       enabled: true
 ```
 
-With `gatewayRoutes.enabled: true` and no `annotationFilter`, cfgate syncs DNS records for all routes attached to the referenced tunnel's Gateways. To sync specific routes only, use the `annotationFilter` field. See [CloudflareDNS reference](docs/cloudflare-dns.md#specsourcegatewayroutes).
+The presence of `source.gatewayRoutes` enables route discovery. With `enabled: true` and no `annotationFilter`, cfgate syncs DNS records for all routes attached to the referenced tunnel's Gateways. Explicit-only CloudflareDNS resources do not watch routes. To sync specific routes only, use the `annotationFilter` field. See [CloudflareDNS reference](docs/cloudflare-dns.md#specsourcegatewayroutes).
 
 #### 5. Expose a service
 

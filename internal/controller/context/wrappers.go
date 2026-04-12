@@ -229,11 +229,14 @@ func (dc *DNSContext) ZoneForHostname(hostname string) (string, bool) {
 
 // HasGatewayRoutesEnabled returns true if Gateway API routes are a hostname source.
 func (dc *DNSContext) HasGatewayRoutesEnabled() bool {
-	return dc.Spec.Source.GatewayRoutes.Enabled
+	return dc.Spec.Source.GatewayRoutes != nil && dc.Spec.Source.GatewayRoutes.Enabled
 }
 
 // GetAnnotationFilter returns the annotation filter for route selection.
 func (dc *DNSContext) GetAnnotationFilter() string {
+	if dc.Spec.Source.GatewayRoutes == nil {
+		return ""
+	}
 	return dc.Spec.Source.GatewayRoutes.AnnotationFilter
 }
 

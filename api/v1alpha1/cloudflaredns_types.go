@@ -192,7 +192,7 @@ type DNSExplicitHostname struct {
 type DNSHostnameSource struct {
 	// GatewayRoutes configures watching Gateway API routes.
 	// +optional
-	GatewayRoutes DNSGatewayRoutesSource `json:"gatewayRoutes,omitempty"`
+	GatewayRoutes *DNSGatewayRoutesSource `json:"gatewayRoutes,omitempty"`
 
 	// Explicit defines explicit hostnames to sync.
 	// +optional
