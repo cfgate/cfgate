@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -eu
+set -euo pipefail
 
 if [ "$#" -lt 3 ]; then
   echo "usage: $0 <output> <profile1> <profile2> [profile...]" >&2
