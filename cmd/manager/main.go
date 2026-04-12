@@ -68,11 +68,64 @@ type managerRuntime struct {
 	startManager        func(manager.Manager) error
 }
 
+type probeCheckAdder interface {
+	AddHealthzCheck(string, healthz.Checker) error
+	AddReadyzCheck(string, healthz.Checker) error
+}
+
 type cliExitError struct {
 	code    int
 	err     error
 	printed bool
 }
+
+var (
+	setupTunnelController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache) error {
+		return (&controller.CloudflareTunnelReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			Recorder:        mgr.GetEventRecorder("cloudflaretunnel-controller"),
+			CredentialCache: credCache,
+		}).SetupWithManager(mgr)
+	}
+	setupDNSController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache) error {
+		return (&controller.CloudflareDNSReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			Recorder:        mgr.GetEventRecorder("cloudflaredns-controller"),
+			CredentialCache: credCache,
+		}).SetupWithManager(mgr)
+	}
+	setupGatewayController = func(mgr manager.Manager) error {
+		return (&controller.GatewayReconciler{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorder("gateway-controller"),
+		}).SetupWithManager(mgr)
+	}
+	setupGatewayClassController = func(mgr manager.Manager) error {
+		return (&controller.GatewayClassReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr)
+	}
+	setupHTTPRouteController = func(mgr manager.Manager) error {
+		return (&controller.HTTPRouteReconciler{
+			Client:   mgr.GetClient(),
+			Scheme:   mgr.GetScheme(),
+			Recorder: mgr.GetEventRecorder("httproute-controller"),
+		}).SetupWithManager(mgr)
+	}
+	setupAccessPolicyController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache) error {
+		return (&controller.CloudflareAccessPolicyReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			Recorder:        mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
+			FeatureGates:    featureGates,
+			CredentialCache: credCache,
+		}).SetupWithManager(mgr)
+	}
+)
 
 func (e cliExitError) Error() string {
 	if e.err == nil {
@@ -122,7 +175,9 @@ func defaultManagerRuntime() managerRuntime {
 			return featureGates, nil
 		},
 		registerControllers: registerControllers,
-		addProbeChecks:      addProbeChecks,
+		addProbeChecks: func(mgr manager.Manager) error {
+			return addProbeChecks(mgr)
+		},
 		startManager: func(mgr manager.Manager) error {
 			if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 				return fmt.Errorf("manager stopped with error: %w", err)
@@ -269,61 +324,34 @@ func buildManagerOptions(cfg managerConfig) ctrl.Options {
 func registerControllers(mgr manager.Manager, featureGates *features.FeatureGates) error {
 	credCache := cfcloudflare.NewCredentialCache(0)
 
-	if err := (&controller.CloudflareTunnelReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		Recorder:        mgr.GetEventRecorder("cloudflaretunnel-controller"),
-		CredentialCache: credCache,
-	}).SetupWithManager(mgr); err != nil {
+	if err := setupTunnelController(mgr, credCache); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareTunnel: %w", err)
 	}
 
-	if err := (&controller.CloudflareDNSReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		Recorder:        mgr.GetEventRecorder("cloudflaredns-controller"),
-		CredentialCache: credCache,
-	}).SetupWithManager(mgr); err != nil {
+	if err := setupDNSController(mgr, credCache); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareDNS: %w", err)
 	}
 
-	if err := (&controller.GatewayReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("gateway-controller"),
-	}).SetupWithManager(mgr); err != nil {
+	if err := setupGatewayController(mgr); err != nil {
 		return fmt.Errorf("unable to create controller Gateway: %w", err)
 	}
 
-	if err := (&controller.GatewayClassReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+	if err := setupGatewayClassController(mgr); err != nil {
 		return fmt.Errorf("unable to create controller GatewayClass: %w", err)
 	}
 
-	if err := (&controller.HTTPRouteReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorder("httproute-controller"),
-	}).SetupWithManager(mgr); err != nil {
+	if err := setupHTTPRouteController(mgr); err != nil {
 		return fmt.Errorf("unable to create controller HTTPRoute: %w", err)
 	}
 
-	if err := (&controller.CloudflareAccessPolicyReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		Recorder:        mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
-		FeatureGates:    featureGates,
-		CredentialCache: credCache,
-	}).SetupWithManager(mgr); err != nil {
+	if err := setupAccessPolicyController(mgr, featureGates, credCache); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareAccessPolicy: %w", err)
 	}
 
 	return nil
 }
 
-func addProbeChecks(mgr manager.Manager) error {
+func addProbeChecks(mgr probeCheckAdder) error {
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return fmt.Errorf("unable to set up health check: %w", err)
 	}

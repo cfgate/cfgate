@@ -61,14 +61,12 @@ func (r *UDPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 // NOTE: In alpha.3, this registers a no-op controller for API compatibility.
 // Full implementation in v0.2.0 will add proper watches and reconciliation.
 func (r *UDPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	log := mgr.GetLogger().WithName("controller").WithName("udproute")
-
 	// Check feature gate - skip registration if UDPRoute CRD not installed
 	if r.FeatureGates != nil && !r.FeatureGates.HasUDPRouteSupport() {
-		log.V(1).Info("UDPRoute CRD not available, skipping controller registration")
 		return nil
 	}
 
+	log := mgr.GetLogger().WithName("controller").WithName("udproute")
 	// alpha.3: Register minimal controller without For() clause.
 	// We cannot use For(&gwapiv1alpha2.UDPRoute{}) without importing
 	// the experimental types, which we defer to v0.2.0.

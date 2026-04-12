@@ -35,7 +35,10 @@ mise run lint
 | `e2e` | *none* | Run local E2E tests against live Cloudflare API |
 | `e2e:filter` | `fe2e` | Run E2E tests with a Ginkgo `--focus` filter |
 | `e2e:cleanup` | `clean` | Clean orphaned E2E resources from Cloudflare |
-| `coverage` | `cov` | Run local unit coverage plus local E2E coverage |
+| `coverage` | `cov` | Run local unit, E2E, merged coverage, and assurance scoring |
+| `coverage:merge` | *none* | Merge unit and E2E coverage into `out/coverage/merged.coverprofile` |
+| `coverage:report` | *none* | Write `out/coverage/merged-summary.txt` with totals and file deltas |
+| `coverage:score` | *none* | Write `out/reports/assurance-score.json` dual-ledger report |
 | `bench` | *none* | Run benchmark suite with allocation stats |
 | `profile:bench` | *none* | Capture CPU and heap profiles for a benchmark package |
 | `profile:view` | *none* | Open the pprof web UI for a captured profile |
@@ -130,7 +133,10 @@ See [docs/TESTING.md](docs/TESTING.md) for the full testing guide.
 ```bash
 mise run test              # unit tests
 mise run test:cover        # unit tests with coverage
-mise run coverage          # local unit + E2E coverage aggregate
+mise run coverage          # local unit + E2E + merged coverage + assurance score
+mise run coverage:merge    # merge unit and E2E profiles
+mise run coverage:report   # write merged coverage summary
+mise run coverage:score    # write dual-ledger assurance score
 mise run cluster:create    # repo-local helper for a dedicated kind cluster
 mise run e2e               # local E2E against live Cloudflare API
 mise run e2e:cleanup       # clean orphaned E2E resources
@@ -141,6 +147,8 @@ mise run smoke             # fast local sanity check
 Normal GitHub Actions CI runs lint, unit tests, build validation, and unit coverage. It does not provision a cluster or run Cloudflare-backed E2E.
 
 A manual GitHub Actions workflow named `Remote Release E2E` exists for release-grade remote E2E timing and Codecov upload without publishing release artifacts.
+
+For local coverage work, treat `out/coverage/merged.coverprofile` as the canonical `100%` ledger and `out/reports/assurance-score.json` as the canonical `200%` dual-ledger artifact.
 
 `mise run smoke` builds `bin/manager`, requires `./bin/manager --help` to exit successfully, then runs the fast package test set. `cmd/cleanup` is not part of the smoke or release CLI contract in this pass.
 

@@ -76,18 +76,12 @@ func (r *TCPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 //	    setupLog.Info("TCPRoute controller registered (spec-only in alpha.3)")
 //	}
 func (r *TCPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	log := mgr.GetLogger().WithName("controller").WithName("tcproute")
-
 	// Verify feature gate is enabled (defensive check)
 	if r.FeatureGates != nil && !r.FeatureGates.HasTCPRouteSupport() {
-		// Log and skip registration if CRD not installed
-		log.V(1).Info("TCPRoute CRD not found, skipping controller registration",
-			"requiredVersion", features.V1Alpha2,
-			"installHint", "Install Gateway API experimental channel CRDs",
-		)
 		return nil
 	}
 
+	log := mgr.GetLogger().WithName("controller").WithName("tcproute")
 	log.Info("registering controller with manager (spec-only in alpha.3)")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gwapiv1alpha2.TCPRoute{}).

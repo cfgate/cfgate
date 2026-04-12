@@ -7,12 +7,32 @@ import (
 	"strings"
 	"testing"
 
+	cfcloudflare "cfgate.io/cfgate/internal/cloudflare"
 	"github.com/go-logr/logr"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	"cfgate.io/cfgate/internal/controller/features"
 )
+
+type fakeProbeManager struct {
+	healthErr error
+	readyErr  error
+
+	healthChecks []string
+	readyChecks  []string
+}
+
+func (f *fakeProbeManager) AddHealthzCheck(name string, _ healthz.Checker) error {
+	f.healthChecks = append(f.healthChecks, name)
+	return f.healthErr
+}
+
+func (f *fakeProbeManager) AddReadyzCheck(name string, _ healthz.Checker) error {
+	f.readyChecks = append(f.readyChecks, name)
+	return f.readyErr
+}
 
 func TestParsePortEnv(t *testing.T) {
 	t.Run("uses fallback when unset", func(t *testing.T) {
@@ -41,6 +61,21 @@ func TestParsePortEnv(t *testing.T) {
 			t.Fatalf("parsePortEnv() error = %v, want %q in error", err, envMetricsPort)
 		}
 	})
+}
+
+func TestCLIExitError(t *testing.T) {
+	err := cliExitError{code: exitCodeUsage, err: errors.New("boom")}
+	if got := err.Error(); got != "boom" {
+		t.Fatalf("Error() = %q, want %q", got, "boom")
+	}
+	if !errors.Is(err, err.err) {
+		t.Fatal("Unwrap() did not expose wrapped error")
+	}
+
+	empty := cliExitError{}
+	if got := empty.Error(); got != "" {
+		t.Fatalf("Error() = %q, want empty string", got)
+	}
 }
 
 func TestParseManagerConfig(t *testing.T) {
@@ -113,6 +148,13 @@ func TestParseManagerConfig(t *testing.T) {
 	})
 }
 
+func TestDefaultManagerRuntime(t *testing.T) {
+	runtime := defaultManagerRuntime()
+	if runtime.setLogger == nil || runtime.createManager == nil || runtime.detectFeatures == nil || runtime.registerControllers == nil || runtime.addProbeChecks == nil || runtime.startManager == nil {
+		t.Fatalf("defaultManagerRuntime() = %#v, want all callbacks initialized", runtime)
+	}
+}
+
 func TestBuildManagerOptions(t *testing.T) {
 	cfg := managerConfig{
 		MetricsAddr:          ":8082",
@@ -134,6 +176,102 @@ func TestBuildManagerOptions(t *testing.T) {
 	if !opts.Metrics.SecureServing {
 		t.Fatal("Metrics.SecureServing = false, want true")
 	}
+}
+
+func TestAddProbeChecks(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		mgr := &fakeProbeManager{}
+		if err := addProbeChecks(mgr); err != nil {
+			t.Fatalf("addProbeChecks() error = %v", err)
+		}
+		if strings.Join(mgr.healthChecks, ",") != "healthz" {
+			t.Fatalf("healthChecks = %v, want [healthz]", mgr.healthChecks)
+		}
+		if strings.Join(mgr.readyChecks, ",") != "readyz" {
+			t.Fatalf("readyChecks = %v, want [readyz]", mgr.readyChecks)
+		}
+	})
+
+	t.Run("health failure", func(t *testing.T) {
+		mgr := &fakeProbeManager{healthErr: errors.New("health failed")}
+		err := addProbeChecks(mgr)
+		if err == nil || !strings.Contains(err.Error(), "unable to set up health check") {
+			t.Fatalf("addProbeChecks() error = %v, want wrapped health error", err)
+		}
+	})
+
+	t.Run("ready failure", func(t *testing.T) {
+		mgr := &fakeProbeManager{readyErr: errors.New("ready failed")}
+		err := addProbeChecks(mgr)
+		if err == nil || !strings.Contains(err.Error(), "unable to set up ready check") {
+			t.Fatalf("addProbeChecks() error = %v, want wrapped ready error", err)
+		}
+	})
+}
+
+func TestRegisterControllers(t *testing.T) {
+	origTunnel := setupTunnelController
+	origDNS := setupDNSController
+	origGateway := setupGatewayController
+	origGatewayClass := setupGatewayClassController
+	origHTTPRoute := setupHTTPRouteController
+	origAccess := setupAccessPolicyController
+	t.Cleanup(func() {
+		setupTunnelController = origTunnel
+		setupDNSController = origDNS
+		setupGatewayController = origGateway
+		setupGatewayClassController = origGatewayClass
+		setupHTTPRouteController = origHTTPRoute
+		setupAccessPolicyController = origAccess
+	})
+
+	t.Run("success", func(t *testing.T) {
+		var calls []string
+		setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache) error {
+			calls = append(calls, "tunnel")
+			return nil
+		}
+		setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache) error {
+			calls = append(calls, "dns")
+			return nil
+		}
+		setupGatewayController = func(manager.Manager) error {
+			calls = append(calls, "gateway")
+			return nil
+		}
+		setupGatewayClassController = func(manager.Manager) error {
+			calls = append(calls, "gatewayclass")
+			return nil
+		}
+		setupHTTPRouteController = func(manager.Manager) error {
+			calls = append(calls, "httproute")
+			return nil
+		}
+		setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+			calls = append(calls, "access")
+			return nil
+		}
+
+		if err := registerControllers(nil, &features.FeatureGates{}); err != nil {
+			t.Fatalf("registerControllers() error = %v", err)
+		}
+
+		want := "tunnel,dns,gateway,gatewayclass,httproute,access"
+		if got := strings.Join(calls, ","); got != want {
+			t.Fatalf("calls = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("wraps controller failure", func(t *testing.T) {
+		setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache) error {
+			return errors.New("boom")
+		}
+
+		err := registerControllers(nil, &features.FeatureGates{})
+		if err == nil || !strings.Contains(err.Error(), "unable to create controller CloudflareTunnel") {
+			t.Fatalf("registerControllers() error = %v, want wrapped tunnel error", err)
+		}
+	})
 }
 
 func TestExecuteManager(t *testing.T) {
