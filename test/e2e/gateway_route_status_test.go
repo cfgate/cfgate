@@ -297,11 +297,9 @@ var _ = Describe("Gateway and HTTPRoute Status E2E", Label("cloudflare"), Ordere
 
 			service := createTestService(ctx, k8sClient, testID("svc"), namespace.Name, 8080)
 			route := createHTTPRoute(ctx, k8sClient, testID("missing-policy-route"), namespace.Name, gatewayName, []string{fmt.Sprintf("%s.example.test", testID("missing-policy"))}, service.Name, 8080)
-			if route.Annotations == nil {
-				route.Annotations = map[string]string{}
-			}
-			route.Annotations["cfgate.io/access-policy"] = "does-not-exist"
-			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+			route = updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+				annotations["cfgate.io/access-policy"] = "does-not-exist"
+			})
 
 			route = waitForHTTPRouteParentCondition(ctx, k8sClient, route.Name, route.Namespace, namespace.Name, gatewayName, "AccessPolicyResolved", metav1.ConditionFalse, DefaultTimeout)
 

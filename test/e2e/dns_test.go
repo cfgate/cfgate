@@ -525,11 +525,9 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 				createTestService(ctx, k8sClient, serviceName, targetNamespace.Name, 8080)
 				hostname := fmt.Sprintf("%s.%s", testID("selector-"+suffix), testEnv.CloudflareZoneName)
 				route := createHTTPRoute(ctx, k8sClient, testID("route-"+suffix), targetNamespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
-				if route.Annotations == nil {
-					route.Annotations = map[string]string{}
-				}
-				route.Annotations["e2e.dns/selection"] = "union"
-				Expect(k8sClient.Update(ctx, route)).To(Succeed())
+				updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+					annotations["e2e.dns/selection"] = "union"
+				})
 				return hostname
 			}
 
@@ -604,8 +602,9 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			hostname := fmt.Sprintf("%s.%s", testID("route-cleanup"), testEnv.CloudflareZoneName)
 			routeName := testID("route")
 			route := createHTTPRoute(ctx, k8sClient, routeName, namespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
-			route.Annotations = map[string]string{"e2e.dns/cleanup": "enabled"}
-			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+			route = updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+				annotations["e2e.dns/cleanup"] = "enabled"
+			})
 
 			By("Creating CloudflareDNS with deleteOnRouteRemoval enabled")
 			dnsResource := &cfgatev1alpha1.CloudflareDNS{
@@ -659,8 +658,9 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			hostname := fmt.Sprintf("%s.%s", testID("route-preserve"), testEnv.CloudflareZoneName)
 			routeName := testID("route")
 			route := createHTTPRoute(ctx, k8sClient, routeName, namespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
-			route.Annotations = map[string]string{"e2e.dns/cleanup": "preserve"}
-			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+			route = updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+				annotations["e2e.dns/cleanup"] = "preserve"
+			})
 
 			By("Creating CloudflareDNS with deleteOnRouteRemoval disabled")
 			dnsResource := &cfgatev1alpha1.CloudflareDNS{
@@ -949,8 +949,9 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			createTestService(ctx, k8sClient, serviceName, namespace.Name, 8080)
 			hostname := fmt.Sprintf("%s.%s", testID("recovered"), testEnv.CloudflareZoneName)
 			route := createHTTPRoute(ctx, k8sClient, testID("route"), namespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
-			route.Annotations = map[string]string{"e2e.dns/recovery": "enabled"}
-			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+			updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+				annotations["e2e.dns/recovery"] = "enabled"
+			})
 
 			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
 			waitForDNSRecordID(ctx, cfClient, zoneID, hostname, "CNAME", DefaultTimeout)
