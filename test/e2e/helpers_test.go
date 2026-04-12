@@ -27,7 +27,6 @@ import (
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 )
 
 // ============================================================
@@ -298,18 +297,6 @@ func waitForTunnelDeleted(ctx context.Context, k8sClient client.Client, name, na
 	}, timeout, DefaultInterval).Should(BeTrue(), "Tunnel was not deleted")
 }
 
-// waitForTunnelDeletedFromCloudflare waits for a tunnel to be deleted from Cloudflare.
-func waitForTunnelDeletedFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelName string, timeout time.Duration) {
-	Eventually(func() bool {
-		tunnel, err := getTunnelFromCloudflare(ctx, cfClient, accountID, tunnelName)
-		if err != nil {
-			GinkgoWriter.Printf("waitForTunnelDeletedFromCloudflare: API error (will retry): %v\n", err)
-			return false
-		}
-		return tunnel == nil
-	}, timeout, DefaultInterval).Should(BeTrue(), "Tunnel was not deleted from Cloudflare")
-}
-
 // waitForTunnelDeletedByIDFromCloudflare waits for a tunnel ID to disappear from Cloudflare.
 func waitForTunnelDeletedByIDFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string, timeout time.Duration) {
 	Eventually(func() bool {
@@ -398,27 +385,6 @@ func getZoneIDByName(ctx context.Context, cfClient *cloudflare.Client, zoneName 
 	}
 
 	return "", fmt.Errorf("zone %s not found", zoneName)
-}
-
-// Note: waitForDNSReady, waitForDNSCondition, waitForDNSDeleted are defined in dns_test.go
-// waitForDNSCondition waits for a specific condition on a CloudflareDNS.
-func waitForDNSCondition(ctx context.Context, k8sClient client.Client, name, namespace, conditionType string, status metav1.ConditionStatus, timeout time.Duration) *cfgatev1alpha1.CloudflareDNS {
-	var dnsResource cfgatev1alpha1.CloudflareDNS
-
-	Eventually(func() bool {
-		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &dnsResource)
-		if err != nil {
-			return false
-		}
-		for _, cond := range dnsResource.Status.Conditions {
-			if cond.Type == conditionType && cond.Status == status {
-				return true
-			}
-		}
-		return false
-	}, timeout, DefaultInterval).Should(BeTrue(), fmt.Sprintf("CloudflareDNS condition %s did not become %s", conditionType, status))
-
-	return &dnsResource
 }
 
 // ============================================================
@@ -790,33 +756,6 @@ func createGatewayClassWithController(ctx context.Context, k8sClient client.Clie
 // createGatewayClass creates or retrieves a GatewayClass for testing.
 func createGatewayClass(ctx context.Context, k8sClient client.Client, name string) *gatewayv1.GatewayClass {
 	return createGatewayClassWithController(ctx, k8sClient, name, "cfgate.io/cloudflare-tunnel-controller")
-}
-
-// createReferenceGrant creates a ReferenceGrant resource for cross-namespace tests.
-func createReferenceGrant(ctx context.Context, k8sClient client.Client, name, namespace, fromGroup, fromKind, fromNamespace, toGroup, toKind string) *gatewayv1b1.ReferenceGrant {
-	grant := &gatewayv1b1.ReferenceGrant{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: gatewayv1b1.ReferenceGrantSpec{
-			From: []gatewayv1b1.ReferenceGrantFrom{
-				{
-					Group:     gatewayv1b1.Group(fromGroup),
-					Kind:      gatewayv1b1.Kind(fromKind),
-					Namespace: gatewayv1b1.Namespace(fromNamespace),
-				},
-			},
-			To: []gatewayv1b1.ReferenceGrantTo{
-				{
-					Group: gatewayv1b1.Group(toGroup),
-					Kind:  gatewayv1b1.Kind(toKind),
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, grant)).To(Succeed())
-	return grant
 }
 
 // createGateway creates a Gateway for testing.
