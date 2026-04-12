@@ -28,6 +28,7 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.zones[].id` | `string` | *none* | No | Explicit Cloudflare zone ID. When provided, skips API zone lookup. Max 32 chars. |
 | `spec.zones[].proxied` | `*bool` | *(inherits from `spec.defaults.proxied`)* | No | Per-zone proxy override. `true` enables Cloudflare proxy (orange cloud), `false` DNS-only. `nil` inherits from `spec.defaults.proxied`. |
 | `spec.policy` | `DNSPolicy` | `sync` | No | DNS record lifecycle policy. One of: `sync`, `upsert-only`, `create-only`. |
+| `spec.source.gatewayRoutes` | `DNSGatewayRoutesSource` | *none* | No | Enables route discovery when the block is present. Explicit-only resources omit this block and do not watch routes. |
 | `spec.source.gatewayRoutes.enabled` | `bool` | `true` | No | Enables automatic hostname discovery from Gateway API routes. |
 | `spec.source.gatewayRoutes.annotationFilter` | `string` | *none* | No | Only sync routes matching this annotation (key=value format). Max 255 chars. |
 | `spec.source.gatewayRoutes.namespaceSelector.matchLabels` | `map[string]string` | *none* | No | Select namespaces by label. Max 10 entries. At least one of `matchLabels` or `matchNames` required when `namespaceSelector` is set. |
@@ -127,7 +128,7 @@ spec:
 
 ### `spec.source.gatewayRoutes`
 
-Configures automatic hostname discovery from Gateway API HTTPRoute resources.
+Configures automatic hostname discovery from Gateway API HTTPRoute resources. Route discovery is enabled by the presence of this block. If `source.gatewayRoutes` is absent, the resource is explicit-only and does not watch routes. If the block is present and `enabled` is omitted, it defaults to `true`.
 
 **`annotationFilter`:** An opt-in filter that restricts which routes trigger DNS sync. The controller checks this annotation on HTTPRoute resources, never on Gateways. You can use any annotation key=value pair of your choosing. The format is `key=value`. See [Annotations Reference](annotations.md#notes-on-annotationfilter) for details on how annotation filtering works.
 

@@ -551,7 +551,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 					},
 					Policy: cfgatev1alpha1.DNSPolicySync,
 					Source: cfgatev1alpha1.DNSHostnameSource{
-						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+						GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
 							Enabled:          true,
 							AnnotationFilter: annotationFilter,
 							NamespaceSelector: &cfgatev1alpha1.DNSNamespaceSelector{
@@ -619,7 +619,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 					},
 					Policy: cfgatev1alpha1.DNSPolicySync,
 					Source: cfgatev1alpha1.DNSHostnameSource{
-						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+						GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
 							Enabled:          true,
 							AnnotationFilter: "e2e.dns/cleanup=enabled",
 						},
@@ -675,7 +675,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 					},
 					Policy: cfgatev1alpha1.DNSPolicySync,
 					Source: cfgatev1alpha1.DNSHostnameSource{
-						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+						GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
 							Enabled:          true,
 							AnnotationFilter: "e2e.dns/cleanup=preserve",
 						},
@@ -921,7 +921,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 					},
 					Policy: cfgatev1alpha1.DNSPolicySync,
 					Source: cfgatev1alpha1.DNSHostnameSource{
-						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+						GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
 							Enabled:          true,
 							AnnotationFilter: "e2e.dns/recovery=enabled",
 						},

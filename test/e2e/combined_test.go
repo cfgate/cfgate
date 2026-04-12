@@ -219,7 +219,7 @@ var _ = Describe("Multi-Resource E2E", Label("cloudflare"), Ordered, func() {
 					},
 					Policy: cfgatev1alpha1.DNSPolicySync,
 					Source: cfgatev1alpha1.DNSHostnameSource{
-						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+						GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
 							Enabled:          true,
 							AnnotationFilter: "cfgate.io/dns-sync=combined-cleanup",
 						},

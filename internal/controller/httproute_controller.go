@@ -139,6 +139,12 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			conditions...,
 		)
 	}
+	if len(preserved) == 0 && len(cfgateParentStatuses) == 0 {
+		log.V(1).Info("no parent statuses to write")
+		r.Recorder.Eventf(&route, nil, corev1.EventTypeNormal, "Reconciled", "Reconcile", "HTTPRoute reconciled successfully")
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
 	route.Status.Parents = append(preserved, cfgateParentStatuses...)
 
 	if err := r.Status().Update(ctx, &route); err != nil {
@@ -154,20 +160,19 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // SetupWithManager sets up the controller with the Manager.
 //
 // Watched resources:
-//   - HTTPRoute (primary resource, with GenerationChangedPredicate)
+//   - HTTPRoute (primary resource, with CfgateAnnotationOrGenerationPredicate)
 //   - Gateway (with CfgateAnnotationOrGenerationPredicate for cfgate.io/* annotation awareness)
 //   - Service (no predicate -- service changes are rare and important)
 //   - CloudflareAccessPolicy (with GenerationChangedPredicate to filter status-only updates)
 //
-// GenerationChangedPredicate on For() prevents reconciliation on status-only updates,
-// reducing spurious reconciliations and status conflicts (137 reconciles/4h + 8 conflicts
-// observed without predicate).
+// CfgateAnnotationOrGenerationPredicate on For() prevents status-only update loops
+// while still allowing annotation-only cfgate.io/* changes to trigger reconcile.
 func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controller").WithName("httproute")
 	log.Info("registering controller with manager")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gwapiv1.HTTPRoute{},
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate),
 		).
 		Watches(
 			&gwapiv1.Gateway{},
