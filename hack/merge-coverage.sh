@@ -40,11 +40,20 @@ for profile in "$@"; do
   fi
 done
 
-awk '
+awk -v merge_mode="${mode#mode: }" '
 FNR == 1 { next }
 NF == 3 {
   key = $1 FS $2
-  count[key] += $3
+  hits = $3 + 0
+  if (merge_mode == "set") {
+    if ((count[key] + 0) > 0 || hits > 0) {
+      count[key] = 1
+    } else {
+      count[key] = 0
+    }
+  } else {
+    count[key] += hits
+  }
 }
 END {
   for (key in count) {
