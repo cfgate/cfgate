@@ -110,7 +110,9 @@ This runs the full local suite with:
 - Coverage instrumentation for `./api/...`, `./cmd/...`, and `./internal/...`
 - Progress polling after 15s silence
 
-E2E remains excluded from normal PR and push CI because of cost and Cloudflare rate-limit pressure. Tag-triggered releases are the only GitHub Actions workflow that provisions kind, decrypts release secrets, runs the Cloudflare-backed E2E suite, and uploads E2E coverage to Codecov.
+E2E remains excluded from normal PR and push CI because of cost and Cloudflare rate-limit pressure. Tag-triggered releases still run release-gated E2E, and the manual `Remote Release E2E` workflow provides the non-publishing remote path for timing runs and Codecov uploads.
+
+Use GitHub Actions, select `Remote Release E2E`, set `ref` to the target branch or commit, and override `e2e_procs` only when you need a different concurrency level.
 
 #### Run Specific Tests
 
@@ -318,7 +320,7 @@ Use the local aggregate task to run both unit and E2E coverage:
 mise run coverage
 ```
 
-Both canonical coverage profiles filter out `api/v1alpha1/zz_generated.deepcopy.go` so local `go tool cover` output matches the hand-written-code coverage contract. CI uploads only `out/coverage/unit.coverprofile` to Codecov.
+Both canonical coverage profiles filter out `api/v1alpha1/zz_generated.deepcopy.go` so local `go tool cover` output matches the hand-written-code coverage contract. Normal CI uploads only `out/coverage/unit.coverprofile` to Codecov, and the manual `Remote Release E2E` workflow uploads `out/coverage/e2e.coverprofile` with `e2e,manual` flags.
 
 ## Profiling
 
