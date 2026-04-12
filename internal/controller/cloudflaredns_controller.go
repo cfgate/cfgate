@@ -1384,6 +1384,14 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 			"ownerID", ownerID,
 		)
 		for _, statusRecord := range dns.Status.Records {
+			if statusRecord.Status == "Failed" && statusRecord.RecordID == "" && statusRecord.ZoneID == "" {
+				logger.V(1).Info("cleanup: skipping failed status record with no materialized Cloudflare record",
+					"hostname", statusRecord.Hostname,
+					"type", statusRecord.Type,
+				)
+				continue
+			}
+
 			zoneID := statusRecord.ZoneID
 			if zoneID == "" {
 				zoneName := cloudflare.ExtractZoneFromHostname(statusRecord.Hostname)

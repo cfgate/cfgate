@@ -181,6 +181,88 @@ func TestCleanupRecordsWithFallbackUsesStatusInventory(t *testing.T) {
 	}
 }
 
+func TestCleanupRecordsWithFallbackSkipsFailedStatusRecordsWithoutMaterializedRemoteState(t *testing.T) {
+	ctx := context.Background()
+	mock := cloudflare.NewMockClient()
+	deleted := []string{}
+	resolvedUnexpectedZone := false
+
+	mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, _, name, recordType string) ([]cloudflare.DNSRecord, error) {
+		switch {
+		case name == "good.example.com" && recordType == "CNAME":
+			return []cloudflare.DNSRecord{{
+				ID:      "good-id",
+				Name:    name,
+				Type:    recordType,
+				Content: "target.example.com",
+				Comment: "managed by cfgate",
+			}}, nil
+		case name == "_cfgate.good.example.com" && recordType == "TXT":
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}
+	mock.GetZoneByNameFunc = func(_ context.Context, name string) (*cloudflare.Zone, error) {
+		if name == "example.invalid" {
+			resolvedUnexpectedZone = true
+		}
+		return nil, nil
+	}
+	mock.DeleteDNSRecordFunc = func(_ context.Context, _, recordID string) error {
+		deleted = append(deleted, recordID)
+		return nil
+	}
+
+	disabledTXT := false
+	dns := &cfgatev1alpha1.CloudflareDNS{
+		Spec: cfgatev1alpha1.CloudflareDNSSpec{
+			Cloudflare: &cfgatev1alpha1.CloudflareConfig{
+				SecretRef: cfgatev1alpha1.SecretRef{Name: "cloudflare-credentials"},
+			},
+			Zones: []cfgatev1alpha1.DNSZoneConfig{{
+				Name: "example.com",
+				ID:   "zone-1",
+			}},
+			Ownership: cfgatev1alpha1.DNSOwnershipConfig{
+				TXTRecord: cfgatev1alpha1.DNSTXTRecordOwnership{
+					Enabled: &disabledTXT,
+					Prefix:  "_cfgate",
+				},
+			},
+		},
+		Status: cfgatev1alpha1.CloudflareDNSStatus{
+			Records: []cfgatev1alpha1.DNSRecordSyncStatus{
+				{
+					Hostname: "good.example.com",
+					Type:     "CNAME",
+					Status:   "Synced",
+					RecordID: "good-id",
+					ZoneID:   "zone-1",
+				},
+				{
+					Hostname: "bad.example.invalid",
+					Type:     "CNAME",
+					Status:   "Failed",
+					Error:    "zone example.invalid not configured",
+				},
+			},
+		},
+	}
+
+	r := &CloudflareDNSReconciler{CFClient: mock}
+	if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
+		t.Fatalf("cleanupRecordsWithFallback() error = %v", err)
+	}
+
+	if resolvedUnexpectedZone {
+		t.Fatal("cleanupRecordsWithFallback() tried to resolve an unconfigured zone for a failed, non-materialized record")
+	}
+	if len(deleted) != 1 || deleted[0] != "good-id" {
+		t.Fatalf("deleted record IDs = %#v, want only good-id", deleted)
+	}
+}
+
 func discardLogger() logr.Logger {
 	return logr.Discard()
 }
