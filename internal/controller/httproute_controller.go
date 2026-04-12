@@ -101,9 +101,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			hasCfgateStatusEntries = true
 			continue
 		}
-		if string(p.ControllerName) != GatewayControllerName {
-			preserved = append(preserved, p)
-		}
+		preserved = append(preserved, p)
 	}
 
 	// 4. Validate each parentRef; only process cfgate-managed parents.
