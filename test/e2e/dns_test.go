@@ -985,21 +985,25 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			Eventually(func(g Gomega) {
 				var current cfgatev1alpha1.CloudflareDNS
 				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: dnsResource.Name, Namespace: dnsResource.Namespace}, &current)).To(Succeed())
-				g.Expect(current.Status.SyncedRecords).To(Equal(int32(1)))
 				g.Expect(current.Status.FailedRecords).To(Equal(int32(1)))
+				g.Expect(current.Status.SyncedRecords).To(BeNumerically(">=", 1))
 				g.Expect(findCondition(current.Status.Conditions, "RecordsSynced")).NotTo(BeNil())
 				g.Expect(findCondition(current.Status.Conditions, "RecordsSynced").Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(findCondition(current.Status.Conditions, "Ready")).NotTo(BeNil())
 				g.Expect(findCondition(current.Status.Conditions, "Ready").Status).To(Equal(metav1.ConditionFalse))
 
-				var foundFailed bool
+				var foundFailed, foundSynced bool
 				for _, record := range current.Status.Records {
 					if record.Hostname == badHostname && record.Status == "Failed" {
 						foundFailed = true
 						g.Expect(record.Error).To(ContainSubstring("zone"))
 					}
+					if record.Hostname == goodHostname && record.Status == "Synced" {
+						foundSynced = true
+					}
 				}
 				g.Expect(foundFailed).To(BeTrue())
+				g.Expect(foundSynced).To(BeTrue())
 			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 
 			By("Verifying the valid hostname still syncs to Cloudflare")
