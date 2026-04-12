@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -eu
+set -euo pipefail
 
 if [ "$#" -ne 3 ]; then
   echo "usage: $0 <merged-profile> <e2e-report-json> <output-json>" >&2
@@ -16,6 +16,10 @@ if [ ! -f "${merged_profile}" ]; then
 fi
 
 coverage_pct="$(go tool cover -func="${merged_profile}" | awk '$1 == "total:" { gsub(/%/, "", $NF); print $NF }')"
+if [ -z "${coverage_pct}" ]; then
+  echo "failed to extract coverage percentage from ${merged_profile}" >&2
+  exit 1
+fi
 
 assurance_automated_possible=70
 total_automated_possible=170
