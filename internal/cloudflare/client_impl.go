@@ -336,6 +336,18 @@ func (c *clientImpl) CreateDNSRecord(ctx context.Context, zoneID string, record 
 				Comment: cf.F(record.Comment),
 			},
 		})
+	case "AAAA":
+		result, err = c.api.DNS.Records.New(ctx, dns.RecordNewParams{
+			ZoneID: cf.F(zoneID),
+			Body: dns.AAAARecordParam{
+				Name:    cf.F(record.Name),
+				Type:    cf.F(dns.AAAARecordTypeAAAA),
+				Content: cf.F(record.Content),
+				TTL:     cf.F(dns.TTL(record.TTL)),
+				Proxied: cf.F(record.Proxied),
+				Comment: cf.F(record.Comment),
+			},
+		})
 	default:
 		return nil, fmt.Errorf("unsupported record type: %s", record.Type)
 	}
@@ -383,6 +395,18 @@ func (c *clientImpl) UpdateDNSRecord(ctx context.Context, zoneID, recordID strin
 			Body: dns.ARecordParam{
 				Name:    cf.F(record.Name),
 				Type:    cf.F(dns.ARecordTypeA),
+				Content: cf.F(record.Content),
+				TTL:     cf.F(dns.TTL(record.TTL)),
+				Proxied: cf.F(record.Proxied),
+				Comment: cf.F(record.Comment),
+			},
+		})
+	case "AAAA":
+		result, err = c.api.DNS.Records.Update(ctx, recordID, dns.RecordUpdateParams{
+			ZoneID: cf.F(zoneID),
+			Body: dns.AAAARecordParam{
+				Name:    cf.F(record.Name),
+				Type:    cf.F(dns.AAAARecordTypeAAAA),
 				Content: cf.F(record.Content),
 				TTL:     cf.F(dns.TTL(record.TTL)),
 				Proxied: cf.F(record.Proxied),
@@ -1099,145 +1123,4 @@ func (c *clientImpl) RefreshServiceToken(ctx context.Context, accountID, tokenID
 		Duration:  result.Duration,
 		ExpiresAt: result.ExpiresAt,
 	}, nil
-}
-
-// =============================================================================
-// mTLS Certificate operations
-// =============================================================================
-
-// CreateMTLSCertificate creates a new mTLS certificate.
-func (c *clientImpl) CreateMTLSCertificate(ctx context.Context, accountID string, params CreateCertificateParams) (*MTLSCertificate, error) {
-	result, err := c.api.ZeroTrust.Access.Certificates.New(ctx, zero_trust.AccessCertificateNewParams{
-		AccountID:           cf.F(accountID),
-		Name:                cf.F(params.Name),
-		Certificate:         cf.F(params.Certificate),
-		AssociatedHostnames: cf.F(params.AssociatedHostnames),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create mTLS certificate: %w", err)
-	}
-
-	cert := mtlsCertFromSDK(*result)
-	return &cert, nil
-}
-
-// GetMTLSCertificate retrieves an mTLS certificate by ID.
-func (c *clientImpl) GetMTLSCertificate(ctx context.Context, accountID, certID string) (*MTLSCertificate, error) {
-	result, err := c.api.ZeroTrust.Access.Certificates.Get(ctx, certID, zero_trust.AccessCertificateGetParams{
-		AccountID: cf.F(accountID),
-	})
-	if err != nil {
-		if isNotFound(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to get mTLS certificate: %w", err)
-	}
-
-	cert := mtlsCertFromSDK(*result)
-	return &cert, nil
-}
-
-// UpdateMTLSCertificate updates an existing mTLS certificate.
-func (c *clientImpl) UpdateMTLSCertificate(ctx context.Context, accountID, certID string, params UpdateCertificateParams) (*MTLSCertificate, error) {
-	result, err := c.api.ZeroTrust.Access.Certificates.Update(ctx, certID, zero_trust.AccessCertificateUpdateParams{
-		AccountID:           cf.F(accountID),
-		Name:                cf.F(params.Name),
-		AssociatedHostnames: cf.F(params.AssociatedHostnames),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to update mTLS certificate: %w", err)
-	}
-
-	cert := mtlsCertFromSDK(*result)
-	return &cert, nil
-}
-
-// DeleteMTLSCertificate deletes an mTLS certificate.
-func (c *clientImpl) DeleteMTLSCertificate(ctx context.Context, accountID, certID string) error {
-	_, err := c.api.ZeroTrust.Access.Certificates.Delete(ctx, certID, zero_trust.AccessCertificateDeleteParams{
-		AccountID: cf.F(accountID),
-	})
-	if err != nil {
-		if isNotFound(err) {
-			return nil // Already deleted
-		}
-		return fmt.Errorf("failed to delete mTLS certificate: %w", err)
-	}
-
-	return nil
-}
-
-// ListMTLSCertificates lists all mTLS certificates.
-func (c *clientImpl) ListMTLSCertificates(ctx context.Context, accountID string) ([]MTLSCertificate, error) {
-	var certs []MTLSCertificate
-
-	page := c.api.ZeroTrust.Access.Certificates.ListAutoPaging(ctx, zero_trust.AccessCertificateListParams{
-		AccountID: cf.F(accountID),
-	})
-
-	for page.Next() {
-		certs = append(certs, mtlsCertFromSDK(page.Current()))
-	}
-
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list mTLS certificates: %w", err)
-	}
-
-	return certs, nil
-}
-
-// =============================================================================
-// mTLS Certificate Settings
-// =============================================================================
-
-// GetMTLSCertificateSettings retrieves mTLS certificate settings.
-func (c *clientImpl) GetMTLSCertificateSettings(ctx context.Context, accountID string) ([]CertificateSettings, error) {
-	result, err := c.api.ZeroTrust.Access.Certificates.Settings.Get(ctx, zero_trust.AccessCertificateSettingGetParams{
-		AccountID: cf.F(accountID),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get mTLS certificate settings: %w", err)
-	}
-
-	settings := make([]CertificateSettings, len(result.Result))
-	for i, s := range result.Result {
-		settings[i] = CertificateSettings{
-			Hostname:                    s.Hostname,
-			ChinaNetwork:                s.ChinaNetwork,
-			ClientCertificateForwarding: s.ClientCertificateForwarding,
-		}
-	}
-
-	return settings, nil
-}
-
-// UpdateMTLSCertificateSettings updates mTLS certificate settings.
-func (c *clientImpl) UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettings) ([]CertificateSettings, error) {
-	apiSettings := make([]zero_trust.CertificateSettingsParam, len(settings))
-	for i, s := range settings {
-		apiSettings[i] = zero_trust.CertificateSettingsParam{
-			Hostname:                    cf.F(s.Hostname),
-			ChinaNetwork:                cf.F(s.ChinaNetwork),
-			ClientCertificateForwarding: cf.F(s.ClientCertificateForwarding),
-		}
-	}
-
-	result, err := c.api.ZeroTrust.Access.Certificates.Settings.Update(ctx, zero_trust.AccessCertificateSettingUpdateParams{
-		AccountID: cf.F(accountID),
-		Settings:  cf.F(apiSettings),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to update mTLS certificate settings: %w", err)
-	}
-
-	resultSettings := make([]CertificateSettings, len(result.Result))
-	for i, s := range result.Result {
-		resultSettings[i] = CertificateSettings{
-			Hostname:                    s.Hostname,
-			ChinaNetwork:                s.ChinaNetwork,
-			ClientCertificateForwarding: s.ClientCertificateForwarding,
-		}
-	}
-
-	return resultSettings, nil
 }

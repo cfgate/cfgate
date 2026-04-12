@@ -314,13 +314,35 @@ After running `mise run e2e`:
 
 ## Coverage
 
-Use the local aggregate task to run both unit and E2E coverage:
+Use the local aggregate task to run unit coverage, E2E coverage, the merged coverage ledger, and the dual-ledger assurance score:
 
 ```bash
 mise run coverage
 ```
 
-Both canonical coverage profiles filter out `api/v1alpha1/zz_generated.deepcopy.go` so local `go tool cover` output matches the hand-written-code coverage contract. Normal CI uploads only `out/coverage/unit.coverprofile` to Codecov, and the manual `Remote Release E2E` workflow uploads `out/coverage/e2e.coverprofile` with `e2e,manual` flags.
+Use the individual tasks when you want to recompute one stage without rerunning the whole stack:
+
+```bash
+mise run coverage:merge
+mise run coverage:report
+mise run coverage:score
+```
+
+Both canonical source coverage profiles filter out `api/v1alpha1/zz_generated.deepcopy.go` so local `go tool cover` output matches the hand-written-code coverage contract. `out/coverage/merged.coverprofile` is the canonical `100%` coverage ledger for hand-written Go code on `main`, and `out/reports/assurance-score.json` is the canonical `200%` dual-ledger report.
+
+In `assurance-score.json`, each rubric `possible` value is the full behavioral ceiling, while `automated_possible` is the portion the current script can verify. Today the script can verify `70/100` behavioral points, so a fully green automated behavioral run tops out at `70`, not `100`.
+
+Normal CI uploads only `out/coverage/unit.coverprofile` to Codecov. The manual `Remote Release E2E` workflow uploads `out/coverage/e2e.coverprofile` with `e2e,manual` flags. Merged coverage and assurance scoring are local synthesis artifacts built from those canonical unit and E2E profiles.
+
+After running `mise run coverage`:
+
+| File | Contents |
+|------|----------|
+| `out/coverage/unit.coverprofile` | Unit coverage profile |
+| `out/coverage/e2e.coverprofile` | E2E coverage profile |
+| `out/coverage/merged.coverprofile` | Merged hand-written-code coverage ledger |
+| `out/coverage/merged-summary.txt` | Totals for unit, E2E, merged coverage plus per-file merged deltas |
+| `out/reports/assurance-score.json` | Dual-ledger `200%` assurance report |
 
 ## Profiling
 

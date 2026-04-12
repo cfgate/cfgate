@@ -324,7 +324,6 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 		base := &cfgatev1alpha1.CloudflareAccessPolicyStatus{
 			ApplicationID:      "app-1",
 			ApplicationAUD:     "aud-1",
-			MTLSRuleID:         "rule-1",
 			AttachedTargets:    2,
 			ObservedGeneration: 5,
 			ServiceTokenIDs:    map[string]string{"svc": "token-1"},

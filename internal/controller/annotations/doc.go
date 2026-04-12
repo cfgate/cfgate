@@ -1,11 +1,8 @@
 // Package annotations provides annotation parsing utilities for cfgate controllers.
 //
 // It centralizes annotation constants and parsing logic for consistent handling
-// across all cfgate route controllers:
+// across the shipped cfgate route surface:
 //   - HTTPRoute
-//   - TCPRoute
-//   - UDPRoute
-//   - GRPCRoute
 //
 // Annotation placement follows Gateway API semantics per external-dns patterns:
 //   - Infrastructure-level annotations (tunnel target) go on Gateway/CloudflareTunnel
@@ -27,10 +24,9 @@
 //	sslVerify := annotations.GetAnnotationBool(route, annotations.AnnotationOriginSSLVerify, true)
 //	timeout := annotations.GetAnnotationDuration(route, annotations.AnnotationOriginConnectTimeout, 30*time.Second)
 //
-// TCPRoute and UDPRoute require the hostname annotation since Gateway API has no
-// spec.hostnames field for L4 routes:
+// Callers may still require an explicit hostname override when they need one:
 //
-//	result := annotations.ValidateRouteAnnotations(tcpRoute, true) // requireHostname=true
+//	result := annotations.ValidateRouteAnnotations(route, true) // requireHostname=true
 //	if !result.Valid {
 //	    // Handle validation errors
 //	}

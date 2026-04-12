@@ -13,7 +13,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
@@ -242,17 +241,11 @@ func TestResolveTargets(t *testing.T) {
 func TestTargetExists(t *testing.T) {
 	scheme := testScheme(t)
 	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"}}
-	udp := &gatewayv1a2.UDPRoute{ObjectMeta: metav1.ObjectMeta{Name: "udp", Namespace: "app"}}
-	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route, udp).Build()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
 
 	exists, err := targetExists(context.Background(), k8sClient, "HTTPRoute", "app", "route")
 	if err != nil || !exists {
 		t.Fatalf("targetExists(HTTPRoute) = (%v, %v), want (true, nil)", exists, err)
-	}
-
-	exists, err = targetExists(context.Background(), k8sClient, "UDPRoute", "app", "udp")
-	if err != nil || !exists {
-		t.Fatalf("targetExists(UDPRoute) = (%v, %v), want (true, nil)", exists, err)
 	}
 
 	exists, err = targetExists(context.Background(), k8sClient, "HTTPRoute", "app", "missing")
@@ -299,18 +292,11 @@ func TestCheckReferenceGrant(t *testing.T) {
 func TestExtractHostnamesFromTarget(t *testing.T) {
 	scheme := testScheme(t)
 	hostname := gatewayv1.Hostname("app.example.com")
-	grpcHostname := gatewayv1.Hostname("grpc.example.com")
 	gwHostname := gatewayv1.Hostname("gw.example.com")
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
 		Spec: gatewayv1.HTTPRouteSpec{
 			Hostnames: []gatewayv1.Hostname{hostname},
-		},
-	}
-	grpcRoute := &gatewayv1.GRPCRoute{
-		ObjectMeta: metav1.ObjectMeta{Name: "grpc", Namespace: "app"},
-		Spec: gatewayv1.GRPCRouteSpec{
-			Hostnames: []gatewayv1.Hostname{grpcHostname},
 		},
 	}
 	gateway := &gatewayv1.Gateway{
@@ -323,7 +309,7 @@ func TestExtractHostnamesFromTarget(t *testing.T) {
 		},
 	}
 
-	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route, grpcRoute, gateway).Build()
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route, gateway).Build()
 	hostnames, err := extractHostnamesFromTarget(context.Background(), k8sClient, TargetInfo{
 		Kind:      "HTTPRoute",
 		Namespace: "app",
@@ -331,15 +317,6 @@ func TestExtractHostnamesFromTarget(t *testing.T) {
 	})
 	if err != nil || len(hostnames) != 1 || hostnames[0] != "app.example.com" {
 		t.Fatalf("extractHostnamesFromTarget(HTTPRoute) = (%v, %v), want app.example.com", hostnames, err)
-	}
-
-	hostnames, err = extractHostnamesFromTarget(context.Background(), k8sClient, TargetInfo{
-		Kind:      "GRPCRoute",
-		Namespace: "app",
-		Name:      "grpc",
-	})
-	if err != nil || len(hostnames) != 1 || hostnames[0] != "grpc.example.com" {
-		t.Fatalf("extractHostnamesFromTarget(GRPCRoute) = (%v, %v), want grpc.example.com", hostnames, err)
 	}
 
 	hostnames, err = extractHostnamesFromTarget(context.Background(), k8sClient, TargetInfo{
@@ -351,13 +328,13 @@ func TestExtractHostnamesFromTarget(t *testing.T) {
 		t.Fatalf("extractHostnamesFromTarget(Gateway) = (%v, %v), want gw.example.com", hostnames, err)
 	}
 
-	hostnames, err = extractHostnamesFromTarget(context.Background(), k8sClient, TargetInfo{
-		Kind:      "TCPRoute",
+	_, err = extractHostnamesFromTarget(context.Background(), k8sClient, TargetInfo{
+		Kind:      "UnsupportedRoute",
 		Namespace: "app",
-		Name:      "tcp",
+		Name:      "unsupported",
 	})
-	if err != nil || len(hostnames) != 0 {
-		t.Fatalf("extractHostnamesFromTarget(TCPRoute) = (%v, %v), want empty result", hostnames, err)
+	if err == nil {
+		t.Fatal("extractHostnamesFromTarget(UnsupportedRoute) error = nil, want unsupported target kind")
 	}
 }
 
@@ -370,9 +347,6 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	}
 	if err := gatewayv1.Install(scheme); err != nil {
 		t.Fatalf("Install(gateway/v1) error = %v", err)
-	}
-	if err := gatewayv1a2.Install(scheme); err != nil {
-		t.Fatalf("Install(gateway/v1alpha2) error = %v", err)
 	}
 	if err := gatewayv1b1.Install(scheme); err != nil {
 		t.Fatalf("Install(gateway/v1beta1) error = %v", err)

@@ -12,7 +12,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
@@ -425,11 +424,6 @@ func (apc *AccessPolicyContext) AllTargetsResolved() bool {
 	return true
 }
 
-// RequiresMTLS returns true if mTLS is configured and enabled.
-func (apc *AccessPolicyContext) RequiresMTLS() bool {
-	return apc.Spec.MTLS != nil && apc.Spec.MTLS.Enabled
-}
-
 // RequiresServiceTokens returns true if service tokens are configured.
 func (apc *AccessPolicyContext) RequiresServiceTokens() bool {
 	return len(apc.Spec.ServiceTokens) > 0
@@ -445,7 +439,7 @@ func (apc *AccessPolicyContext) HasCrossNamespaceTargets() bool {
 	return false
 }
 
-// ExtractHostnames extracts unique hostnames from resolved HTTPRoute/GRPCRoute targets.
+// ExtractHostnames extracts unique hostnames from resolved HTTPRoute and Gateway targets.
 func (apc *AccessPolicyContext) ExtractHostnames(
 	ctx context.Context,
 	k8sClient client.Client,
@@ -525,21 +519,6 @@ func (ti *TargetInfo) IsHTTPRoute() bool {
 // IsGateway returns true if target is a Gateway.
 func (ti *TargetInfo) IsGateway() bool {
 	return ti.Kind == "Gateway"
-}
-
-// IsTCPRoute returns true if target is a TCPRoute.
-func (ti *TargetInfo) IsTCPRoute() bool {
-	return ti.Kind == "TCPRoute"
-}
-
-// IsUDPRoute returns true if target is a UDPRoute.
-func (ti *TargetInfo) IsUDPRoute() bool {
-	return ti.Kind == "UDPRoute"
-}
-
-// IsGRPCRoute returns true if target is a GRPCRoute.
-func (ti *TargetInfo) IsGRPCRoute() bool {
-	return ti.Kind == "GRPCRoute"
 }
 
 // -----------------------------------------------------------------------------
@@ -716,12 +695,6 @@ func targetExists(
 		obj = &gwapiv1.Gateway{}
 	case "HTTPRoute":
 		obj = &gwapiv1.HTTPRoute{}
-	case "GRPCRoute":
-		obj = &gwapiv1.GRPCRoute{}
-	case "TCPRoute":
-		obj = &gwapiv1a2.TCPRoute{}
-	case "UDPRoute":
-		obj = &gwapiv1a2.UDPRoute{}
 	default:
 		return false, fmt.Errorf("unsupported target kind: %s", kind)
 	}
@@ -791,17 +764,6 @@ func extractHostnamesFromTarget(
 		}
 		return hostnames, nil
 
-	case "GRPCRoute":
-		var route gwapiv1.GRPCRoute
-		if err := k8sClient.Get(ctx, target.NamespacedName(), &route); err != nil {
-			return nil, err
-		}
-		hostnames := make([]string, len(route.Spec.Hostnames))
-		for i, h := range route.Spec.Hostnames {
-			hostnames[i] = string(h)
-		}
-		return hostnames, nil
-
 	case "Gateway":
 		var gw gwapiv1.Gateway
 		if err := k8sClient.Get(ctx, target.NamespacedName(), &gw); err != nil {
@@ -817,8 +779,7 @@ func extractHostnamesFromTarget(
 		return hostnames, nil
 
 	default:
-		// TCPRoute/UDPRoute don't have hostnames in spec
-		return nil, nil
+		return nil, fmt.Errorf("unsupported target kind: %s", target.Kind)
 	}
 }
 

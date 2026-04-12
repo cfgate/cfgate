@@ -203,6 +203,10 @@ func getTunnelByIDFromCloudflare(ctx context.Context, cfClient *cloudflare.Clien
 		return nil, fmt.Errorf("failed to get tunnel: %w", err)
 	}
 
+	if string(tunnel.Status) == "deleted" || !tunnel.DeletedAt.IsZero() {
+		return nil, nil
+	}
+
 	return &CloudflareTunnelInfo{
 		ID:        tunnel.ID,
 		Name:      tunnel.Name,
@@ -289,16 +293,16 @@ func waitForTunnelDeleted(ctx context.Context, k8sClient client.Client, name, na
 	Eventually(func() bool {
 		var tunnel cfgatev1alpha1.CloudflareTunnel
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &tunnel)
-		return client.IgnoreNotFound(err) == nil && err != nil
+		return apierrors.IsNotFound(err)
 	}, timeout, DefaultInterval).Should(BeTrue(), "Tunnel was not deleted")
 }
 
-// waitForTunnelDeletedFromCloudflare waits for a tunnel to be deleted from Cloudflare.
-func waitForTunnelDeletedFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelName string, timeout time.Duration) {
+// waitForTunnelDeletedByIDFromCloudflare waits for a tunnel ID to disappear from Cloudflare.
+func waitForTunnelDeletedByIDFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string, timeout time.Duration) {
 	Eventually(func() bool {
-		tunnel, err := getTunnelFromCloudflare(ctx, cfClient, accountID, tunnelName)
+		tunnel, err := getTunnelByIDFromCloudflare(ctx, cfClient, accountID, tunnelID)
 		if err != nil {
-			GinkgoWriter.Printf("waitForTunnelDeletedFromCloudflare: API error (will retry): %v\n", err)
+			GinkgoWriter.Printf("waitForTunnelDeletedByIDFromCloudflare: API error (will retry): %v\n", err)
 			return false
 		}
 		return tunnel == nil
@@ -382,8 +386,6 @@ func getZoneIDByName(ctx context.Context, cfClient *cloudflare.Client, zoneName 
 
 	return "", fmt.Errorf("zone %s not found", zoneName)
 }
-
-// Note: waitForDNSReady, waitForDNSCondition, waitForDNSDeleted are defined in dns_test.go
 
 // ============================================================
 // Access Application Info Types and Helpers
@@ -542,8 +544,64 @@ func waitForAccessPolicyDeleted(ctx context.Context, k8sClient client.Client, na
 	Eventually(func() bool {
 		var policy cfgatev1alpha1.CloudflareAccessPolicy
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &policy)
-		return client.IgnoreNotFound(err) == nil && err != nil
+		return apierrors.IsNotFound(err)
 	}, timeout, DefaultInterval).Should(BeTrue(), "AccessPolicy was not deleted")
+}
+
+// waitForGatewayCondition waits for a specific condition on a Gateway.
+func waitForGatewayCondition(ctx context.Context, k8sClient client.Client, name, namespace, conditionType string, status metav1.ConditionStatus, timeout time.Duration) *gatewayv1.Gateway {
+	var gateway gatewayv1.Gateway
+
+	Eventually(func() bool {
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &gateway)
+		if err != nil {
+			return false
+		}
+		for _, cond := range gateway.Status.Conditions {
+			if cond.Type == conditionType && cond.Status == status {
+				return true
+			}
+		}
+		return false
+	}, timeout, DefaultInterval).Should(BeTrue(), fmt.Sprintf("Gateway condition %s did not become %s", conditionType, status))
+
+	return &gateway
+}
+
+// waitForHTTPRouteParentCondition waits for a specific condition on a cfgate-managed parent status.
+func waitForHTTPRouteParentCondition(ctx context.Context, k8sClient client.Client, name, namespace, parentNamespace, parentName, conditionType string, status metav1.ConditionStatus, timeout time.Duration) *gatewayv1.HTTPRoute {
+	var route gatewayv1.HTTPRoute
+
+	Eventually(func() bool {
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &route)
+		if err != nil {
+			return false
+		}
+
+		for _, parent := range route.Status.Parents {
+			if string(parent.ControllerName) != "cfgate.io/cloudflare-tunnel-controller" {
+				continue
+			}
+
+			actualParentNamespace := route.Namespace
+			if parent.ParentRef.Namespace != nil {
+				actualParentNamespace = string(*parent.ParentRef.Namespace)
+			}
+			if actualParentNamespace != parentNamespace || string(parent.ParentRef.Name) != parentName {
+				continue
+			}
+
+			for _, cond := range parent.Conditions {
+				if cond.Type == conditionType && cond.Status == status {
+					return true
+				}
+			}
+		}
+
+		return false
+	}, timeout, DefaultInterval).Should(BeTrue(), fmt.Sprintf("HTTPRoute parent condition %s did not become %s", conditionType, status))
+
+	return &route
 }
 
 // waitForAccessApplicationDeletedFromCloudflare waits for an Access Application to be deleted from Cloudflare.
@@ -625,18 +683,62 @@ func waitForServiceTokenSecretCreated(ctx context.Context, k8sClient client.Clie
 	return &secret
 }
 
+// listEventsForObject lists events for an involved object.
+func listEventsForObject(ctx context.Context, namespace, objectName, objectKind string) ([]corev1.Event, error) {
+	eventList, err := k8sClientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.name=%s", objectName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list events for %s/%s: %w", namespace, objectName, err)
+	}
+
+	var filtered []corev1.Event
+	for _, event := range eventList.Items {
+		if objectKind != "" && event.InvolvedObject.Kind != objectKind {
+			continue
+		}
+		filtered = append(filtered, event)
+	}
+
+	return filtered, nil
+}
+
+// waitForEventReason waits for an event with the given reason and type.
+func waitForEventReason(ctx context.Context, namespace, objectName, objectKind, reason, eventType string, timeout time.Duration) *corev1.Event {
+	var matched *corev1.Event
+
+	Eventually(func() bool {
+		events, err := listEventsForObject(ctx, namespace, objectName, objectKind)
+		if err != nil {
+			GinkgoWriter.Printf("waitForEventReason: event list error (will retry): %v\n", err)
+			return false
+		}
+
+		for i := range events {
+			if events[i].Reason == reason && (eventType == "" || events[i].Type == eventType) {
+				candidate := events[i]
+				matched = &candidate
+				return true
+			}
+		}
+		return false
+	}, timeout, DefaultInterval).Should(BeTrue(), fmt.Sprintf("Event %s was not observed for %s/%s", reason, namespace, objectName))
+
+	return matched
+}
+
 // ============================================================
 // Gateway API Resource Creation Helpers
 // ============================================================
 
-// createGatewayClass creates or retrieves a GatewayClass for testing.
-func createGatewayClass(ctx context.Context, k8sClient client.Client, name string) *gatewayv1.GatewayClass {
+// createGatewayClassWithController creates a GatewayClass for a specific controller.
+func createGatewayClassWithController(ctx context.Context, k8sClient client.Client, name, controllerName string) *gatewayv1.GatewayClass {
 	gc := &gatewayv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 		Spec: gatewayv1.GatewayClassSpec{
-			ControllerName: "cfgate.io/cloudflare-tunnel-controller",
+			ControllerName: gatewayv1.GatewayController(controllerName),
 		},
 	}
 	err := k8sClient.Create(ctx, gc)
@@ -649,6 +751,11 @@ func createGatewayClass(ctx context.Context, k8sClient client.Client, name strin
 		Expect(err).NotTo(HaveOccurred(), "Failed to create GatewayClass")
 	}
 	return gc
+}
+
+// createGatewayClass creates or retrieves a GatewayClass for testing.
+func createGatewayClass(ctx context.Context, k8sClient client.Client, name string) *gatewayv1.GatewayClass {
+	return createGatewayClassWithController(ctx, k8sClient, name, "cfgate.io/cloudflare-tunnel-controller")
 }
 
 // createGateway creates a Gateway for testing.
@@ -821,6 +928,17 @@ func createCloudflareTunnelWithInvalidToken(ctx context.Context, k8sClient clien
 	}
 	Expect(k8sClient.Create(ctx, tunnel)).To(Succeed())
 	return tunnel
+}
+
+// getTunnelConfigurationFromCloudflare fetches remote tunnel configuration from Cloudflare.
+func getTunnelConfigurationFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string) (*zero_trust.TunnelCloudflaredConfigurationGetResponse, error) {
+	config, err := cfClient.ZeroTrust.Tunnels.Cloudflared.Configurations.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredConfigurationGetParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get tunnel configuration: %w", err)
+	}
+	return config, nil
 }
 
 // ============================================================

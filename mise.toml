@@ -273,11 +273,45 @@ run = "go run ./cmd/cleanup"
 
 [tasks.coverage]
 alias = "cov"
-description = "Run unit and E2E coverage locally"
+description = "Run unit, E2E, merged coverage, and assurance scoring locally"
 run = """
 set -eu
 mise run test:cover
 mise run e2e
+mise run coverage:merge
+mise run coverage:report
+mise run coverage:score
+"""
+
+[tasks."coverage:merge"]
+description = "Merge unit and E2E coverage profiles"
+run = """
+set -eu
+./hack/merge-coverage.sh \
+  out/coverage/merged.coverprofile \
+  out/coverage/unit.coverprofile \
+  out/coverage/e2e.coverprofile
+"""
+
+[tasks."coverage:report"]
+description = "Write a merged coverage summary report"
+run = """
+set -eu
+./hack/coverage-report.sh \
+  out/coverage/unit.coverprofile \
+  out/coverage/e2e.coverprofile \
+  out/coverage/merged.coverprofile \
+  out/coverage/merged-summary.txt
+"""
+
+[tasks."coverage:score"]
+description = "Write the dual-ledger assurance score report"
+run = """
+set -eu
+./hack/assurance-score.sh \
+  out/coverage/merged.coverprofile \
+  out/reports/e2e.json \
+  out/reports/assurance-score.json
 """
 
 [tasks.bench]

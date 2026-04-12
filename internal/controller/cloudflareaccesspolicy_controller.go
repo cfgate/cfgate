@@ -22,7 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
-	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
@@ -62,12 +61,11 @@ const (
 // CloudflareAccessPolicyReconciler reconciles CloudflareAccessPolicy resources.
 //
 // It manages the complete Access policy lifecycle including:
-//   - Target resolution (Gateway, HTTPRoute, GRPCRoute, TCPRoute, UDPRoute)
+//   - Target resolution (Gateway, HTTPRoute)
 //   - Cross-namespace reference validation via ReferenceGrant
 //   - Cloudflare Access Application creation and updates
 //   - Access Policy synchronization
 //   - Service token provisioning (optional)
-//   - mTLS certificate configuration (optional)
 //
 // Credentials can be specified explicitly via cloudflareRef or inherited from
 // a CloudflareTunnel referenced by target Gateways.
@@ -90,7 +88,7 @@ type CloudflareAccessPolicyReconciler struct {
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflaretunnels,verbs=get;list;watch
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes;grpcroutes;tcproutes;udproutes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -108,8 +106,7 @@ type CloudflareAccessPolicyReconciler struct {
 //  6. Ensure Access Application exists in Cloudflare
 //  7. Sync Access Policies to the application
 //  8. Ensure service tokens (if configured)
-//  9. Configure mTLS (if enabled)
-//  10. Update status conditions and ancestor statuses
+//  9. Update status conditions and ancestor statuses
 //
 // On error, the controller requeues after 30 seconds. On success, it requeues
 // after 5 minutes for periodic policy sync.
@@ -149,7 +146,7 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 
 // reconcilePhases executes the main reconciliation phases for CloudflareAccessPolicy.
 // It proceeds through credential resolution, target resolution, ReferenceGrant checks,
-// Access Application management, policy sync, service tokens, and mTLS configuration.
+// Access Application management, policy sync, and service tokens.
 func (r *CloudflareAccessPolicyReconciler) reconcilePhases(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 	generation := policy.Generation
@@ -295,23 +292,7 @@ func (r *CloudflareAccessPolicyReconciler) reconcilePhases(ctx context.Context, 
 		}
 	}
 
-	// Phase 8: mTLS (non-fatal)
-	if policyCtx.RequiresMTLS() {
-		if err := r.configureMTLS(ctx, accessService, accountID, policy, hostnames); err != nil {
-			log.Error(err, "failed to configure mTLS (continuing)")
-			policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
-				status.NewCondition(status.ConditionTypeMTLSConfigured, metav1.ConditionFalse,
-					status.ReasonMTLSConfigError, status.Error2ConditionMsg(err), generation),
-			)
-		} else {
-			policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
-				status.NewCondition(status.ConditionTypeMTLSConfigured, metav1.ConditionTrue,
-					status.ReasonMTLSConfigured, "mTLS configured.", generation),
-			)
-		}
-	}
-
-	// Phase 9: Update status
+	// Phase 8: Update status
 	policy.Status.AttachedTargets = int32(len(policyCtx.SuccessfullyResolvedTargets()))
 	policy.Status.ObservedGeneration = generation
 	r.updateAncestorStatuses(policy, policyCtx)
@@ -519,14 +500,10 @@ func (r *CloudflareAccessPolicyReconciler) inheritCredentialsFromTunnel(
 }
 
 // validateTargetKinds validates that all target kinds are supported.
-// It checks FeatureGates for optional route types (GRPCRoute, TCPRoute, UDPRoute)
-// and returns an error if a required CRD is not installed.
 func (r *CloudflareAccessPolicyReconciler) validateTargetKinds(
 	ctx context.Context,
 	policy *cfgatev1alpha1.CloudflareAccessPolicy,
 ) error {
-	log := log.FromContext(ctx)
-
 	refs := policy.Spec.TargetRefs
 	if policy.Spec.TargetRef != nil {
 		refs = append([]cfgatev1alpha1.PolicyTargetReference{*policy.Spec.TargetRef}, refs...)
@@ -535,31 +512,7 @@ func (r *CloudflareAccessPolicyReconciler) validateTargetKinds(
 	for _, ref := range refs {
 		switch ref.Kind {
 		case "Gateway", "HTTPRoute":
-			// Always supported
-		case "GRPCRoute":
-			if r.FeatureGates != nil && !r.FeatureGates.HasGRPCRouteSupport() {
-				log.Info("policy targets GRPCRoute but CRD not installed",
-					"policy", policy.Name,
-					"targetRef", ref.Name,
-				)
-				return fmt.Errorf("GRPCRoute CRD not installed")
-			}
-		case "TCPRoute":
-			if r.FeatureGates != nil && !r.FeatureGates.HasTCPRouteSupport() {
-				log.Info("policy targets TCPRoute but CRD not installed",
-					"policy", policy.Name,
-					"targetRef", ref.Name,
-				)
-				return fmt.Errorf("TCPRoute CRD not installed")
-			}
-		case "UDPRoute":
-			if r.FeatureGates != nil && !r.FeatureGates.HasUDPRouteSupport() {
-				log.Info("policy targets UDPRoute but CRD not installed",
-					"policy", policy.Name,
-					"targetRef", ref.Name,
-				)
-				return fmt.Errorf("UDPRoute CRD not installed")
-			}
+			continue
 		default:
 			return fmt.Errorf("unsupported target kind: %s", ref.Kind)
 		}
@@ -804,7 +757,7 @@ func (r *CloudflareAccessPolicyReconciler) syncPolicies(
 //   - P0: No IdP (IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken)
 //   - P1: Basic IdP (Email, EmailList, EmailDomain, OIDCClaim)
 //   - P2: Google Workspace (GSuiteGroup)
-//   - P3: Deferred to v0.2.0 (Certificate, Group, GitHub, Azure, Okta, SAML, etc.)
+//   - P3: Not in current product scope (Certificate, Group, GitHub, Azure, Okta, SAML, etc.)
 func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.AccessRuleParam, error) {
 	var rules []cloudflare.AccessRuleParam
 	for _, r := range crdRules {
@@ -943,7 +896,7 @@ func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.Acce
 		}
 
 		// ============================================================
-		// P3: v0.2.0 - Not implemented in alpha.3
+		// P3: not in current product scope
 		// ============================================================
 		// Certificate, CommonName, Group, GitHub, Azure, Okta, SAML,
 		// AuthenticationMethod, DevicePosture, ExternalEvaluation, LoginMethod
@@ -1054,85 +1007,9 @@ func (w *k8sSecretWriter) WriteSecret(ctx context.Context, name string, data map
 	return w.client.Update(ctx, existing)
 }
 
-// configureMTLS configures mTLS certificate and hostname associations.
-// It reads the root CA from the referenced secret, uploads it to Cloudflare,
-// and associates the specified hostnames with the mTLS rule.
-func (r *CloudflareAccessPolicyReconciler) configureMTLS(
-	ctx context.Context,
-	accessService *cloudflare.AccessService,
-	accountID string,
-	policy *cfgatev1alpha1.CloudflareAccessPolicy,
-	hostnames []string,
-) error {
-	log := log.FromContext(ctx)
-
-	mtlsConfig := policy.Spec.MTLS
-	if mtlsConfig == nil || !mtlsConfig.Enabled {
-		return nil
-	}
-
-	// Read CA certificate from secret
-	if mtlsConfig.RootCASecretRef == nil {
-		return fmt.Errorf("mTLS enabled but rootCaSecretRef not specified")
-	}
-
-	var caSecret corev1.Secret
-	secretKey := types.NamespacedName{
-		Namespace: policy.Namespace,
-		Name:      mtlsConfig.RootCASecretRef.Name,
-	}
-	if err := r.Get(ctx, secretKey, &caSecret); err != nil {
-		return fmt.Errorf("failed to get CA secret: %w", err)
-	}
-
-	key := mtlsConfig.RootCASecretRef.Key
-	if key == "" {
-		key = "ca.crt"
-	}
-	caCert, ok := caSecret.Data[key]
-	if !ok {
-		return fmt.Errorf("CA certificate key %s not found in secret", key)
-	}
-
-	// Upload certificate
-	ruleName := mtlsConfig.RuleName
-	if ruleName == "" {
-		ruleName = policy.Name
-	}
-
-	log.Info("configuring mTLS certificate",
-		"ruleName", ruleName,
-		"hostnames", hostnames,
-	)
-
-	cert, _, err := accessService.EnsureMTLSCertificate(ctx, accountID, cloudflare.CreateCertificateParams{
-		Name:        ruleName,
-		Certificate: string(caCert),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to ensure mTLS certificate: %w", err)
-	}
-
-	policy.Status.MTLSRuleID = cert.ID
-
-	// Associate hostnames
-	associatedHostnames := mtlsConfig.AssociatedHostnames
-	if len(associatedHostnames) == 0 {
-		associatedHostnames = hostnames
-	}
-
-	if len(associatedHostnames) > 0 {
-		if err := accessService.UpdateMTLSHostnames(ctx, accountID, associatedHostnames, false); err != nil {
-			return fmt.Errorf("failed to update mTLS hostnames: %w", err)
-		}
-	}
-
-	return nil
-}
-
 // reconcileDelete handles policy deletion cleanup.
 // It deletes the Access Application (which cascades to policies), revokes service
-// tokens, removes mTLS certificates, and removes the finalizer. Cleanup failure
+// tokens, and removes the finalizer. Cleanup failure
 // blocks finalizer removal and requeues. Set cfgate.io/deletion-policy=orphan
 // to skip cleanup and allow deletion to proceed.
 func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
@@ -1187,18 +1064,6 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(
 		}
 	}
 
-	// Remove mTLS rule
-	if policy.Status.MTLSRuleID != "" {
-		log.V(1).Info("removing mTLS certificate",
-			"certificateId", policy.Status.MTLSRuleID,
-		)
-		if err := r.removeMTLSCertificate(ctx, accessService, accountID, policy.Status.MTLSRuleID); err != nil {
-			log.Error(err, "failed to remove mTLS certificate")
-			return r.blockAccessDeletion(ctx, policy,
-				fmt.Sprintf("Failed to remove mTLS certificate %s: %s", policy.Status.MTLSRuleID, err.Error()))
-		}
-	}
-
 	return r.removeFinalizer(ctx, policy)
 }
 
@@ -1230,16 +1095,6 @@ func (r *CloudflareAccessPolicyReconciler) revokeServiceToken(
 	accountID, tokenID string,
 ) error {
 	return accessService.Client().DeleteServiceToken(ctx, accountID, tokenID)
-}
-
-// removeMTLSCertificate removes an mTLS certificate from Cloudflare.
-// Called during deletion cleanup to remove orphaned certificates.
-func (r *CloudflareAccessPolicyReconciler) removeMTLSCertificate(
-	ctx context.Context,
-	accessService *cloudflare.AccessService,
-	accountID, certID string,
-) error {
-	return accessService.Client().DeleteMTLSCertificate(ctx, accountID, certID)
 }
 
 // removeFinalizer removes the access policy finalizer using a patch operation.
@@ -1290,9 +1145,6 @@ func accessPolicyStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessPolicyStatus) 
 		return false
 	}
 	if a.ApplicationAUD != b.ApplicationAUD {
-		return false
-	}
-	if a.MTLSRuleID != b.MTLSRuleID {
 		return false
 	}
 	if a.AttachedTargets != b.AttachedTargets {
@@ -1468,13 +1320,10 @@ func accessPolicyTargetIndexFunc(obj client.Object) []string {
 //   - CloudflareAccessPolicy (primary resource)
 //   - Secret (owned, for service token credentials)
 //   - HTTPRoute (for policies targeting HTTPRoute)
-//   - GRPCRoute (conditional, if CRD installed)
-//   - TCPRoute (conditional, if CRD installed)
-//   - UDPRoute (conditional, if CRD installed)
 //   - ReferenceGrant (conditional, for cross-namespace validation)
 //
 // Route watches use GenerationChangedPredicate to filter out status-only updates.
-// Optional CRD watches are registered only if the corresponding FeatureGate is enabled.
+// Optional CRD watches are registered only when their corresponding FeatureGate is enabled.
 func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controller").WithName("accesspolicy")
 	log.Info("registering controller with manager")
@@ -1499,33 +1348,6 @@ func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		)
 
-	// Conditionally watch GRPCRoute
-	if r.FeatureGates != nil && r.FeatureGates.HasGRPCRouteSupport() {
-		controllerBuilder = controllerBuilder.Watches(
-			&gateway.GRPCRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForGRPCRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		)
-	}
-
-	// Conditionally watch TCPRoute
-	if r.FeatureGates != nil && r.FeatureGates.HasTCPRouteSupport() {
-		controllerBuilder = controllerBuilder.Watches(
-			&gwapiv1alpha2.TCPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForTCPRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		)
-	}
-
-	// Conditionally watch UDPRoute
-	if r.FeatureGates != nil && r.FeatureGates.HasUDPRouteSupport() {
-		controllerBuilder = controllerBuilder.Watches(
-			&gwapiv1alpha2.UDPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForUDPRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		)
-	}
-
 	// Conditionally watch ReferenceGrant
 	if r.FeatureGates != nil && r.FeatureGates.HasReferenceGrantSupport() {
 		controllerBuilder = controllerBuilder.Watches(
@@ -1541,21 +1363,6 @@ func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 // findPoliciesForHTTPRoute returns reconcile requests for policies targeting the given HTTPRoute.
 func (r *CloudflareAccessPolicyReconciler) findPoliciesForHTTPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
 	return r.findPoliciesForTarget(ctx, "HTTPRoute", obj)
-}
-
-// findPoliciesForGRPCRoute returns reconcile requests for policies targeting the given GRPCRoute.
-func (r *CloudflareAccessPolicyReconciler) findPoliciesForGRPCRoute(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.findPoliciesForTarget(ctx, "GRPCRoute", obj)
-}
-
-// findPoliciesForTCPRoute returns reconcile requests for policies targeting the given TCPRoute.
-func (r *CloudflareAccessPolicyReconciler) findPoliciesForTCPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.findPoliciesForTarget(ctx, "TCPRoute", obj)
-}
-
-// findPoliciesForUDPRoute returns reconcile requests for policies targeting the given UDPRoute.
-func (r *CloudflareAccessPolicyReconciler) findPoliciesForUDPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.findPoliciesForTarget(ctx, "UDPRoute", obj)
 }
 
 // findPoliciesForTarget finds all CloudflareAccessPolicies targeting a specific object.

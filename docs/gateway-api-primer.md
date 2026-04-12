@@ -58,11 +58,11 @@ Key points:
 - `allowedRoutes.namespaces.from: All` permits routes from any namespace to attach (default is `Same`, which restricts to the Gateway's namespace)
 - The `port` and `protocol` fields satisfy the Gateway API spec but do not determine what cloudflared actually serves. Cloudflared routing is driven by the routes themselves
 
-### Routes (HTTPRoute, TCPRoute, UDPRoute, GRPCRoute)
+### Routes (HTTPRoute)
 
 Routes attach to Gateways via `parentRefs` and define routing rules. In cfgate, each route becomes one or more cloudflared ingress rules.
 
-**HTTPRoute** and **GRPCRoute** are fully supported. **TCPRoute** and **UDPRoute** have stub controllers planned for v0.2.0.
+Current route support is **HTTPRoute** only.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -153,10 +153,10 @@ Without this, only routes in the same namespace as the Gateway can attach. You c
 |---|---|---|
 | Controller selection | IngressClass | GatewayClass |
 | Runtime instance | Implicit (Ingress resources create it) | Explicit Gateway resource |
-| Routing rules | Ingress resource (host + path rules) | HTTPRoute, TCPRoute, GRPCRoute, UDPRoute |
+| Routing rules | Ingress resource (host + path rules) | HTTPRoute |
 | Per-route config | Annotations on Ingress | Annotations on Route |
 | Multi-tenancy | Namespace isolation only | Gateway `allowedRoutes` with namespace selectors |
-| Protocol support | HTTP/HTTPS only | HTTP, gRPC, TCP, UDP (extensible) |
+| Protocol support | HTTP/HTTPS only | HTTPRoute-driven HTTP routing |
 | Role separation | None (one resource does everything) | GatewayClass (infra), Gateway (ops), Route (dev) |
 | Cross-namespace routing | Not supported | Built-in via `parentRefs` with namespace |
 

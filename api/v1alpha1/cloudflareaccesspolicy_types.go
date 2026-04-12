@@ -8,22 +8,22 @@ import (
 // PolicyTargetReference identifies a Gateway API resource for Access policy attachment.
 //
 // PolicyTargetReference follows the Gateway API LocalPolicyTargetReferenceWithSectionName
-// pattern for policy attachment. It targets Gateway API resources (Gateway, HTTPRoute,
-// GRPCRoute, TCPRoute, UDPRoute) and extracts hostnames from those resources to create
-// corresponding Cloudflare Access applications.
+// pattern for policy attachment. It targets Gateway API Gateway and HTTPRoute resources
+// and extracts hostnames from those resources to create corresponding Cloudflare Access
+// applications.
 //
 // Cross-namespace references require a ReferenceGrant in the target namespace that permits
 // CloudflareAccessPolicy resources from the policy's namespace.
 //
 // +kubebuilder:validation:XValidation:rule="self.group == 'gateway.networking.k8s.io'",message="group must be gateway.networking.k8s.io"
-// +kubebuilder:validation:XValidation:rule="self.kind in ['Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute', 'UDPRoute']",message="kind must be Gateway, HTTPRoute, GRPCRoute, TCPRoute, or UDPRoute"
+// +kubebuilder:validation:XValidation:rule="self.kind in ['Gateway', 'HTTPRoute']",message="kind must be Gateway or HTTPRoute"
 type PolicyTargetReference struct {
 	// Group is the API group of the target resource.
 	// +kubebuilder:default="gateway.networking.k8s.io"
 	Group string `json:"group"`
 
 	// Kind is the kind of the target resource.
-	// +kubebuilder:validation:Enum=Gateway;HTTPRoute;GRPCRoute;TCPRoute;UDPRoute
+	// +kubebuilder:validation:Enum=Gateway;HTTPRoute
 	Kind string `json:"kind"`
 
 	// Name is the name of the target resource.
@@ -324,7 +324,7 @@ type AccessPolicyRule struct {
 //   - P0 (no IdP): IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken
 //   - P1 (basic IdP): Email, EmailList, EmailDomain, OIDCClaim
 //   - P2 (Google Workspace): GSuiteGroup
-//   - P3 (deferred to v0.2.0): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
+//   - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 //
 // SDK types map directly to cloudflare-go v6.6.0: IPRule, IPListRule, CountryRule,
 // EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
@@ -400,11 +400,11 @@ type AccessRule struct {
 	GSuiteGroup *AccessGSuiteGroupRule `json:"gsuiteGroup,omitempty"`
 
 	// ============================================================
-	// P3: Deferred to v0.2.0
+	// P3: Not in current product scope.
 	// ============================================================
-	// The following rule types are NOT included in alpha.3:
-	// - Certificate (CertificateRule) - mTLS client cert
-	// - CommonName (AccessCommonNameRule) - mTLS CN matching
+	// The following rule types are not part of the current CRD surface:
+	// - Certificate (CertificateRule) - client certificate matching
+	// - CommonName (AccessCommonNameRule) - certificate common-name matching
 	// - Group (GroupRule) - Access Groups
 	// - GitHub (GitHubOrganizationRule) - GitHub org/team
 	// - Azure (AzureGroupRule) - Azure AD groups
@@ -627,48 +627,6 @@ type ServiceTokenSecretRef struct {
 	Name string `json:"name"`
 }
 
-// MTLSConfig defines mutual TLS (mTLS) certificate-based authentication.
-//
-// MTLSConfig enables certificate-based authentication where clients must present
-// a valid certificate signed by the configured CA. This provides strong authentication
-// for service-to-service communication.
-type MTLSConfig struct {
-	// Enabled activates mTLS requirement.
-	// +kubebuilder:default=false
-	Enabled bool `json:"enabled"`
-
-	// RootCASecretRef references the CA certificate(s) for validation.
-	// +optional
-	RootCASecretRef *CASecretRef `json:"rootCaSecretRef,omitempty"`
-
-	// AssociatedHostnames limits mTLS to specific hostnames.
-	// +optional
-	// +kubebuilder:validation:MaxItems=25
-	AssociatedHostnames []string `json:"associatedHostnames,omitempty"`
-
-	// RuleName is the name of the mTLS rule in Cloudflare.
-	// Defaults to CR name if omitted.
-	// +optional
-	// +kubebuilder:validation:MaxLength=255
-	RuleName string `json:"ruleName,omitempty"`
-}
-
-// CASecretRef references a Kubernetes Secret containing CA certificate(s) for mTLS validation.
-//
-// CASecretRef identifies the Secret containing the CA certificate chain used to validate
-// client certificates. The certificate must be in PEM format.
-type CASecretRef struct {
-	// Name of the Secret.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
-
-	// Key within Secret (defaults to ca.crt).
-	// +kubebuilder:default="ca.crt"
-	// +kubebuilder:validation:MaxLength=253
-	Key string `json:"key,omitempty"`
-}
-
 // CloudflareAccessPolicySpec defines the desired state of a CloudflareAccessPolicy resource.
 //
 // CloudflareAccessPolicySpec configures Cloudflare Access protection for Gateway API resources.
@@ -708,10 +666,6 @@ type CloudflareAccessPolicySpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=10
 	ServiceTokens []ServiceTokenConfig `json:"serviceTokens,omitempty"`
-
-	// MTLS configures certificate-based authentication.
-	// +optional
-	MTLS *MTLSConfig `json:"mtls,omitempty"`
 }
 
 // PolicyAncestorStatus describes the policy attachment status for a specific target.
@@ -747,9 +701,6 @@ type CloudflareAccessPolicyStatus struct {
 	// ServiceTokenIDs maps token names to Cloudflare IDs.
 	ServiceTokenIDs map[string]string `json:"serviceTokenIds,omitempty"`
 
-	// MTLSRuleID is the Cloudflare mTLS rule ID.
-	MTLSRuleID string `json:"mtlsRuleId,omitempty"`
-
 	// ObservedGeneration is the last generation processed.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
@@ -768,15 +719,14 @@ type CloudflareAccessPolicyStatus struct {
 // CloudflareAccessPolicy is the Schema for the cloudflareaccesspolicies API.
 //
 // CloudflareAccessPolicy manages Cloudflare Access Applications and Policies for zero-trust
-// access control. It attaches to Gateway API resources (Gateway, HTTPRoute, GRPCRoute,
-// TCPRoute, UDPRoute) using the targetRefs pattern and creates corresponding Access
-// Applications in Cloudflare.
+// access control. It attaches to Gateway API Gateway and HTTPRoute resources using the
+// targetRefs pattern and creates corresponding Access Applications in Cloudflare.
 //
 // Access rules are organized into implementation tiers based on IdP requirements:
 //   - P0: IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken (no IdP)
 //   - P1: Email, EmailList, EmailDomain, OIDCClaim (basic IdP required)
 //   - P2: GSuiteGroup (Google Workspace required)
-//   - P3: deferred to v0.2.0 (Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.)
+//   - P3: not in current product scope (Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.)
 //
 // Status conditions:
 //   - Ready: policy is fully applied to all targets
@@ -786,7 +736,6 @@ type CloudflareAccessPolicyStatus struct {
 //   - ApplicationCreated: Access Application exists in Cloudflare
 //   - PoliciesAttached: Access policies are attached to the application
 //   - ServiceTokensReady: all service tokens have been created
-//   - MTLSConfigured: mTLS rule is configured (if enabled)
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

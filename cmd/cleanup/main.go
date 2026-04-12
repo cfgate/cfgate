@@ -58,24 +58,52 @@ type cloudflareCleanupClient struct {
 	client *cloudflare.Client
 }
 
+type cleanupRuntime struct {
+	newClient func(string) cleanupClient
+}
+
+var (
+	// Test hooks below are intentionally swappable in serial tests; do not use with t.Parallel().
+	listOrphanedTunnelsFn            = listOrphanedTunnels
+	listOrphanedDNSRecordsFn         = listOrphanedDNSRecords
+	listOrphanedAccessApplicationsFn = listOrphanedAccessApplications
+	listOrphanedServiceTokensFn      = listOrphanedServiceTokens
+	getZoneIDFn                      = getZoneID
+	deleteTunnelFn                   = deleteTunnel
+	deleteDNSRecordFn                = deleteDNSRecord
+	deleteAccessApplicationFn        = deleteAccessApplication
+	deleteServiceTokenFn             = deleteServiceToken
+)
+
 func main() {
-	cfg, err := loadCleanupConfig(os.Getenv)
+	os.Exit(executeCleanup(os.Getenv, os.Stdout, defaultCleanupRuntime()))
+}
+
+func defaultCleanupRuntime() cleanupRuntime {
+	return cleanupRuntime{
+		newClient: func(apiToken string) cleanupClient {
+			return &cloudflareCleanupClient{
+				client: cloudflare.NewClient(option.WithAPIToken(apiToken)),
+			}
+		},
+	}
+}
+
+func executeCleanup(getenv func(string) string, out io.Writer, runtime cleanupRuntime) int {
+	cfg, err := loadCleanupConfig(getenv)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stdout, "ERROR: %v\n", err)
-		_, _ = fmt.Fprintln(os.Stdout, "Usage: mise run e2e:cleanup")
-		os.Exit(1)
+		_, _ = fmt.Fprintf(out, "ERROR: %v\n", err)
+		_, _ = fmt.Fprintln(out, "Usage: mise run e2e:cleanup")
+		return 1
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
-	client := &cloudflareCleanupClient{
-		client: cloudflare.NewClient(option.WithAPIToken(cfg.APIToken)),
+	if _, err := runCleanup(ctx, cfg, runtime.newClient(cfg.APIToken), out); err != nil {
+		return 1
 	}
-
-	if _, err := runCleanup(ctx, cfg, client, os.Stdout); err != nil {
-		os.Exit(1)
-	}
+	return 0
 }
 
 func loadCleanupConfig(getenv func(string) string) (cleanupConfig, error) {
@@ -193,39 +221,39 @@ func printScanSection(out io.Writer, title string, resources []resource, err err
 }
 
 func (c *cloudflareCleanupClient) ListOrphanedTunnels(ctx context.Context, accountID string) ([]resource, error) {
-	return listOrphanedTunnels(ctx, c.client, accountID)
+	return listOrphanedTunnelsFn(ctx, c.client, accountID)
 }
 
 func (c *cloudflareCleanupClient) ListOrphanedDNSRecords(ctx context.Context, zoneName string) ([]resource, error) {
-	return listOrphanedDNSRecords(ctx, c.client, zoneName)
+	return listOrphanedDNSRecordsFn(ctx, c.client, zoneName)
 }
 
 func (c *cloudflareCleanupClient) ListOrphanedAccessApplications(ctx context.Context, accountID string) ([]resource, error) {
-	return listOrphanedAccessApplications(ctx, c.client, accountID)
+	return listOrphanedAccessApplicationsFn(ctx, c.client, accountID)
 }
 
 func (c *cloudflareCleanupClient) ListOrphanedServiceTokens(ctx context.Context, accountID string) ([]resource, error) {
-	return listOrphanedServiceTokens(ctx, c.client, accountID)
+	return listOrphanedServiceTokensFn(ctx, c.client, accountID)
 }
 
 func (c *cloudflareCleanupClient) ResolveZoneID(ctx context.Context, zoneName string) (string, error) {
-	return getZoneID(ctx, c.client, zoneName)
+	return getZoneIDFn(ctx, c.client, zoneName)
 }
 
 func (c *cloudflareCleanupClient) DeleteTunnel(ctx context.Context, accountID, tunnelID string) error {
-	return deleteTunnel(ctx, c.client, accountID, tunnelID)
+	return deleteTunnelFn(ctx, c.client, accountID, tunnelID)
 }
 
 func (c *cloudflareCleanupClient) DeleteDNSRecord(ctx context.Context, zoneID, recordID string) error {
-	return deleteDNSRecord(ctx, c.client, zoneID, recordID)
+	return deleteDNSRecordFn(ctx, c.client, zoneID, recordID)
 }
 
 func (c *cloudflareCleanupClient) DeleteAccessApplication(ctx context.Context, accountID, appID string) error {
-	return deleteAccessApplication(ctx, c.client, accountID, appID)
+	return deleteAccessApplicationFn(ctx, c.client, accountID, appID)
 }
 
 func (c *cloudflareCleanupClient) DeleteServiceToken(ctx context.Context, accountID, tokenID string) error {
-	return deleteServiceToken(ctx, c.client, accountID, tokenID)
+	return deleteServiceTokenFn(ctx, c.client, accountID, tokenID)
 }
 
 // listOrphanedTunnels finds tunnels with e2e- or recovery- name prefix.

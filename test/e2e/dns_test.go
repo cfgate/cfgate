@@ -12,6 +12,7 @@ import (
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -484,6 +485,529 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 
 			// Cleanup.
 			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
+		})
+	})
+
+	Context("main-lane expansion", func() {
+		It("should discover routes from namespaces selected by name or label using union semantics", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+			By("Creating additional namespaces for selector coverage")
+			matchByNameNS := createTestNamespace("cfgate-dns-name")
+			matchByLabelNS := createTestNamespace("cfgate-dns-label")
+			unmatchedNS := createTestNamespace("cfgate-dns-other")
+			var dnsResource *cfgatev1alpha1.CloudflareDNS
+			matchByLabelNS.Labels["e2e.dns/selection"] = "label"
+			Expect(k8sClient.Update(ctx, matchByLabelNS)).To(Succeed())
+
+			DeferCleanup(func() {
+				if testEnv.SkipCleanup {
+					return
+				}
+				cleanupCtx := context.Background()
+				if dnsResource != nil {
+					Expect(k8sClient.Delete(cleanupCtx, dnsResource)).To(SatisfyAny(Succeed(), WithTransform(apierrors.IsNotFound, BeTrue())))
+					waitForDNSDeleted(cleanupCtx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+				}
+				deleteTestNamespace(matchByNameNS)
+				deleteTestNamespace(matchByLabelNS)
+				deleteTestNamespace(unmatchedNS)
+			})
+
+			By("Creating Gateways and HTTPRoutes across the selected namespaces")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			tunnelRef := fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name)
+			annotationFilter := "e2e.dns/selection=union"
+
+			makeRoute := func(targetNamespace *corev1.Namespace, suffix string) string {
+				gatewayName := testID("gw-" + suffix)
+				createGateway(ctx, k8sClient, gatewayName, targetNamespace.Name, gatewayClassName, tunnelRef)
+				serviceName := testID("svc-" + suffix)
+				createTestService(ctx, k8sClient, serviceName, targetNamespace.Name, 8080)
+				hostname := fmt.Sprintf("%s.%s", testID("selector-"+suffix), testEnv.CloudflareZoneName)
+				route := createHTTPRoute(ctx, k8sClient, testID("route-"+suffix), targetNamespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
+				if route.Annotations == nil {
+					route.Annotations = map[string]string{}
+				}
+				route.Annotations["e2e.dns/selection"] = "union"
+				Expect(k8sClient.Update(ctx, route)).To(Succeed())
+				return hostname
+			}
+
+			hostnameByName := makeRoute(matchByNameNS, "name")
+			hostnameByLabel := makeRoute(matchByLabelNS, "label")
+			hostnameUnmatched := makeRoute(unmatchedNS, "other")
+
+			By("Creating CloudflareDNS with namespaceSelector matchNames + matchLabels")
+			dnsResource = &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-selector-union"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{
+						Name:      sharedTunnel.Name,
+						Namespace: namespace.Name,
+					},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+							Enabled:          true,
+							AnnotationFilter: annotationFilter,
+							NamespaceSelector: &cfgatev1alpha1.DNSNamespaceSelector{
+								MatchNames: []string{matchByNameNS.Name},
+								MatchLabels: map[string]string{
+									"e2e.dns/selection": "label",
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+
+			By("Verifying records exist for the name-selected and label-selected namespaces")
+			Eventually(func(g Gomega) {
+				recordByName, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostnameByName, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(recordByName).NotTo(BeNil())
+
+				recordByLabel, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostnameByLabel, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(recordByLabel).NotTo(BeNil())
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Verifying routes outside the selector are excluded")
+			Consistently(func() bool {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostnameUnmatched, "CNAME")
+				if err != nil {
+					GinkgoWriter.Printf("selector exclusion lookup error (treating as not-created): %v\n", err)
+					return true
+				}
+				return record == nil
+			}, ShortTimeout, DefaultInterval).Should(BeTrue())
+		})
+
+		It("should delete orphaned records when source routes are removed and deleteOnRouteRemoval=true", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+			By("Creating Gateway-backed route discovery resources")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gw")
+			tunnelRef := fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name)
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, tunnelRef)
+
+			serviceName := testID("svc")
+			createTestService(ctx, k8sClient, serviceName, namespace.Name, 8080)
+			hostname := fmt.Sprintf("%s.%s", testID("route-cleanup"), testEnv.CloudflareZoneName)
+			routeName := testID("route")
+			route := createHTTPRoute(ctx, k8sClient, routeName, namespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
+			route.Annotations = map[string]string{"e2e.dns/cleanup": "enabled"}
+			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+
+			By("Creating CloudflareDNS with deleteOnRouteRemoval enabled")
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-route-cleanup"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: sharedTunnel.Name},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+							Enabled:          true,
+							AnnotationFilter: "e2e.dns/cleanup=enabled",
+						},
+					},
+					CleanupPolicy: cfgatev1alpha1.DNSCleanupPolicy{
+						DeleteOnRouteRemoval: ptrTo(true),
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+			waitForDNSRecordID(ctx, cfClient, zoneID, hostname, "CNAME", DefaultTimeout)
+
+			By("Deleting the source HTTPRoute and verifying record cleanup")
+			Expect(k8sClient.Delete(ctx, route)).To(Succeed())
+			Eventually(func() bool {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+				if err != nil {
+					GinkgoWriter.Printf("route removal cleanup lookup error: %v\n", err)
+					return false
+				}
+				return record == nil
+			}, DefaultTimeout, DefaultInterval).Should(BeTrue())
+		})
+
+		It("should preserve records after route removal when deleteOnRouteRemoval=false", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+			By("Creating Gateway-backed discovery resources")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gw")
+			tunnelRef := fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name)
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, tunnelRef)
+
+			serviceName := testID("svc")
+			createTestService(ctx, k8sClient, serviceName, namespace.Name, 8080)
+			hostname := fmt.Sprintf("%s.%s", testID("route-preserve"), testEnv.CloudflareZoneName)
+			routeName := testID("route")
+			route := createHTTPRoute(ctx, k8sClient, routeName, namespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
+			route.Annotations = map[string]string{"e2e.dns/cleanup": "preserve"}
+			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+
+			By("Creating CloudflareDNS with deleteOnRouteRemoval disabled")
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-route-preserve"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: sharedTunnel.Name},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+							Enabled:          true,
+							AnnotationFilter: "e2e.dns/cleanup=preserve",
+						},
+					},
+					CleanupPolicy: cfgatev1alpha1.DNSCleanupPolicy{
+						DeleteOnRouteRemoval: ptrTo(false),
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+			recordID := waitForDNSRecordID(ctx, cfClient, zoneID, hostname, "CNAME", DefaultTimeout)
+
+			By("Deleting the route and verifying the record remains")
+			Expect(k8sClient.Delete(ctx, route)).To(Succeed())
+			Consistently(func() bool {
+				return dnsRecordByIDStillExists(ctx, cfClient, zoneID, recordID)
+			}, ShortTimeout, DefaultInterval).Should(BeTrue())
+
+			By("Deleting the DNS resource so the preserved record can be cleaned up on resource removal")
+			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
+			waitForDNSDeleted(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+			Eventually(func() bool {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+				if err != nil {
+					GinkgoWriter.Printf("post-delete cleanup lookup error: %v\n", err)
+					return false
+				}
+				return record == nil
+			}, DefaultTimeout, DefaultInterval).Should(BeTrue())
+		})
+
+		It("should use fallback credentials during DNS deletion when primary tunnel credentials disappear", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
+			By("Creating dedicated primary credentials for a deletion-path tunnel")
+			primarySecretName := testID("primary-creds")
+			primarySecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      primarySecretName,
+					Namespace: namespace.Name,
+				},
+				Type: corev1.SecretTypeOpaque,
+				StringData: map[string]string{
+					"CLOUDFLARE_API_TOKEN": testEnv.CloudflareAPIToken,
+				},
+			}
+			Expect(k8sClient.Create(ctx, primarySecret)).To(Succeed())
+
+			By("Creating a dedicated tunnel that uses the primary secret plus fallback credentials")
+			tunnelName := testID("dns-fallback-tunnel")
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-fallback"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Tunnel: cfgatev1alpha1.TunnelIdentity{
+						Name: tunnelName,
+					},
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{
+						AccountID: testEnv.CloudflareAccountID,
+						SecretRef: cfgatev1alpha1.SecretRef{
+							Name: primarySecretName,
+						},
+					},
+					FallbackCredentialsRef: e2eFallbackCredentialsRef(),
+					Cloudflared: cfgatev1alpha1.CloudflaredConfig{
+						Replicas: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tunnel)).To(Succeed())
+			tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
+
+			By("Creating CloudflareDNS with fallbackCredentialsRef")
+			hostname := fmt.Sprintf("%s.%s", testID("dns-fallback"), testEnv.CloudflareZoneName)
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-fallback"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{
+						Name:      tunnel.Name,
+						Namespace: namespace.Name,
+					},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						Explicit: []cfgatev1alpha1.DNSExplicitHostname{
+							{Hostname: hostname},
+						},
+					},
+					FallbackCredentialsRef: e2eFallbackCredentialsRef(),
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+
+			By("Deleting the primary tunnel credentials secret and then deleting the DNS resource")
+			Expect(k8sClient.Delete(ctx, primarySecret)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
+			waitForDNSDeleted(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+
+			By("Verifying the DNS record is removed via fallback credentials")
+			Eventually(func() bool {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+				if err != nil {
+					GinkgoWriter.Printf("fallback cleanup lookup error: %v\n", err)
+					return false
+				}
+				return record == nil
+			}, LongTimeout, DefaultInterval).Should(BeTrue())
+		})
+
+		It("should create external A and AAAA records and also support the explicit zone ID fast path", SpecTimeout(10*time.Minute), func(ctx SpecContext) {
+			By("Creating an external A record")
+			aHostname := fmt.Sprintf("%s.%s", testID("external-a"), testEnv.CloudflareZoneName)
+			aRecord := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-external-a"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					ExternalTarget: &cfgatev1alpha1.ExternalTarget{
+						Type:  cfgatev1alpha1.RecordTypeA,
+						Value: "198.51.100.10",
+					},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Defaults: cfgatev1alpha1.DNSRecordDefaults{
+						Proxied: false,
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						Explicit: []cfgatev1alpha1.DNSExplicitHostname{
+							{Hostname: aHostname},
+						},
+					},
+					Cloudflare: &cfgatev1alpha1.CloudflareConfig{
+						AccountID: testEnv.CloudflareAccountID,
+						SecretRef: cfgatev1alpha1.SecretRef{Name: "cloudflare-credentials"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, aRecord)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, aRecord.Name, aRecord.Namespace, DefaultTimeout)
+
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, aHostname, "A")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil())
+				g.Expect(record.Type).To(Equal("A"))
+				g.Expect(record.Content).To(Equal("198.51.100.10"))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Creating an external AAAA record")
+			aaaaHostname := fmt.Sprintf("%s.%s", testID("external-aaaa"), testEnv.CloudflareZoneName)
+			aaaaRecord := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-external-aaaa"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					ExternalTarget: &cfgatev1alpha1.ExternalTarget{
+						Type:  cfgatev1alpha1.RecordTypeAAAA,
+						Value: "2001:db8::10",
+					},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Defaults: cfgatev1alpha1.DNSRecordDefaults{
+						Proxied: false,
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						Explicit: []cfgatev1alpha1.DNSExplicitHostname{
+							{Hostname: aaaaHostname},
+						},
+					},
+					Cloudflare: &cfgatev1alpha1.CloudflareConfig{
+						AccountID: testEnv.CloudflareAccountID,
+						SecretRef: cfgatev1alpha1.SecretRef{Name: "cloudflare-credentials"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, aaaaRecord)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, aaaaRecord.Name, aaaaRecord.Namespace, DefaultTimeout)
+
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, aaaaHostname, "AAAA")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil())
+				g.Expect(record.Type).To(Equal("AAAA"))
+				g.Expect(record.Content).To(Equal("2001:db8::10"))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Creating a tunnel-backed record that uses an explicit zone ID")
+			fastPathHostname := fmt.Sprintf("%s.%s", testID("zoneid"), testEnv.CloudflareZoneName)
+			fastPath := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-zoneid"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: sharedTunnel.Name},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName, ID: zoneID},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						Explicit: []cfgatev1alpha1.DNSExplicitHostname{
+							{Hostname: fastPathHostname},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, fastPath)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, fastPath.Name, fastPath.Namespace, DefaultTimeout)
+			waitForDNSRecordID(ctx, cfClient, zoneID, fastPathHostname, "CNAME", DefaultTimeout)
+		})
+
+		It("should surface NoHostnamesDiscovered and recover once matching routes appear", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+			By("Creating Gateway infrastructure without any matching routes yet")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gw")
+			tunnelRef := fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name)
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, tunnelRef)
+
+			By("Creating CloudflareDNS that relies on gatewayRoutes")
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-no-hostnames"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: sharedTunnel.Name},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						GatewayRoutes: cfgatev1alpha1.DNSGatewayRoutesSource{
+							Enabled:          true,
+							AnnotationFilter: "e2e.dns/recovery=enabled",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+
+			By("Waiting for the no-hostnames early requeue conditions")
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareDNS
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: dnsResource.Name, Namespace: dnsResource.Namespace}, &current)).To(Succeed())
+				recordsSynced := findCondition(current.Status.Conditions, "RecordsSynced")
+				ready := findCondition(current.Status.Conditions, "Ready")
+				g.Expect(recordsSynced).NotTo(BeNil())
+				g.Expect(ready).NotTo(BeNil())
+				g.Expect(recordsSynced.Status).To(Equal(metav1.ConditionUnknown))
+				g.Expect(recordsSynced.Reason).To(Equal("NoHostnamesDiscovered"))
+				g.Expect(ready.Status).To(Equal(metav1.ConditionUnknown))
+				g.Expect(ready.Reason).To(Equal("NoHostnamesDiscovered"))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Creating a matching route and verifying recovery")
+			serviceName := testID("svc")
+			createTestService(ctx, k8sClient, serviceName, namespace.Name, 8080)
+			hostname := fmt.Sprintf("%s.%s", testID("recovered"), testEnv.CloudflareZoneName)
+			route := createHTTPRoute(ctx, k8sClient, testID("route"), namespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
+			route.Annotations = map[string]string{"e2e.dns/recovery": "enabled"}
+			Expect(k8sClient.Update(ctx, route)).To(Succeed())
+
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+			waitForDNSRecordID(ctx, cfClient, zoneID, hostname, "CNAME", DefaultTimeout)
+		})
+
+		It("should report partial sync when some hostnames belong to unconfigured zones", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+			By("Creating CloudflareDNS with one good hostname and one hostname in an unconfigured zone")
+			goodHostname := fmt.Sprintf("%s.%s", testID("partial-good"), testEnv.CloudflareZoneName)
+			badHostname := fmt.Sprintf("%s.example.invalid", testID("partial-bad"))
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-partial"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: sharedTunnel.Name},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						Explicit: []cfgatev1alpha1.DNSExplicitHostname{
+							{Hostname: goodHostname},
+							{Hostname: badHostname},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+
+			By("Waiting for mixed success/failure accounting to appear in status")
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareDNS
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: dnsResource.Name, Namespace: dnsResource.Namespace}, &current)).To(Succeed())
+				g.Expect(current.Status.SyncedRecords).To(Equal(int32(1)))
+				g.Expect(current.Status.FailedRecords).To(Equal(int32(1)))
+				g.Expect(findCondition(current.Status.Conditions, "RecordsSynced")).NotTo(BeNil())
+				g.Expect(findCondition(current.Status.Conditions, "RecordsSynced").Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(findCondition(current.Status.Conditions, "Ready")).NotTo(BeNil())
+				g.Expect(findCondition(current.Status.Conditions, "Ready").Status).To(Equal(metav1.ConditionFalse))
+
+				var foundFailed bool
+				for _, record := range current.Status.Records {
+					if record.Hostname == badHostname && record.Status == "Failed" {
+						foundFailed = true
+						g.Expect(record.Error).To(ContainSubstring("zone"))
+					}
+				}
+				g.Expect(foundFailed).To(BeTrue())
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Verifying the valid hostname still syncs to Cloudflare")
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, goodHostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil())
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 		})
 	})
 

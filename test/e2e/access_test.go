@@ -2,6 +2,7 @@
 package e2e_test
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -11,10 +12,12 @@ import (
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 // Access tests organized by tier:
@@ -395,6 +398,263 @@ var _ = Describe("CloudflareAccessPolicy E2E", Label("cloudflare"), func() {
 
 			By("Waiting for TargetsResolved condition to be False")
 			waitForAccessPolicyCondition(ctx, k8sClient, policy.Name, policy.Namespace, "TargetsResolved", metav1.ConditionFalse, ShortTimeout)
+		})
+	})
+
+	Context("main-lane expansion", func() {
+		It("should target a Gateway, inherit tunnel credentials, and derive the application domain from listener hostnames", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
+			By("Creating a tunnel for credential inheritance")
+			tunnelName := testID("access-gw-target")
+			tunnel := createCloudflareTunnel(ctx, k8sClient, tunnelName+"-tunnel", namespace.Name, tunnelName)
+			tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
+
+			By("Creating Gateway infrastructure with a listener hostname")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+
+			hostname := fmt.Sprintf("%s.%s", testID("gw-target"), testEnv.CloudflareZoneName)
+			gatewayName := testID("gateway")
+			gateway := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      gatewayName,
+					Namespace: namespace.Name,
+					Annotations: map[string]string{
+						"cfgate.io/tunnel-ref": fmt.Sprintf("%s/%s", namespace.Name, tunnel.Name),
+					},
+				},
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: gatewayv1.ObjectName(gatewayClassName),
+					Listeners: []gatewayv1.Listener{
+						{
+							Name:     "https",
+							Protocol: gatewayv1.HTTPSProtocolType,
+							Port:     443,
+							Hostname: ptrTo(gatewayv1.Hostname(hostname)),
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gateway)).To(Succeed())
+			waitForGatewayCondition(ctx, k8sClient, gateway.Name, gateway.Namespace, string(gatewayv1.GatewayConditionAccepted), metav1.ConditionTrue, DefaultTimeout)
+
+			By("Creating an AccessPolicy that targets the Gateway without explicit cloudflareRef")
+			policyName := testID("access-gateway-policy")
+			policy := &cfgatev1alpha1.CloudflareAccessPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      policyName,
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+					TargetRef: &cfgatev1alpha1.PolicyTargetReference{
+						Group: "gateway.networking.k8s.io",
+						Kind:  "Gateway",
+						Name:  gateway.Name,
+					},
+					Application: cfgatev1alpha1.AccessApplication{
+						Name: policyName,
+					},
+					Policies: []cfgatev1alpha1.AccessPolicyRule{
+						{
+							Name:     "allow-all",
+							Decision: "allow",
+							Include: []cfgatev1alpha1.AccessRule{
+								{Everyone: ptrTo(true)},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+
+			By("Waiting for the policy to become ready")
+			policy = waitForAccessPolicyReady(ctx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
+
+			By("Verifying inherited credentials and target-derived domain were used")
+			credentialsCondition := findCondition(policy.Status.Conditions, "CredentialsValid")
+			Expect(credentialsCondition).NotTo(BeNil())
+			Expect(credentialsCondition.Status).To(Equal(metav1.ConditionTrue))
+
+			cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, policy.Status.ApplicationID)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfApp).NotTo(BeNil())
+			Expect(cfApp.Domain).To(Equal(hostname))
+
+			Expect(policy.Status.Ancestors).To(HaveLen(1))
+			Expect(policy.Status.Ancestors[0].AncestorRef.Kind).To(Equal("Gateway"))
+			Expect(policy.Status.Ancestors[0].AncestorRef.Name).To(Equal(gateway.Name))
+			Expect(policy.Status.Ancestors[0].ControllerName).To(Equal("cfgate.io/cloudflare-tunnel-controller"))
+			Expect(findCondition(policy.Status.Ancestors[0].Conditions, "Accepted")).NotTo(BeNil())
+			Expect(findCondition(policy.Status.Ancestors[0].Conditions, "Accepted").Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("should deny cross-namespace targeting without a ReferenceGrant", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+			By("Creating a separate target namespace")
+			targetNamespace := createTestNamespace("cfgate-access-target")
+			var policy *cfgatev1alpha1.CloudflareAccessPolicy
+			DeferCleanup(func() {
+				if testEnv.SkipCleanup {
+					return
+				}
+				cleanupCtx := context.Background()
+				if policy != nil {
+					Expect(k8sClient.Delete(cleanupCtx, policy)).To(SatisfyAny(Succeed(), WithTransform(apierrors.IsNotFound, BeTrue())))
+					waitForAccessPolicyDeleted(cleanupCtx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
+				}
+				deleteTestNamespace(targetNamespace)
+			})
+			createCloudflareCredentialsSecret(targetNamespace.Name)
+
+			By("Creating target Gateway and HTTPRoute in the other namespace")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gateway")
+			createGateway(ctx, k8sClient, gatewayName, targetNamespace.Name, gatewayClassName, "")
+
+			serviceName := testID("svc")
+			createTestService(ctx, k8sClient, serviceName, targetNamespace.Name, 8080)
+
+			hostname := fmt.Sprintf("%s.%s", testID("crossns-denied"), testEnv.CloudflareZoneName)
+			routeName := testID("route")
+			createHTTPRoute(ctx, k8sClient, routeName, targetNamespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
+
+			By("Creating a policy that references the other namespace without a grant")
+			policyName := testID("access-crossns-denied")
+			policy = &cfgatev1alpha1.CloudflareAccessPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      policyName,
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+					TargetRef: &cfgatev1alpha1.PolicyTargetReference{
+						Group:     "gateway.networking.k8s.io",
+						Kind:      "HTTPRoute",
+						Name:      routeName,
+						Namespace: ptrTo(targetNamespace.Name),
+					},
+					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
+						Name:      "cloudflare-credentials",
+						AccountID: testEnv.CloudflareAccountID,
+					},
+					Application: cfgatev1alpha1.AccessApplication{
+						Name:   policyName,
+						Domain: hostname,
+					},
+					Policies: []cfgatev1alpha1.AccessPolicyRule{
+						{
+							Name:     "allow-all",
+							Decision: "allow",
+							Include: []cfgatev1alpha1.AccessRule{
+								{Everyone: ptrTo(true)},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+
+			By("Waiting for target resolution to fail because the cross-namespace reference lacks a grant")
+			policy = waitForAccessPolicyCondition(ctx, k8sClient, policy.Name, policy.Namespace, "TargetsResolved", metav1.ConditionFalse, DefaultTimeout)
+
+			By("Verifying no application is created and the failure is stable")
+			Expect(policy.Status.ApplicationID).To(BeEmpty())
+			Expect(policy.Status.ApplicationAUD).To(BeEmpty())
+			Expect(findCondition(policy.Status.Conditions, "TargetsResolved")).NotTo(BeNil())
+			Expect(findCondition(policy.Status.Conditions, "TargetsResolved").Reason).To(Equal("TargetNotFound"))
+			Expect(findCondition(policy.Status.Conditions, "TargetsResolved").Message).To(ContainSubstring("not permitted by ReferenceGrant"))
+			Expect(findCondition(policy.Status.Conditions, "ApplicationCreated")).To(BeNil())
+
+			Consistently(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareAccessPolicy
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policy.Name, Namespace: policy.Namespace}, &current)).To(Succeed())
+				g.Expect(current.Status.ApplicationID).To(BeEmpty())
+				g.Expect(current.Status.ApplicationAUD).To(BeEmpty())
+				g.Expect(findCondition(current.Status.Conditions, "TargetsResolved")).NotTo(BeNil())
+				g.Expect(findCondition(current.Status.Conditions, "TargetsResolved").Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(findCondition(current.Status.Conditions, "TargetsResolved").Message).To(ContainSubstring("not permitted by ReferenceGrant"))
+				g.Expect(findCondition(current.Status.Conditions, "ApplicationCreated")).To(BeNil())
+			}, ShortTimeout, DefaultInterval).Should(Succeed())
+		})
+
+		It("should block deletion when credentials disappear, then resume cleanup after credentials are restored", SpecTimeout(15*time.Minute), func(ctx SpecContext) {
+			By("Creating HTTPRoute infrastructure")
+			policyName := testID("access-cleanup-block")
+			hostname := fmt.Sprintf("%s.%s", policyName, testEnv.CloudflareZoneName)
+			routeName := policyName + "-route"
+			tokenSecretName := policyName + "-token"
+
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gateway := createGateway(ctx, k8sClient, policyName+"-gw", namespace.Name, gatewayClassName, "")
+			service := createTestService(ctx, k8sClient, policyName+"-svc", namespace.Name, 8080)
+			createHTTPRoute(ctx, k8sClient, routeName, namespace.Name, gateway.Name, []string{hostname}, service.Name, 8080)
+
+			By("Creating an AccessPolicy with a service token")
+			policy := &cfgatev1alpha1.CloudflareAccessPolicy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      policyName,
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+					TargetRef: &cfgatev1alpha1.PolicyTargetReference{
+						Group: "gateway.networking.k8s.io",
+						Kind:  "HTTPRoute",
+						Name:  routeName,
+					},
+					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
+						Name:      "cloudflare-credentials",
+						AccountID: testEnv.CloudflareAccountID,
+					},
+					Application: cfgatev1alpha1.AccessApplication{
+						Name:   policyName,
+						Domain: hostname,
+					},
+					Policies: []cfgatev1alpha1.AccessPolicyRule{
+						{
+							Name:     "allow-all",
+							Decision: "allow",
+							Include: []cfgatev1alpha1.AccessRule{
+								{Everyone: ptrTo(true)},
+							},
+						},
+					},
+					ServiceTokens: []cfgatev1alpha1.ServiceTokenConfig{
+						{
+							Name:     policyName + "-token",
+							Duration: "8760h",
+							SecretRef: cfgatev1alpha1.ServiceTokenSecretRef{
+								Name: tokenSecretName,
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+			policy = waitForAccessPolicyReady(ctx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
+
+			By("Deleting the credentials secret before deleting the policy")
+			credentialsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cloudflare-credentials", Namespace: namespace.Name}}
+			Expect(k8sClient.Delete(ctx, credentialsSecret)).To(Succeed())
+
+			By("Deleting the policy and waiting for deletion to block on the finalizer")
+			Expect(k8sClient.Delete(ctx, policy)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareAccessPolicy
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policy.Name, Namespace: policy.Namespace}, &current)).To(Succeed())
+				g.Expect(current.DeletionTimestamp.IsZero()).To(BeFalse())
+				g.Expect(current.Finalizers).To(ContainElement("cfgate.io/access-policy-cleanup"))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			event := waitForEventReason(ctx, namespace.Name, policy.Name, "CloudflareAccessPolicy", "CleanupFailed", corev1.EventTypeWarning, DefaultTimeout)
+			Expect(event.Message).To(ContainSubstring("Failed to resolve credentials"))
+
+			By("Restoring credentials so cleanup can resume")
+			createCloudflareCredentialsSecret(namespace.Name)
+
+			By("Waiting for Kubernetes deletion and Cloudflare cleanup to complete")
+			waitForAccessPolicyDeleted(ctx, k8sClient, policy.Name, policy.Namespace, LongTimeout)
+			waitForServiceTokenDeletedFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, policyName+"-token", LongTimeout)
+			waitForAccessApplicationDeletedFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, policyName, LongTimeout)
 		})
 	})
 

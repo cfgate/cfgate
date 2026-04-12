@@ -212,17 +212,6 @@ func approvalGroupsFromAPI(groups []zero_trust.ApprovalGroup) []ApprovalGroupPar
 	return result
 }
 
-// mtlsCertFromSDK converts a cloudflare-go mTLS certificate to a cfgate MTLSCertificate.
-func mtlsCertFromSDK(c zero_trust.Certificate) MTLSCertificate {
-	return MTLSCertificate{
-		ID:                  c.ID,
-		Name:                c.Name,
-		Fingerprint:         c.Fingerprint,
-		AssociatedHostnames: c.AssociatedHostnames,
-		ExpiresOn:           c.ExpiresOn,
-	}
-}
-
 // =============================================================================
 // Access Application response converters
 // =============================================================================
@@ -779,7 +768,7 @@ func accessRuleToAPI(rule *AccessRuleParam) zero_trust.AccessRuleUnionParam {
 	}
 
 	// ============================================================
-	// P3: v0.2.0 (kept for backward compatibility)
+	// P3: retained only for SDK round-trip compatibility
 	// ============================================================
 
 	if rule.Certificate != nil && *rule.Certificate {
