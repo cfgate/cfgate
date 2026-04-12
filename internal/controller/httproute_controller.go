@@ -95,7 +95,12 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// entries with non-matching controllerName). Start from existing parents,
 	// remove only cfgate's entries, then rebuild cfgate's entries below.
 	var preserved []gwapiv1.RouteParentStatus
+	hasCfgateStatusEntries := false
 	for _, p := range route.Status.Parents {
+		if string(p.ControllerName) == GatewayControllerName {
+			hasCfgateStatusEntries = true
+			continue
+		}
 		if string(p.ControllerName) != GatewayControllerName {
 			preserved = append(preserved, p)
 		}
@@ -139,13 +144,17 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			conditions...,
 		)
 	}
-	if len(preserved) == 0 && len(cfgateParentStatuses) == 0 {
+	if len(preserved) == 0 && len(cfgateParentStatuses) == 0 && !hasCfgateStatusEntries {
 		log.V(1).Info("no parent statuses to write")
 		r.Recorder.Eventf(&route, nil, corev1.EventTypeNormal, "Reconciled", "Reconcile", "HTTPRoute reconciled successfully")
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
-	route.Status.Parents = append(preserved, cfgateParentStatuses...)
+	if len(preserved) == 0 && len(cfgateParentStatuses) == 0 {
+		route.Status.Parents = make([]gwapiv1.RouteParentStatus, 0)
+	} else {
+		route.Status.Parents = append(preserved, cfgateParentStatuses...)
+	}
 
 	if err := r.Status().Update(ctx, &route); err != nil {
 		log.Error(err, "failed to update route status")

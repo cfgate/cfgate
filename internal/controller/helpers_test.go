@@ -65,7 +65,7 @@ func TestDNSHelperFunctions(t *testing.T) {
 		}
 	})
 
-	t.Run("returns sorted hostname keys", func(t *testing.T) {
+	t.Run("returns all hostname keys (order not guaranteed)", func(t *testing.T) {
 		keys := hostnameKeys(map[string]HostnameConfig{
 			"b.example.com": {},
 			"a.example.com": {},
@@ -126,6 +126,33 @@ func TestDNSHelperFunctions(t *testing.T) {
 		}
 		if got := resolveExplicitHostnameTarget(externalDNS, nil, cfgatev1alpha1.DNSExplicitHostname{Target: "override.example.net"}); got != "override.example.net" {
 			t.Fatalf("resolveExplicitHostnameTarget() external override = %q, want %q", got, "override.example.net")
+		}
+	})
+
+	t.Run("external target route discovery is a no-op without tunnel", func(t *testing.T) {
+		r := &CloudflareDNSReconciler{}
+		dns := &cfgatev1alpha1.CloudflareDNS{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "dns",
+				Namespace: "app",
+			},
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				ExternalTarget: &cfgatev1alpha1.ExternalTarget{
+					Type:  cfgatev1alpha1.RecordTypeCNAME,
+					Value: "origin.example.net",
+				},
+				Source: cfgatev1alpha1.DNSHostnameSource{
+					GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: true},
+				},
+			},
+		}
+
+		hostnames, err := r.collectHostnamesFromRoutes(context.Background(), dns, nil)
+		if err != nil {
+			t.Fatalf("collectHostnamesFromRoutes() error = %v", err)
+		}
+		if hostnames != nil {
+			t.Fatalf("collectHostnamesFromRoutes() = %#v, want nil", hostnames)
 		}
 	})
 }

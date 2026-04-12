@@ -613,6 +613,13 @@ func (r *CloudflareDNSReconciler) resolveSelectedNamespaces(ctx context.Context,
 // HostnameConfig with per-route annotation settings.
 func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, tunnel *cfgatev1alpha1.CloudflareTunnel) (map[string]HostnameConfig, error) {
 	if tunnel == nil {
+		if dns.Spec.Source.GatewayRoutes != nil && dns.Spec.Source.GatewayRoutes.Enabled {
+			log.FromContext(ctx).WithName("controller").WithName("dns").Info(
+				"gatewayRoutes.enabled=true has no effect in externalTarget mode; route discovery requires tunnelRef",
+				"namespace", dns.Namespace,
+				"name", dns.Name,
+			)
+		}
 		return nil, nil
 	}
 	if dns.Spec.Source.GatewayRoutes == nil {

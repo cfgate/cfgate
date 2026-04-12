@@ -292,6 +292,104 @@ func TestHTTPRouteReconcileSkipsEmptyParentStatusWrite(t *testing.T) {
 	}
 }
 
+func TestHTTPRouteReconcileClearsStaleCfgateParentStatus(t *testing.T) {
+	scheme := controllerTestScheme(t)
+	controllerName := gatewayv1.GatewayController(GatewayControllerName)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "app",
+		},
+		Status: gatewayv1.HTTPRouteStatus{
+			RouteStatus: gatewayv1.RouteStatus{
+				Parents: []gatewayv1.RouteParentStatus{{
+					ControllerName: controllerName,
+				}},
+			},
+		},
+	}
+
+	baseClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+	statusWriter := &countingStatusWriter{}
+	r := &HTTPRouteReconciler{
+		Client:   &statusTrackingClient{Client: baseClient, writer: statusWriter},
+		Scheme:   scheme,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "app", Name: "route"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if statusWriter.updates != 1 {
+		t.Fatalf("Status().Update() called %d times, want 1", statusWriter.updates)
+	}
+	if statusWriter.lastRoute == nil {
+		t.Fatal("Status().Update() did not receive an HTTPRoute")
+	}
+	if statusWriter.lastRoute.Status.Parents == nil {
+		t.Fatal("Status().Update() wrote nil parents, want empty slice")
+	}
+	if len(statusWriter.lastRoute.Status.Parents) != 0 {
+		t.Fatalf("Status().Update() parents = %#v, want empty slice", statusWriter.lastRoute.Status.Parents)
+	}
+	if result.RequeueAfter != 5*time.Minute {
+		t.Fatalf("Reconcile() RequeueAfter = %v, want %v", result.RequeueAfter, 5*time.Minute)
+	}
+}
+
+func TestHTTPRouteReconcilePreservesForeignParentStatusWhileClearingStaleCfgateEntries(t *testing.T) {
+	scheme := controllerTestScheme(t)
+	cfgateController := gatewayv1.GatewayController(GatewayControllerName)
+	foreignController := gatewayv1.GatewayController("example.com/other")
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "app",
+		},
+		Status: gatewayv1.HTTPRouteStatus{
+			RouteStatus: gatewayv1.RouteStatus{
+				Parents: []gatewayv1.RouteParentStatus{
+					{ControllerName: cfgateController},
+					{ControllerName: foreignController},
+				},
+			},
+		},
+	}
+
+	baseClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route).Build()
+	statusWriter := &countingStatusWriter{}
+	r := &HTTPRouteReconciler{
+		Client:   &statusTrackingClient{Client: baseClient, writer: statusWriter},
+		Scheme:   scheme,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Namespace: "app", Name: "route"},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if statusWriter.updates != 1 {
+		t.Fatalf("Status().Update() called %d times, want 1", statusWriter.updates)
+	}
+	if statusWriter.lastRoute == nil {
+		t.Fatal("Status().Update() did not receive an HTTPRoute")
+	}
+	if len(statusWriter.lastRoute.Status.Parents) != 1 {
+		t.Fatalf("Status().Update() parents = %#v, want 1 preserved entry", statusWriter.lastRoute.Status.Parents)
+	}
+	if statusWriter.lastRoute.Status.Parents[0].ControllerName != foreignController {
+		t.Fatalf("Status().Update() preserved controller = %q, want %q", statusWriter.lastRoute.Status.Parents[0].ControllerName, foreignController)
+	}
+	if result.RequeueAfter != 5*time.Minute {
+		t.Fatalf("Reconcile() RequeueAfter = %v, want %v", result.RequeueAfter, 5*time.Minute)
+	}
+}
+
 func newHTTPRouteTestReconciler(t *testing.T, scheme *runtime.Scheme, objects ...client.Object) *HTTPRouteReconciler {
 	t.Helper()
 	return newHTTPRouteTestReconcilerWithRecorder(t, scheme, &fakeEventRecorder{}, objects...)
@@ -367,7 +465,8 @@ func (c *statusTrackingClient) Status() client.StatusWriter {
 }
 
 type countingStatusWriter struct {
-	updates int
+	updates   int
+	lastRoute *gatewayv1.HTTPRoute
 }
 
 func (w *countingStatusWriter) Create(ctx context.Context, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
@@ -376,6 +475,9 @@ func (w *countingStatusWriter) Create(ctx context.Context, obj client.Object, su
 
 func (w *countingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 	w.updates++
+	if route, ok := obj.(*gatewayv1.HTTPRoute); ok {
+		w.lastRoute = route.DeepCopy()
+	}
 	return nil
 }
 
