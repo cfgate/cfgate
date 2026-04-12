@@ -403,8 +403,8 @@ type AccessRule struct {
 	// P3: Not in current product scope.
 	// ============================================================
 	// The following rule types are not part of the current CRD surface:
-	// - Certificate (CertificateRule) - mTLS client cert
-	// - CommonName (AccessCommonNameRule) - mTLS CN matching
+	// - Certificate (CertificateRule) - client certificate matching
+	// - CommonName (AccessCommonNameRule) - certificate common-name matching
 	// - Group (GroupRule) - Access Groups
 	// - GitHub (GitHubOrganizationRule) - GitHub org/team
 	// - Azure (AzureGroupRule) - Azure AD groups
@@ -627,48 +627,6 @@ type ServiceTokenSecretRef struct {
 	Name string `json:"name"`
 }
 
-// MTLSConfig defines mutual TLS (mTLS) certificate-based authentication.
-//
-// MTLSConfig enables certificate-based authentication where clients must present
-// a valid certificate signed by the configured CA. This provides strong authentication
-// for service-to-service communication.
-type MTLSConfig struct {
-	// Enabled activates mTLS requirement.
-	// +kubebuilder:default=false
-	Enabled bool `json:"enabled"`
-
-	// RootCASecretRef references the CA certificate(s) for validation.
-	// +optional
-	RootCASecretRef *CASecretRef `json:"rootCaSecretRef,omitempty"`
-
-	// AssociatedHostnames limits mTLS to specific hostnames.
-	// +optional
-	// +kubebuilder:validation:MaxItems=25
-	AssociatedHostnames []string `json:"associatedHostnames,omitempty"`
-
-	// RuleName is the name of the mTLS rule in Cloudflare.
-	// Defaults to CR name if omitted.
-	// +optional
-	// +kubebuilder:validation:MaxLength=255
-	RuleName string `json:"ruleName,omitempty"`
-}
-
-// CASecretRef references a Kubernetes Secret containing CA certificate(s) for mTLS validation.
-//
-// CASecretRef identifies the Secret containing the CA certificate chain used to validate
-// client certificates. The certificate must be in PEM format.
-type CASecretRef struct {
-	// Name of the Secret.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
-
-	// Key within Secret (defaults to ca.crt).
-	// +kubebuilder:default="ca.crt"
-	// +kubebuilder:validation:MaxLength=253
-	Key string `json:"key,omitempty"`
-}
-
 // CloudflareAccessPolicySpec defines the desired state of a CloudflareAccessPolicy resource.
 //
 // CloudflareAccessPolicySpec configures Cloudflare Access protection for Gateway API resources.
@@ -708,10 +666,6 @@ type CloudflareAccessPolicySpec struct {
 	// +optional
 	// +kubebuilder:validation:MaxItems=10
 	ServiceTokens []ServiceTokenConfig `json:"serviceTokens,omitempty"`
-
-	// MTLS configures certificate-based authentication.
-	// +optional
-	MTLS *MTLSConfig `json:"mtls,omitempty"`
 }
 
 // PolicyAncestorStatus describes the policy attachment status for a specific target.
@@ -746,9 +700,6 @@ type CloudflareAccessPolicyStatus struct {
 
 	// ServiceTokenIDs maps token names to Cloudflare IDs.
 	ServiceTokenIDs map[string]string `json:"serviceTokenIds,omitempty"`
-
-	// MTLSRuleID is the Cloudflare mTLS rule ID.
-	MTLSRuleID string `json:"mtlsRuleId,omitempty"`
 
 	// ObservedGeneration is the last generation processed.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
@@ -785,7 +736,6 @@ type CloudflareAccessPolicyStatus struct {
 //   - ApplicationCreated: Access Application exists in Cloudflare
 //   - PoliciesAttached: Access policies are attached to the application
 //   - ServiceTokensReady: all service tokens have been created
-//   - MTLSConfigured: mTLS rule is configured (if enabled)
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

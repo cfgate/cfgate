@@ -74,17 +74,6 @@ type MockClient struct {
 	ListServiceTokensFunc   func(ctx context.Context, accountID string) ([]ServiceToken, error)
 	RotateServiceTokenFunc  func(ctx context.Context, accountID, tokenID string) (*ServiceTokenWithSecret, error)
 	RefreshServiceTokenFunc func(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
-
-	// mTLS Certificate operations
-	CreateMTLSCertificateFunc func(ctx context.Context, accountID string, params CreateCertificateParams) (*MTLSCertificate, error)
-	GetMTLSCertificateFunc    func(ctx context.Context, accountID, certID string) (*MTLSCertificate, error)
-	UpdateMTLSCertificateFunc func(ctx context.Context, accountID, certID string, params UpdateCertificateParams) (*MTLSCertificate, error)
-	DeleteMTLSCertificateFunc func(ctx context.Context, accountID, certID string) error
-	ListMTLSCertificatesFunc  func(ctx context.Context, accountID string) ([]MTLSCertificate, error)
-
-	// mTLS Certificate Settings
-	GetMTLSCertificateSettingsFunc    func(ctx context.Context, accountID string) ([]CertificateSettings, error)
-	UpdateMTLSCertificateSettingsFunc func(ctx context.Context, accountID string, settings []CertificateSettings) ([]CertificateSettings, error)
 }
 
 // NewMockClient returns a MockClient with all function fields nil.
@@ -394,59 +383,6 @@ func (m *MockClient) RotateServiceToken(ctx context.Context, accountID, tokenID 
 func (m *MockClient) RefreshServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error) {
 	if m.RefreshServiceTokenFunc != nil {
 		return m.RefreshServiceTokenFunc(ctx, accountID, tokenID)
-	}
-	return nil, nil
-}
-
-// mTLS Certificate operations
-
-func (m *MockClient) CreateMTLSCertificate(ctx context.Context, accountID string, params CreateCertificateParams) (*MTLSCertificate, error) {
-	if m.CreateMTLSCertificateFunc != nil {
-		return m.CreateMTLSCertificateFunc(ctx, accountID, params)
-	}
-	return nil, nil
-}
-
-func (m *MockClient) GetMTLSCertificate(ctx context.Context, accountID, certID string) (*MTLSCertificate, error) {
-	if m.GetMTLSCertificateFunc != nil {
-		return m.GetMTLSCertificateFunc(ctx, accountID, certID)
-	}
-	return nil, nil
-}
-
-func (m *MockClient) UpdateMTLSCertificate(ctx context.Context, accountID, certID string, params UpdateCertificateParams) (*MTLSCertificate, error) {
-	if m.UpdateMTLSCertificateFunc != nil {
-		return m.UpdateMTLSCertificateFunc(ctx, accountID, certID, params)
-	}
-	return nil, nil
-}
-
-func (m *MockClient) DeleteMTLSCertificate(ctx context.Context, accountID, certID string) error {
-	if m.DeleteMTLSCertificateFunc != nil {
-		return m.DeleteMTLSCertificateFunc(ctx, accountID, certID)
-	}
-	return nil
-}
-
-func (m *MockClient) ListMTLSCertificates(ctx context.Context, accountID string) ([]MTLSCertificate, error) {
-	if m.ListMTLSCertificatesFunc != nil {
-		return m.ListMTLSCertificatesFunc(ctx, accountID)
-	}
-	return nil, nil
-}
-
-// mTLS Certificate Settings
-
-func (m *MockClient) GetMTLSCertificateSettings(ctx context.Context, accountID string) ([]CertificateSettings, error) {
-	if m.GetMTLSCertificateSettingsFunc != nil {
-		return m.GetMTLSCertificateSettingsFunc(ctx, accountID)
-	}
-	return nil, nil
-}
-
-func (m *MockClient) UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettings) ([]CertificateSettings, error) {
-	if m.UpdateMTLSCertificateSettingsFunc != nil {
-		return m.UpdateMTLSCertificateSettingsFunc(ctx, accountID, settings)
 	}
 	return nil, nil
 }

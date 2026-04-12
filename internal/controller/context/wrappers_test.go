@@ -1034,31 +1034,6 @@ func TestAllTargetsResolved(t *testing.T) {
 // AccessPolicyContext: Feature Checks
 // ---------------------------------------------------------------------------
 
-func TestRequiresMTLS(t *testing.T) {
-	tests := []struct {
-		name string
-		mtls *cfgatev1alpha1.MTLSConfig
-		want bool
-	}{
-		{"nil MTLS", nil, false},
-		{"enabled", &cfgatev1alpha1.MTLSConfig{Enabled: true}, true},
-		{"disabled", &cfgatev1alpha1.MTLSConfig{Enabled: false}, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			apc := &AccessPolicyContext{
-				CloudflareAccessPolicy: &cfgatev1alpha1.CloudflareAccessPolicy{
-					Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{MTLS: tt.mtls},
-				},
-			}
-			if got := apc.RequiresMTLS(); got != tt.want {
-				t.Errorf("RequiresMTLS() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestRequiresServiceTokens(t *testing.T) {
 	tests := []struct {
 		name   string

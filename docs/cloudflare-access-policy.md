@@ -9,7 +9,7 @@ Manages Cloudflare Access Applications and Policies for zero-trust access contro
 
 ## Overview
 
-CloudflareAccessPolicy attaches to Gateway API resources (`Gateway`, `HTTPRoute`) using the `targetRefs` pattern and creates corresponding Cloudflare Access Applications. It manages application settings, access policy rules, service tokens for machine-to-machine auth, and mTLS certificate-based authentication.
+CloudflareAccessPolicy attaches to Gateway API resources (`Gateway`, `HTTPRoute`) using the `targetRefs` pattern and creates corresponding Cloudflare Access Applications. It manages application settings, access policy rules, and service tokens for machine-to-machine auth.
 
 Access rules are organized into implementation tiers based on identity provider (IdP) requirements. The controller extracts hostnames from the targeted Gateway API resources and creates Access Applications protecting those hostnames. Credentials can be provided explicitly via `cloudflareRef` or inherited through the Gateway's tunnel binding chain.
 
@@ -79,11 +79,6 @@ Access rules are organized into implementation tiers based on identity provider 
 | `spec.serviceTokens[].name` | `string` | *none* | Yes | Token display name. 1-255 chars. |
 | `spec.serviceTokens[].duration` | `string` | `8760h` | No | Token validity period. Format: `^[0-9]+h$`. Only hours supported by Cloudflare API (e.g., `8760h` for 1 year). |
 | `spec.serviceTokens[].secretRef.name` | `string` | *none* | Yes | Name of the Secret where generated credentials are stored. Min 1 char. |
-| `spec.mtls.enabled` | `bool` | `false` | No | Activate mTLS requirement for the application. |
-| `spec.mtls.rootCaSecretRef.name` | `string` | *none* | Yes (if rootCaSecretRef set) | Name of the Secret containing CA certificate(s). Min 1 char. |
-| `spec.mtls.rootCaSecretRef.key` | `string` | `ca.crt` | No | Key within Secret for the CA certificate in PEM format. |
-| `spec.mtls.associatedHostnames` | `[]string` | *none* | No | Limit mTLS requirement to specific hostnames. Max 25. |
-| `spec.mtls.ruleName` | `string` | *(CR name)* | No | Name of the mTLS rule in Cloudflare. |
 
 ## Detailed Field Documentation
 
@@ -181,7 +176,7 @@ Defines access policy rules evaluated in precedence order (lower precedence numb
 - `allow`: Grant access when conditions match.
 - `deny`: Block access when conditions match.
 - `bypass`: Skip all authentication for matching conditions.
-- `non_identity`: Service-to-service auth (service tokens, mTLS) without user identity.
+- `non_identity`: Service-to-service auth (service tokens) without user identity.
 
 **Approval workflows:** Set `approvalRequired: true` and define `approvalGroups` to require manual approval before granting access. Approvers receive email notifications. `approvalsNeeded` on each group controls how many approvals are needed from that group.
 
@@ -302,8 +297,8 @@ include:
 
 The following rule types are retained only for SDK round-trip and internal model compatibility. They are not part of the current cfgate product surface:
 
-- **Certificate** (`CertificateRule`): mTLS client certificate validation
-- **CommonName** (`AccessCommonNameRule`): mTLS common name matching
+- **Certificate** (`CertificateRule`): client certificate validation
+- **CommonName** (`AccessCommonNameRule`): client certificate common name matching
 - **Group** (`GroupRule`): Cloudflare Access Groups (inline, not ref)
 - **GitHub** (`GitHubOrganizationRule`): GitHub organization/team membership
 - **Azure** (`AzureGroupRule`): Azure AD group membership
@@ -354,29 +349,6 @@ spec:
         name: monitoring-access-credentials
 ```
 
-### `spec.mtls`
-
-Configures mutual TLS (mTLS) certificate-based authentication. When enabled, clients must present a valid certificate signed by the configured CA to access the protected application. This provides strong authentication for service-to-service communication without requiring identity provider integration.
-
-**`rootCaSecretRef`:** References a Kubernetes Secret containing the CA certificate chain in PEM format. The controller uploads this CA to Cloudflare Access.
-
-**`associatedHostnames`:** Limits the mTLS requirement to specific hostnames. When empty, mTLS applies to all hostnames in the Access Application.
-
-**`ruleName`:** The display name of the mTLS rule in Cloudflare. Defaults to the CR name.
-
-```yaml
-spec:
-  mtls:
-    enabled: true
-    rootCaSecretRef:
-      name: mtls-ca-cert
-      key: ca.crt
-    associatedHostnames:
-      - "api.example.com"
-      - "internal.example.com"
-    ruleName: "production-mtls"
-```
-
 ## Status
 
 | Field | Type | Description |
@@ -385,7 +357,6 @@ spec:
 | `status.applicationAud` | `string` | Application Audience (AUD) Tag. Used for JWT verification. |
 | `status.attachedTargets` | `int32` | Count of successfully attached Gateway API targets. |
 | `status.serviceTokenIds` | `map[string]string` | Maps service token names to their Cloudflare IDs. |
-| `status.mtlsRuleId` | `string` | Cloudflare mTLS rule ID (when mTLS is configured). |
 | `status.observedGeneration` | `int64` | Last `.metadata.generation` processed by the controller. |
 | `status.conditions` | `[]metav1.Condition` | Standard Kubernetes conditions (see below). |
 | `status.ancestors[]` | `[]PolicyAncestorStatus` | Per-target attachment status (Gateway API PolicyStatus pattern). |
@@ -404,7 +375,6 @@ spec:
 | `ApplicationCreated` | Access Application exists in Cloudflare. |
 | `PoliciesAttached` | Access policies have been attached to the application. |
 | `ServiceTokensReady` | All configured service tokens have been created and credentials stored. |
-| `MTLSConfigured` | mTLS rule is configured in Cloudflare (when `spec.mtls.enabled` is true). |
 
 ### kubectl Output Columns
 
@@ -488,7 +458,7 @@ spec:
         name: ci-cd-access-token
 ```
 
-### Multi-target policy with mTLS, CORS, and approval workflows
+### Multi-target policy with service tokens, CORS, and approval workflows
 
 ```yaml
 apiVersion: cfgate.io/v1alpha1
@@ -557,19 +527,11 @@ spec:
       duration: "4380h"
       secretRef:
         name: monitoring-svc-token
-  mtls:
-    enabled: true
-    rootCaSecretRef:
-      name: internal-ca-cert
-      key: ca.crt
-    associatedHostnames:
-      - "grpc.internal.example.com"
-    ruleName: "internal-mtls"
 ```
 
 ## Deletion Behavior
 
-The controller adds the finalizer `cfgate.io/access-policy-cleanup` to every CloudflareAccessPolicy resource. When the resource is deleted, the controller attempts to delete the Cloudflare Access application, revoke service tokens, and remove mTLS certificates before removing the finalizer.
+The controller adds the finalizer `cfgate.io/access-policy-cleanup` to every CloudflareAccessPolicy resource. When the resource is deleted, the controller attempts to delete the Cloudflare Access application and revoke service tokens before removing the finalizer.
 
 If cleanup fails, the controller blocks indefinitely and requeues every 15 seconds. It never removes the finalizer automatically. Within a 1-minute retry budget, the controller emits Warning events with reason `CleanupFailed`. After the retry budget is exhausted, subsequent events escalate to reason `CleanupBlocked`.
 

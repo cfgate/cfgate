@@ -54,7 +54,6 @@ spec:
             - ApplicationCreated: Access Application exists in Cloudflare
             - PoliciesAttached: Access policies are attached to the application
             - ServiceTokensReady: all service tokens have been created
-            - MTLSConfigured: mTLS rule is configured (if enabled)
         properties:
           apiVersion:
             description: |-
@@ -329,45 +328,6 @@ spec:
                     rule: has(self.name) || has(self.cloudflareId)
                 maxItems: 50
                 type: array
-              mtls:
-                description: MTLS configures certificate-based authentication.
-                properties:
-                  associatedHostnames:
-                    description: AssociatedHostnames limits mTLS to specific hostnames.
-                    items:
-                      type: string
-                    maxItems: 25
-                    type: array
-                  enabled:
-                    default: false
-                    description: Enabled activates mTLS requirement.
-                    type: boolean
-                  rootCaSecretRef:
-                    description: RootCASecretRef references the CA certificate(s)
-                      for validation.
-                    properties:
-                      key:
-                        default: ca.crt
-                        description: Key within Secret (defaults to ca.crt).
-                        maxLength: 253
-                        type: string
-                      name:
-                        description: Name of the Secret.
-                        maxLength: 253
-                        minLength: 1
-                        type: string
-                    required:
-                    - name
-                    type: object
-                  ruleName:
-                    description: |-
-                      RuleName is the name of the mTLS rule in Cloudflare.
-                      Defaults to CR name if omitted.
-                    maxLength: 255
-                    type: string
-                required:
-                - enabled
-                type: object
               policies:
                 description: Policies define access rules (evaluated in order).
                 items:
@@ -1363,9 +1323,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              mtlsRuleId:
-                description: MTLSRuleID is the Cloudflare mTLS rule ID.
-                type: string
               observedGeneration:
                 description: ObservedGeneration is the last generation processed.
                 format: int64

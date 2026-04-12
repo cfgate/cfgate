@@ -172,31 +172,6 @@ type ServiceTokenOps interface {
 	RefreshServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
 }
 
-// MTLSOps defines operations for managing mTLS certificates and their
-// hostname association settings.
-type MTLSOps interface {
-	// CreateMTLSCertificate creates a new mTLS certificate.
-	CreateMTLSCertificate(ctx context.Context, accountID string, params CreateCertificateParams) (*MTLSCertificate, error)
-
-	// GetMTLSCertificate retrieves an mTLS certificate by ID.
-	GetMTLSCertificate(ctx context.Context, accountID, certID string) (*MTLSCertificate, error)
-
-	// UpdateMTLSCertificate updates an existing mTLS certificate.
-	UpdateMTLSCertificate(ctx context.Context, accountID, certID string, params UpdateCertificateParams) (*MTLSCertificate, error)
-
-	// DeleteMTLSCertificate deletes an mTLS certificate.
-	DeleteMTLSCertificate(ctx context.Context, accountID, certID string) error
-
-	// ListMTLSCertificates lists all mTLS certificates.
-	ListMTLSCertificates(ctx context.Context, accountID string) ([]MTLSCertificate, error)
-
-	// GetMTLSCertificateSettings retrieves mTLS certificate settings.
-	GetMTLSCertificateSettings(ctx context.Context, accountID string) ([]CertificateSettings, error)
-
-	// UpdateMTLSCertificateSettings updates mTLS certificate settings.
-	UpdateMTLSCertificateSettings(ctx context.Context, accountID string, settings []CertificateSettings) ([]CertificateSettings, error)
-}
-
 // Client defines the Cloudflare API operations composed from domain interfaces.
 //
 // Client wraps cloudflare-go v6 SDK and handles error normalization, 404 patterns,
@@ -219,7 +194,6 @@ type Client interface {
 	AccessPolicyOps
 	AccessGroupOps
 	ServiceTokenOps
-	MTLSOps
 }
 
 // Tunnel represents a Cloudflare Tunnel.

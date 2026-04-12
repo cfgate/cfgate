@@ -12,8 +12,8 @@ import (
 	"github.com/go-logr/logr"
 )
 
-// AccessService handles Cloudflare Access operations including applications, policies,
-// service tokens, and mTLS certificates. It wraps the Client interface with cfgate-specific
+// AccessService handles Cloudflare Access operations including applications,
+// policies, and service tokens. It wraps the Client interface with cfgate-specific
 // logic for idempotent ensure operations and declarative policy synchronization.
 type AccessService struct {
 	client Client
@@ -422,57 +422,6 @@ type ServiceTokenParams struct {
 
 	// Duration is the token validity period in hours (e.g., "8760h" for 1 year).
 	Duration string
-}
-
-// MTLSCertificate represents a Cloudflare mTLS Certificate.
-type MTLSCertificate struct {
-	// ID is the unique certificate identifier.
-	ID string
-
-	// Name is the certificate display name.
-	Name string
-
-	// Fingerprint is the SHA-256 fingerprint.
-	Fingerprint string
-
-	// AssociatedHostnames are hostnames using this certificate.
-	AssociatedHostnames []string
-
-	// ExpiresOn is the certificate expiration.
-	ExpiresOn time.Time
-}
-
-// CreateCertificateParams contains parameters for creating a certificate.
-type CreateCertificateParams struct {
-	// Name is the certificate display name.
-	Name string
-
-	// Certificate is the PEM-encoded certificate.
-	Certificate string
-
-	// AssociatedHostnames are hostnames using this certificate.
-	AssociatedHostnames []string
-}
-
-// UpdateCertificateParams contains parameters for updating a certificate.
-type UpdateCertificateParams struct {
-	// Name is the certificate display name.
-	Name string
-
-	// AssociatedHostnames are hostnames using this certificate.
-	AssociatedHostnames []string
-}
-
-// CertificateSettings represents mTLS certificate settings.
-type CertificateSettings struct {
-	// Hostname is the hostname for mTLS.
-	Hostname string
-
-	// ChinaNetwork enables China network mTLS.
-	ChinaNetwork bool
-
-	// ClientCertificateForwarding forwards client cert to origin.
-	ClientCertificateForwarding bool
 }
 
 // EnsureApplication ensures an application exists with the given configuration.
@@ -1025,76 +974,6 @@ func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string
 	}
 
 	return &created.ServiceToken, nil
-}
-
-// EnsureMTLSCertificate ensures an mTLS certificate exists with the given configuration.
-// If a certificate with the name or fingerprint exists, it is returned.
-// Otherwise, a new certificate is created.
-func (s *AccessService) EnsureMTLSCertificate(ctx context.Context, accountID string, params CreateCertificateParams) (*MTLSCertificate, bool, error) {
-	s.log.Info("ensuring mTLS certificate exists",
-		"accountID", accountID,
-		"certificateName", params.Name,
-	)
-
-	// List existing certificates
-	certs, err := s.client.ListMTLSCertificates(ctx, accountID)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to list mTLS certificates: %w", err)
-	}
-
-	// Find by name
-	for i := range certs {
-		if certs[i].Name == params.Name {
-			s.log.V(1).Info("mTLS certificate already exists",
-				"certificateId", certs[i].ID,
-				"certificateName", certs[i].Name,
-			)
-			return &certs[i], false, nil
-		}
-	}
-
-	// Create new certificate
-	s.log.Info("creating new mTLS certificate",
-		"accountID", accountID,
-		"certificateName", params.Name,
-	)
-
-	cert, err := s.client.CreateMTLSCertificate(ctx, accountID, params)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to create mTLS certificate: %w", err)
-	}
-
-	s.log.Info("mTLS certificate created",
-		"certificateId", cert.ID,
-		"certificateName", cert.Name,
-		"fingerprint", cert.Fingerprint,
-	)
-
-	return cert, true, nil
-}
-
-// UpdateMTLSHostnames updates mTLS hostname associations.
-func (s *AccessService) UpdateMTLSHostnames(ctx context.Context, accountID string, hostnames []string, enableForwarding bool) error {
-	settings := make([]CertificateSettings, len(hostnames))
-	for i, hostname := range hostnames {
-		settings[i] = CertificateSettings{
-			Hostname:                    hostname,
-			ClientCertificateForwarding: enableForwarding,
-		}
-	}
-
-	s.log.Info("updating mTLS hostname settings",
-		"accountID", accountID,
-		"hostnames", hostnames,
-		"enableForwarding", enableForwarding,
-	)
-
-	_, err := s.client.UpdateMTLSCertificateSettings(ctx, accountID, settings)
-	if err != nil {
-		return fmt.Errorf("failed to update mTLS certificate settings: %w", err)
-	}
-
-	return nil
 }
 
 // DeleteApplication deletes an application and all associated resources.

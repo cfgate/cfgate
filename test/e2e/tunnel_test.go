@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
 var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
@@ -185,7 +186,7 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			waitForTunnelDeleted(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
 
 			By("Verifying tunnel is deleted from Cloudflare")
-			waitForTunnelDeletedFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, deleteTunnelName, LongTimeout)
+			waitForTunnelDeletedByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnelID, LongTimeout)
 
 			By("Verifying cloudflared Deployment is deleted")
 			deploymentName := fmt.Sprintf("%s-cloudflared", tunnel.Name)
@@ -501,7 +502,246 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			waitForTunnelDeleted(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
 
 			By("Verifying tunnel was deleted from Cloudflare (using fallback credentials)")
-			waitForTunnelDeletedFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, fallbackTunnelName, LongTimeout)
+			waitForTunnelDeletedByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnelID, LongTimeout)
+		})
+	})
+
+	Context("main-lane expansion", func() {
+		It("should block tunnel deletion without fallback credentials until primary credentials are restored", SpecTimeout(15*time.Minute), func(ctx SpecContext) {
+			By("Creating a tunnel without fallbackCredentialsRef")
+			tunnelName := testID("delete-blocked")
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("delete-blocked-cr"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Tunnel: cfgatev1alpha1.TunnelIdentity{
+						Name: tunnelName,
+					},
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{
+						AccountID: testEnv.CloudflareAccountID,
+						SecretRef: cfgatev1alpha1.SecretRef{
+							Name: "cloudflare-credentials",
+						},
+					},
+					Cloudflared: cfgatev1alpha1.CloudflaredConfig{
+						Replicas: 1,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tunnel)).To(Succeed())
+			tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
+			tunnelID := tunnel.Status.TunnelID
+			Expect(tunnelID).NotTo(BeEmpty())
+
+			By("Deleting the primary credentials secret and then deleting the tunnel")
+			credentialsSecret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cloudflare-credentials",
+					Namespace: namespace.Name,
+				},
+			}
+			Expect(k8sClient.Delete(ctx, credentialsSecret)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, tunnel)).To(Succeed())
+
+			By("Waiting for deletion to block on the finalizer and emit CleanupFailed")
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareTunnel
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, &current)).To(Succeed())
+				g.Expect(current.DeletionTimestamp.IsZero()).To(BeFalse())
+				g.Expect(current.Finalizers).To(ContainElement("cfgate.io/tunnel-cleanup"))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			event := waitForEventReason(ctx, namespace.Name, tunnel.Name, "CloudflareTunnel", "CleanupFailed", corev1.EventTypeWarning, DefaultTimeout)
+			Expect(event.Message).To(ContainSubstring("Failed to resolve credentials"))
+
+			By("Restoring credentials so deletion can complete")
+			createCloudflareCredentialsSecret(namespace.Name)
+			waitForTunnelDeleted(ctx, k8sClient, tunnel.Name, tunnel.Namespace, LongTimeout)
+			waitForTunnelDeletedByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnelID, LongTimeout)
+		})
+
+		It("should recreate a tunnel after the remote tunnel is deleted out of band", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
+			By("Creating a healthy tunnel and attached Gateway/HTTPRoute")
+			tunnelName := testID("remote-recreate")
+			tunnel := createCloudflareTunnel(ctx, k8sClient, testID("remote-recreate-cr"), namespace.Name, tunnelName)
+			tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
+			originalTunnelID := tunnel.Status.TunnelID
+
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gw")
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, fmt.Sprintf("%s/%s", namespace.Name, tunnel.Name))
+			serviceName := testID("svc")
+			createTestService(ctx, k8sClient, serviceName, namespace.Name, 8080)
+			hostname := fmt.Sprintf("%s.%s", testID("remote-route"), testEnv.CloudflareZoneName)
+			createHTTPRoute(ctx, k8sClient, testID("route"), namespace.Name, gatewayName, []string{hostname}, serviceName, 8080)
+
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareTunnel
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, &current)).To(Succeed())
+				g.Expect(current.Status.ConnectedRouteCount).To(BeNumerically(">", 0))
+				g.Expect(findCondition(current.Status.Conditions, "ConfigurationSynced")).NotTo(BeNil())
+				g.Expect(findCondition(current.Status.Conditions, "ConfigurationSynced").Status).To(Equal(metav1.ConditionTrue))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Deleting the remote tunnel directly in Cloudflare")
+			Expect(deleteTunnelInCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, originalTunnelID)).To(Succeed())
+
+			By("Triggering a meaningful reconcile after remote deletion")
+			Eventually(func() error {
+				var current cfgatev1alpha1.CloudflareTunnel
+				if err := k8sClient.Get(ctx, client.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, &current); err != nil {
+					return err
+				}
+				current.Spec.FallbackTarget = "http_status:503"
+				return k8sClient.Update(ctx, &current)
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
+			By("Verifying the controller recreates the tunnel and restores configuration")
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareTunnel
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, &current)).To(Succeed())
+				g.Expect(current.Status.TunnelID).NotTo(BeEmpty())
+				g.Expect(current.Status.TunnelID).NotTo(Equal(originalTunnelID))
+				g.Expect(findCondition(current.Status.Conditions, "Ready")).NotTo(BeNil())
+				g.Expect(findCondition(current.Status.Conditions, "Ready").Status).To(Equal(metav1.ConditionTrue))
+
+				config, err := getTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, current.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				foundHostname := false
+				for _, ingress := range config.Config.Ingress {
+					if ingress.Hostname == hostname {
+						foundHostname = true
+						break
+					}
+				}
+				g.Expect(foundHostname).To(BeTrue())
+			}, LongTimeout, DefaultInterval).Should(Succeed())
+		})
+
+		It("should build remote ingress configuration for multiple hostnames and path matches", SpecTimeout(10*time.Minute), func(ctx SpecContext) {
+			By("Creating a tunnel and Gateway")
+			tunnelName := testID("multi-ingress")
+			tunnel := createCloudflareTunnel(ctx, k8sClient, testID("multi-ingress-cr"), namespace.Name, tunnelName)
+			tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
+
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gw")
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, fmt.Sprintf("%s/%s", namespace.Name, tunnel.Name))
+
+			By("Creating backend Services")
+			serviceOne := createTestService(ctx, k8sClient, testID("svc-one"), namespace.Name, 8080)
+			serviceTwo := createTestService(ctx, k8sClient, testID("svc-two"), namespace.Name, 9090)
+
+			By("Creating HTTPRoutes with multiple hostnames and path matches")
+			hostnameOne := fmt.Sprintf("%s.%s", testID("app"), testEnv.CloudflareZoneName)
+			hostnameTwo := fmt.Sprintf("%s.%s", testID("api"), testEnv.CloudflareZoneName)
+			hostnameThree := fmt.Sprintf("%s.%s", testID("admin"), testEnv.CloudflareZoneName)
+			parentNamespace := gatewayv1.Namespace(namespace.Name)
+
+			routeOne := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("route-one"),
+					Namespace: namespace.Name,
+				},
+				Spec: gatewayv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayv1.CommonRouteSpec{
+						ParentRefs: []gatewayv1.ParentReference{
+							{
+								Name:      gatewayv1.ObjectName(gatewayName),
+								Namespace: &parentNamespace,
+							},
+						},
+					},
+					Hostnames: []gatewayv1.Hostname{
+						gatewayv1.Hostname(hostnameOne),
+						gatewayv1.Hostname(hostnameTwo),
+					},
+					Rules: []gatewayv1.HTTPRouteRule{
+						{
+							Matches: []gatewayv1.HTTPRouteMatch{
+								{Path: &gatewayv1.HTTPPathMatch{Type: ptrTo(gatewayv1.PathMatchPathPrefix), Value: ptrTo("/app")}},
+								{Path: &gatewayv1.HTTPPathMatch{Type: ptrTo(gatewayv1.PathMatchPathPrefix), Value: ptrTo("/api")}},
+							},
+							BackendRefs: []gatewayv1.HTTPBackendRef{
+								{
+									BackendRef: gatewayv1.BackendRef{
+										BackendObjectReference: gatewayv1.BackendObjectReference{
+											Name: gatewayv1.ObjectName(serviceOne.Name),
+											Port: ptrTo(gatewayv1.PortNumber(8080)),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, routeOne)).To(Succeed())
+
+			routeTwo := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("route-two"),
+					Namespace: namespace.Name,
+				},
+				Spec: gatewayv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayv1.CommonRouteSpec{
+						ParentRefs: []gatewayv1.ParentReference{
+							{
+								Name:      gatewayv1.ObjectName(gatewayName),
+								Namespace: &parentNamespace,
+							},
+						},
+					},
+					Hostnames: []gatewayv1.Hostname{
+						gatewayv1.Hostname(hostnameThree),
+					},
+					Rules: []gatewayv1.HTTPRouteRule{
+						{
+							BackendRefs: []gatewayv1.HTTPBackendRef{
+								{
+									BackendRef: gatewayv1.BackendRef{
+										BackendObjectReference: gatewayv1.BackendObjectReference{
+											Name: gatewayv1.ObjectName(serviceTwo.Name),
+											Port: ptrTo(gatewayv1.PortNumber(9090)),
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, routeTwo)).To(Succeed())
+
+			By("Waiting for the tunnel status and remote config to reflect the full rule set")
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareTunnel
+				g.Expect(k8sClient.Get(ctx, client.ObjectKey{Name: tunnel.Name, Namespace: tunnel.Namespace}, &current)).To(Succeed())
+				g.Expect(current.Status.ConnectedRouteCount).To(Equal(int32(2)))
+
+				config, err := getTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, current.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				ruleSet := map[string]bool{}
+				for _, ingress := range config.Config.Ingress {
+					ruleSet[fmt.Sprintf("%s|%s|%s", ingress.Hostname, ingress.Path, ingress.Service)] = true
+				}
+
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/app|http://%s.%s.svc.cluster.local:8080", hostnameOne, serviceOne.Name, namespace.Name)))
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/api|http://%s.%s.svc.cluster.local:8080", hostnameOne, serviceOne.Name, namespace.Name)))
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/app|http://%s.%s.svc.cluster.local:8080", hostnameTwo, serviceOne.Name, namespace.Name)))
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/api|http://%s.%s.svc.cluster.local:8080", hostnameTwo, serviceOne.Name, namespace.Name)))
+				g.Expect(ruleSet).To(SatisfyAny(
+					HaveKey(fmt.Sprintf("%s||http://%s.%s.svc.cluster.local:9090", hostnameThree, serviceTwo.Name, namespace.Name)),
+					HaveKey(fmt.Sprintf("%s|/|http://%s.%s.svc.cluster.local:9090", hostnameThree, serviceTwo.Name, namespace.Name)),
+				))
+				g.Expect(ruleSet).To(HaveKey("||http_status:404"))
+			}, LongTimeout, DefaultInterval).Should(Succeed())
 		})
 	})
 

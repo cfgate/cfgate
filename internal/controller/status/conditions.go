@@ -89,9 +89,6 @@ const (
 
 	// ConditionTypeReferenceGrantValid indicates cross-namespace references are permitted.
 	ConditionTypeReferenceGrantValid = "ReferenceGrantValid"
-
-	// ConditionTypeMTLSConfigured indicates mTLS certificate and hostname associations are configured.
-	ConditionTypeMTLSConfigured = "MTLSConfigured"
 )
 
 // cfgate-specific condition types for HTTPRoute status.
@@ -172,8 +169,6 @@ const (
 	ReasonServiceTokensReady     = "ServiceTokensReady"
 	ReasonServiceTokenError      = "ServiceTokenError"
 	ReasonReferenceGrantRequired = "ReferenceGrantRequired"
-	ReasonMTLSConfigured         = "MTLSConfigured"
-	ReasonMTLSConfigError        = "MTLSConfigError"
 
 	// Gateway reasons.
 	ReasonMissingTunnelRef = "MissingTunnelRef"

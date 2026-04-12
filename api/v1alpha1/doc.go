@@ -37,7 +37,7 @@
 // For usage examples and detailed configuration, see:
 //   - CloudflareTunnel: tunnel lifecycle, cloudflared deployment configuration
 //   - CloudflareDNS: DNS sync policies, ownership tracking, hostname sources
-//   - CloudflareAccessPolicy: Access rules, service tokens, mTLS configuration
+//   - CloudflareAccessPolicy: Access rules and service tokens
 //
 // +kubebuilder:object:generate=true
 // +groupName=cfgate.io

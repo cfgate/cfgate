@@ -311,7 +311,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 
 			By("INV-A1: Core sub-conditions must be True when Ready=True")
 			// Condition names from status/conditions.go + inline strings in access controller.
-			// NOTE: ReferenceGrantValid and MTLSConfigured are NOT in Ready formula.
+			// NOTE: ReferenceGrantValid is NOT in Ready formula.
 			for _, condType := range []string{
 				"CredentialsValid",
 				"TargetsResolved",

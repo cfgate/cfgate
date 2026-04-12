@@ -424,11 +424,6 @@ func (apc *AccessPolicyContext) AllTargetsResolved() bool {
 	return true
 }
 
-// RequiresMTLS returns true if mTLS is configured and enabled.
-func (apc *AccessPolicyContext) RequiresMTLS() bool {
-	return apc.Spec.MTLS != nil && apc.Spec.MTLS.Enabled
-}
-
 // RequiresServiceTokens returns true if service tokens are configured.
 func (apc *AccessPolicyContext) RequiresServiceTokens() bool {
 	return len(apc.Spec.ServiceTokens) > 0

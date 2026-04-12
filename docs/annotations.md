@@ -368,7 +368,7 @@ Controls what happens to Cloudflare-side resources when the Kubernetes resource 
 **Supported on:**
 - **CloudflareTunnel:** When set to `orphan`, the tunnel remains in Cloudflare but the K8s resource is removed. The controller skips tunnel deletion and proceeds directly to finalizer removal.
 - **CloudflareDNS:** When set to `orphan`, the DNS records remain in Cloudflare but the K8s resource is removed. The controller skips record cleanup and proceeds directly to finalizer removal.
-- **CloudflareAccessPolicy:** When set to `orphan`, the Access Application, policies, service tokens, and mTLS certificates remain in Cloudflare. The controller skips all Cloudflare cleanup and proceeds directly to finalizer removal.
+- **CloudflareAccessPolicy:** When set to `orphan`, the Access Application, policies, and service tokens remain in Cloudflare. The controller skips all Cloudflare cleanup and proceeds directly to finalizer removal.
 
 **Use cases:**
 - Migrating resources between clusters (delete from old cluster without destroying the Cloudflare resource)
