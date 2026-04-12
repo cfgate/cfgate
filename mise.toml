@@ -242,10 +242,10 @@ ginkgo -vv \
 [tasks."e2e:filter"]
 alias = ["fe2e"]
 description = "Run E2E tests with a Ginkgo --focus filter"
-usage = 'arg "filter" help="Ginkgo --focus regex"'
+usage = 'arg "<filter>" help="Ginkgo --focus regex"'
 run = """
 set -eu
-E2E_FOCUS="{{arg(name='filter')}}" mise run e2e
+E2E_FOCUS="${usage_filter?}" mise run e2e
 """
 
 [tasks."e2e:preflight"]

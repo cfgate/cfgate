@@ -163,8 +163,9 @@ type DNSExplicitHostname struct {
 	// +kubebuilder:validation:XValidation:rule="self.split('.').all(s, size(s) <= 63)",message="each DNS label must not exceed 63 octets (RFC 1035 section 2.3.4)"
 	Hostname string `json:"hostname"`
 
-	// Target is the CNAME target. Supports template variable {{ .TunnelDomain }}.
-	// Defaults to tunnel domain when tunnelRef is specified.
+	// Target overrides the resolved record target for this hostname.
+	// Supports template variable {{ .TunnelDomain }} when tunnelRef is used.
+	// Defaults to the resource-level resolved target when omitted.
 	// Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253

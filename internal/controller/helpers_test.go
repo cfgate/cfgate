@@ -14,6 +14,7 @@ import (
 	"cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/controller/annotations"
 	"cfgate.io/cfgate/internal/controller/status"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestDNSHelperFunctions(t *testing.T) {
@@ -88,6 +89,243 @@ func TestDNSHelperFunctions(t *testing.T) {
 		kind := gatewayv1.Kind("Service")
 		if isGatewayParentRef(gatewayv1.ParentReference{Name: "gw", Kind: &kind}) {
 			t.Fatal("isGatewayParentRef() = true, want false for non-Gateway kind")
+		}
+	})
+
+	t.Run("resolves explicit hostname targets from defaults, templates, and overrides", func(t *testing.T) {
+		tunnelDNS := &cfgatev1alpha1.CloudflareDNS{
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: "edge"},
+			},
+		}
+		tunnel := &cfgatev1alpha1.CloudflareTunnel{
+			Status: cfgatev1alpha1.CloudflareTunnelStatus{
+				TunnelDomain: "edge.cfargotunnel.com",
+			},
+		}
+		externalDNS := &cfgatev1alpha1.CloudflareDNS{
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				ExternalTarget: &cfgatev1alpha1.ExternalTarget{
+					Type:  cfgatev1alpha1.RecordTypeCNAME,
+					Value: "origin.example.net",
+				},
+			},
+		}
+
+		if got := resolveExplicitHostnameTarget(tunnelDNS, tunnel, cfgatev1alpha1.DNSExplicitHostname{}); got != "edge.cfargotunnel.com" {
+			t.Fatalf("resolveExplicitHostnameTarget() default tunnel target = %q, want %q", got, "edge.cfargotunnel.com")
+		}
+		if got := resolveExplicitHostnameTarget(tunnelDNS, tunnel, cfgatev1alpha1.DNSExplicitHostname{Target: "{{ .TunnelDomain }}"}); got != "edge.cfargotunnel.com" {
+			t.Fatalf("resolveExplicitHostnameTarget() template = %q, want %q", got, "edge.cfargotunnel.com")
+		}
+		if got := resolveExplicitHostnameTarget(tunnelDNS, tunnel, cfgatev1alpha1.DNSExplicitHostname{Target: "custom.example.net"}); got != "custom.example.net" {
+			t.Fatalf("resolveExplicitHostnameTarget() tunnel override = %q, want %q", got, "custom.example.net")
+		}
+		if got := resolveExplicitHostnameTarget(externalDNS, nil, cfgatev1alpha1.DNSExplicitHostname{}); got != "origin.example.net" {
+			t.Fatalf("resolveExplicitHostnameTarget() external default = %q, want %q", got, "origin.example.net")
+		}
+		if got := resolveExplicitHostnameTarget(externalDNS, nil, cfgatev1alpha1.DNSExplicitHostname{Target: "override.example.net"}); got != "override.example.net" {
+			t.Fatalf("resolveExplicitHostnameTarget() external override = %q, want %q", got, "override.example.net")
+		}
+	})
+}
+
+func TestCloudflareDNSCollectHostnames(t *testing.T) {
+	t.Run("explicit hostnames override colliding route-discovered config while route discovery stays additive", func(t *testing.T) {
+		scheme := controllerTestScheme(t)
+		sharedHostname := "app.example.com"
+		routeOnlyHostname := "route.example.com"
+
+		gateway := &gatewayv1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "public",
+				Namespace: "apps",
+				Annotations: map[string]string{
+					annotations.AnnotationTunnelRef: "cfgate-system/edge",
+				},
+			},
+		}
+		route := &gatewayv1.HTTPRoute{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "route",
+				Namespace: "apps",
+				Annotations: map[string]string{
+					"e2e.dns/merge":                         "enabled",
+					annotations.AnnotationTTL:               "600",
+					annotations.AnnotationCloudflareProxied: "true",
+				},
+			},
+			Spec: gatewayv1.HTTPRouteSpec{
+				CommonRouteSpec: gatewayv1.CommonRouteSpec{
+					ParentRefs: []gatewayv1.ParentReference{{
+						Name: "public",
+					}},
+				},
+				Hostnames: []gatewayv1.Hostname{
+					gatewayv1.Hostname(sharedHostname),
+					gatewayv1.Hostname(routeOnlyHostname),
+				},
+			},
+		}
+		dns := &cfgatev1alpha1.CloudflareDNS{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "dns",
+				Namespace: "cfgate-system",
+			},
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: "edge"},
+				Source: cfgatev1alpha1.DNSHostnameSource{
+					GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
+						Enabled:          true,
+						AnnotationFilter: "e2e.dns/merge=enabled",
+					},
+					Explicit: []cfgatev1alpha1.DNSExplicitHostname{{
+						Hostname: sharedHostname,
+						Target:   "custom.example.net",
+						TTL:      300,
+						Proxied:  ptrTo(false),
+					}},
+				},
+			},
+		}
+		tunnel := &cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "edge",
+				Namespace: "cfgate-system",
+			},
+			Status: cfgatev1alpha1.CloudflareTunnelStatus{
+				TunnelDomain: "edge.cfargotunnel.com",
+			},
+		}
+
+		r := &CloudflareDNSReconciler{
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route).Build(),
+		}
+
+		hostnames, err := r.collectHostnames(context.Background(), dns, tunnel)
+		if err != nil {
+			t.Fatalf("collectHostnames() error = %v", err)
+		}
+		if len(hostnames) != 2 {
+			t.Fatalf("len(hostnames) = %d, want 2", len(hostnames))
+		}
+
+		sharedConfig, ok := hostnames[sharedHostname]
+		if !ok {
+			t.Fatalf("shared hostname %q missing from collected hostnames", sharedHostname)
+		}
+		if sharedConfig.Target != "custom.example.net" {
+			t.Fatalf("shared Target = %q, want %q", sharedConfig.Target, "custom.example.net")
+		}
+		if sharedConfig.TTL != 300 {
+			t.Fatalf("shared TTL = %d, want 300", sharedConfig.TTL)
+		}
+		if sharedConfig.Proxied == nil || *sharedConfig.Proxied {
+			t.Fatalf("shared Proxied = %#v, want false", sharedConfig.Proxied)
+		}
+		if sharedConfig.RecordType != "CNAME" {
+			t.Fatalf("shared RecordType = %q, want CNAME", sharedConfig.RecordType)
+		}
+
+		routeConfig, ok := hostnames[routeOnlyHostname]
+		if !ok {
+			t.Fatalf("route-only hostname %q missing from collected hostnames", routeOnlyHostname)
+		}
+		if routeConfig.Target != "" {
+			t.Fatalf("route-only Target = %q, want empty", routeConfig.Target)
+		}
+		if routeConfig.TTL != 600 {
+			t.Fatalf("route-only TTL = %d, want 600", routeConfig.TTL)
+		}
+		if routeConfig.Proxied == nil || !*routeConfig.Proxied {
+			t.Fatalf("route-only Proxied = %#v, want true", routeConfig.Proxied)
+		}
+		if routeConfig.RecordType != "CNAME" {
+			t.Fatalf("route-only RecordType = %q, want CNAME", routeConfig.RecordType)
+		}
+	})
+}
+
+func TestCloudflareDNSSyncRecords(t *testing.T) {
+	t.Run("uses effective per-hostname target and does not let route-derived config override explicit config", func(t *testing.T) {
+		ctx := context.Background()
+		txtDisabled := false
+		created := map[string]cloudflare.DNSRecord{}
+		mock := cloudflare.NewMockClient()
+		mock.ListDNSRecordsByNameTypeFunc = func(context.Context, string, string, string) ([]cloudflare.DNSRecord, error) {
+			return nil, nil
+		}
+		mock.CreateDNSRecordFunc = func(_ context.Context, _ string, record cloudflare.DNSRecord) (*cloudflare.DNSRecord, error) {
+			record.ID = record.Name + "-id"
+			created[record.Name] = record
+			return &record, nil
+		}
+
+		dns := &cfgatev1alpha1.CloudflareDNS{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "dns",
+				Namespace: "default",
+			},
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				Policy: cfgatev1alpha1.DNSPolicyUpsertOnly,
+				Defaults: cfgatev1alpha1.DNSRecordDefaults{
+					Proxied: true,
+					TTL:     1,
+				},
+				Ownership: cfgatev1alpha1.DNSOwnershipConfig{
+					TXTRecord: cfgatev1alpha1.DNSTXTRecordOwnership{
+						Enabled: &txtDisabled,
+					},
+				},
+			},
+		}
+		explicitProxied := false
+		routeProxied := true
+		hostnameConfigs := map[string]HostnameConfig{
+			"app.example.com": {
+				Target:     "custom.example.net",
+				TTL:        300,
+				Proxied:    &explicitProxied,
+				RecordType: "CNAME",
+			},
+			"route.example.com": {
+				Proxied:    &routeProxied,
+				RecordType: "CNAME",
+			},
+		}
+		r := &CloudflareDNSReconciler{Recorder: &fakeEventRecorder{}}
+
+		err := r.syncRecords(ctx, dns, "edge.cfargotunnel.com", hostnameConfigs, map[string]string{"example.com": "zone-1"}, cloudflare.NewDNSService(mock, discardLogger()))
+		if err != nil {
+			t.Fatalf("syncRecords() error = %v", err)
+		}
+
+		explicitRecord, ok := created["app.example.com"]
+		if !ok {
+			t.Fatal("syncRecords() did not create app.example.com")
+		}
+		if explicitRecord.Content != "custom.example.net" {
+			t.Fatalf("explicit Content = %q, want %q", explicitRecord.Content, "custom.example.net")
+		}
+		if explicitRecord.TTL != 300 {
+			t.Fatalf("explicit TTL = %d, want 300", explicitRecord.TTL)
+		}
+		if explicitRecord.Proxied {
+			t.Fatalf("explicit Proxied = %v, want false", explicitRecord.Proxied)
+		}
+
+		routeRecord, ok := created["route.example.com"]
+		if !ok {
+			t.Fatal("syncRecords() did not create route.example.com")
+		}
+		if routeRecord.Content != "edge.cfargotunnel.com" {
+			t.Fatalf("route Content = %q, want %q", routeRecord.Content, "edge.cfargotunnel.com")
+		}
+		if routeRecord.TTL != 1 {
+			t.Fatalf("route TTL = %d, want 1", routeRecord.TTL)
+		}
+		if !routeRecord.Proxied {
+			t.Fatalf("route Proxied = %v, want true", routeRecord.Proxied)
 		}
 	})
 }
