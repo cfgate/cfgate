@@ -36,7 +36,7 @@ kubectl annotate gateway rancher-gateway -n cattle-system \
   cfgate.io/tunnel-ref=cfgate-system/rancher-tunnel
 ```
 
-The CloudflareDNS resource discovers hostnames from all HTTPRoutes attached to this Gateway (via `gatewayRoutes.enabled: true`). No per-route annotations are needed unless you use `annotationFilter` to limit which routes get DNS records.
+The CloudflareDNS resource discovers hostnames from all HTTPRoutes attached to this Gateway because its `gatewayRoutes` block is present. No per-route annotations are needed unless you use `annotationFilter` to limit which routes get DNS records.
 
 ### 4. Verify
 
