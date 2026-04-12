@@ -3,6 +3,172 @@
 All notable changes to cfgate are documented in this file.
 
 
+## [Unreleased]
+
+### Bug Fixes
+
+- **(release)** Drop changelog writeback and tighten latest tags
+- **(release)** Harden e2e preflight and coverage upload
+- Correct assurance score metadata and review notes
+- Harden coverage helper scripts
+- Honor coverage mode in profile merge
+- Fail coverage merge pipelines on awk errors
+
+### Testing
+
+- Add merged coverage tooling and orchestration tests
+- Expand e2e coverage and drop access mtls
+- Drop unused e2e helper stubs
+
+### Refactoring
+
+- Remove retired route surface from current product
+
+### CI/CD
+
+- Add manual remote E2E workflow
+
+### Other
+
+- Prepare changelog and e2e automation
+- Sync dev with main before coverage work
+- Merge pull request #55 from cfgate/dev
+
+test: add merged coverage tooling and orchestration tests
+
+## [0.1.0-alpha.20] - 2026-04-10
+
+### Bug Fixes
+
+- Correct Artifact Hub shield URL
+- **(manager)** Standardize CLI exit codes
+
+### Testing
+
+- Adopt h2c.2 and harden e2e cleanup
+- Adopt h2c.2 and harden e2e cleanup
+
+### Infrastructure
+
+- Scope mise secrets to e2e tasks
+- Update golangci-lint for Go 1.26
+- Use Go 1.26 in Docker image
+- Scope mise runtime defaults to tasks
+- Scope mise secrets to e2e tasks
+- Update golangci-lint for Go 1.26
+- Use Go 1.26 in Docker image
+- Scope mise runtime defaults to tasks
+
+### CI/CD
+
+- Add Renovate for dependency automation
+- Migrate release workflow to Node 24 actions
+- Gate dev coverage on lint
+- Run pull request validation on dev
+- Skip mise env loading in automation
+- Gate dev coverage on lint
+- Run pull request validation on dev
+- Skip mise env loading in automation
+
+### Maintenance
+
+- Bump cloudflared fork to v2026.3.0-h2c.1 and document fork dependency
+- Migrate cfgate automation to mise
+- Migrate cfgate automation to mise
+
+## [0.1.0-alpha.19] - 2026-03-15
+
+### Features
+
+- **(dns)** Support A/AAAA record types and subdomain depth warnings
+- **(dns)** Implement NamespaceSelector for route filtering
+
+### Bug Fixes
+
+- **(access)** Order-insensitive comparison for drift detection
+- **(client)** Replace string-based error detection with SDK type assertions
+- **(dns)** Cross-reference TXT ownership during cleanup to prevent cross-resource deletion
+- **(cloudflare)** Include email addresses in approvalGroupsEqual sort key
+- Correct buildRulesFromHTTPRoute, convertAccessRules, and CEL test helper
+- Block finalizer removal on cleanup failure with retry budgets
+- Address PR #47 review findings
+- **(e2e)** Reverse CR deletion order to respect credential dependencies
+
+### Testing
+
+- **(client)** Add MockClient for unit and integration testing
+- Add P0 unit tests for status conditions, DNS diff, and access drift
+- Add P2 unit tests for cache, predicates, features, and builders (#34, #35)
+
+### Documentation
+
+- Rewrite CONTRIBUTING.md to prose reference conventions
+- Update TESTING.md for two-tier test strategy
+- Add deletion behavior, record types, subdomain warnings, and DNS orphan E2E
+
+### Refactoring
+
+- **(client)** Compose Client interface from 9 domain interfaces (#26)
+- **(client)** Unify param types and extract SDK conversions (#27, #28)
+
+### CI/CD
+
+- Bump trivy-action to 0.35.0
+- Bump trivy-action to 0.35.0
+
+### Maintenance
+
+- Add unit test tasks and fix CONTRIBUTING.md task table
+- Fix lint and format issues
+- Remove unused ZoneName field from DNSRecord
+
+## [0.1.0-alpha.18] - 2026-02-24
+
+### Bug Fixes
+
+- Translate h2cOrigin to CF API tunnel configuration
+- Add runtime mutual exclusivity guard for h2cOrigin/http2Origin
+
+### Testing
+
+- Add E2E tests for h2cOrigin annotation and CEL validation
+
+### Maintenance
+
+- Bump default cloudflared image to 2026.2.0-h2c.2
+
+### Other
+
+- Merge pull request #3 from cfgate/dev
+
+fix: translate h2cOrigin to CF API tunnel configuration
+
+## [0.1.0-alpha.17] - 2026-02-24
+
+### Bug Fixes
+
+- Remove v prefix from default cloudflared image tag
+
+## [0.1.0-alpha.16] - 2026-02-24
+
+### Features
+
+- Default cloudflared image to inherent-design fork
+
+## [0.1.0-alpha.15] - 2026-02-24
+
+### Features
+
+- Add h2cOrigin support and fix liveness probe
+
+### Bug Fixes
+
+- Enforce h2cOrigin/http2Origin mutual exclusivity
+
+### CI/CD
+
+- **(release)** Stop marking GitHub releases as pre-release
+
 ## [0.1.0-alpha.13] - 2026-02-21
 
 ### Bug Fixes
@@ -22,6 +188,7 @@ All notable changes to cfgate are documented in this file.
 - Generate changelog
 - Bind container image
 - Add CI workflows, ignore E2E output directory
+- Generate changelog for v0.1.0-alpha.13
 
 ### Other
 

@@ -152,7 +152,7 @@ cfgate automatically:
 
 **CloudflareDNS** syncs DNS records independently from tunnel lifecycle, with multi-zone support and ownership tracking. → [Full reference](docs/cloudflare-dns.md)
 
-**CloudflareAccessPolicy** manages Cloudflare Access applications and policies for zero-trust authentication against Gateway API targets. → [Full reference](docs/cloudflare-access-policy.md)
+**CloudflareAccessPolicy** manages Cloudflare Access applications and policies for zero-trust authentication against `Gateway` and `HTTPRoute` targets. → [Full reference](docs/cloudflare-access-policy.md)
 
 Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) is set via annotations on Gateway API HTTPRoute resources. → [Full reference](docs/annotations.md)
 
