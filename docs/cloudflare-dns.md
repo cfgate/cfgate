@@ -9,7 +9,7 @@ Manages DNS record synchronization independently from CloudflareTunnel resources
 
 ## Overview
 
-CloudflareDNS manages DNS record synchronization for Cloudflare zones. It supports two target modes: tunnel references (for tunnel-based CNAME records) and external targets (for non-tunnel DNS records such as A, AAAA, or external CNAMEs). DNS records can be sourced automatically from Gateway API routes (HTTPRoute, GRPCRoute, etc.) or explicitly defined in the spec.
+CloudflareDNS manages DNS record synchronization for Cloudflare zones. It supports two target modes: tunnel references (for tunnel-based CNAME records) and external targets (for non-tunnel DNS records such as A, AAAA, or external CNAMEs). DNS records can be sourced automatically from Gateway API HTTPRoute resources or explicitly defined in the spec.
 
 CloudflareDNS implements ownership tracking via TXT records, aligned with the external-dns pattern, to enable safe multi-cluster deployments and prevent accidental deletion of records created by other installations. Lifecycle behavior is controlled via `spec.policy` (sync, upsert-only, create-only) and `spec.cleanupPolicy`.
 
@@ -127,9 +127,9 @@ spec:
 
 ### `spec.source.gatewayRoutes`
 
-Configures automatic hostname discovery from Gateway API routes (HTTPRoute, GRPCRoute, TCPRoute, UDPRoute).
+Configures automatic hostname discovery from Gateway API HTTPRoute resources.
 
-**`annotationFilter`:** An opt-in filter that restricts which routes trigger DNS sync. The controller checks this annotation on route resources (HTTPRoute, GRPCRoute, etc.), never on Gateways. You can use any annotation key=value pair of your choosing. The format is `key=value`. See [Annotations Reference](annotations.md#notes-on-annotationfilter) for details on how annotation filtering works.
+**`annotationFilter`:** An opt-in filter that restricts which routes trigger DNS sync. The controller checks this annotation on HTTPRoute resources, never on Gateways. You can use any annotation key=value pair of your choosing. The format is `key=value`. See [Annotations Reference](annotations.md#notes-on-annotationfilter) for details on how annotation filtering works.
 
 A common convention is `cfgate.io/dns-sync=enabled`, but this is not a controller-defined annotation; it is a user-chosen convention. The controller simply checks whether the route has the specified annotation with the specified value.
 

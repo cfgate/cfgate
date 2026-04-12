@@ -22,7 +22,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
-	gwapiv1alpha2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
@@ -62,7 +61,7 @@ const (
 // CloudflareAccessPolicyReconciler reconciles CloudflareAccessPolicy resources.
 //
 // It manages the complete Access policy lifecycle including:
-//   - Target resolution (Gateway, HTTPRoute, GRPCRoute, TCPRoute, UDPRoute)
+//   - Target resolution (Gateway, HTTPRoute)
 //   - Cross-namespace reference validation via ReferenceGrant
 //   - Cloudflare Access Application creation and updates
 //   - Access Policy synchronization
@@ -90,7 +89,7 @@ type CloudflareAccessPolicyReconciler struct {
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflaretunnels,verbs=get;list;watch
-// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes;grpcroutes;tcproutes;udproutes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=referencegrants,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -519,14 +518,10 @@ func (r *CloudflareAccessPolicyReconciler) inheritCredentialsFromTunnel(
 }
 
 // validateTargetKinds validates that all target kinds are supported.
-// It checks FeatureGates for optional route types (GRPCRoute, TCPRoute, UDPRoute)
-// and returns an error if a required CRD is not installed.
 func (r *CloudflareAccessPolicyReconciler) validateTargetKinds(
 	ctx context.Context,
 	policy *cfgatev1alpha1.CloudflareAccessPolicy,
 ) error {
-	log := log.FromContext(ctx)
-
 	refs := policy.Spec.TargetRefs
 	if policy.Spec.TargetRef != nil {
 		refs = append([]cfgatev1alpha1.PolicyTargetReference{*policy.Spec.TargetRef}, refs...)
@@ -535,31 +530,7 @@ func (r *CloudflareAccessPolicyReconciler) validateTargetKinds(
 	for _, ref := range refs {
 		switch ref.Kind {
 		case "Gateway", "HTTPRoute":
-			// Always supported
-		case "GRPCRoute":
-			if r.FeatureGates != nil && !r.FeatureGates.HasGRPCRouteSupport() {
-				log.Info("policy targets GRPCRoute but CRD not installed",
-					"policy", policy.Name,
-					"targetRef", ref.Name,
-				)
-				return fmt.Errorf("GRPCRoute CRD not installed")
-			}
-		case "TCPRoute":
-			if r.FeatureGates != nil && !r.FeatureGates.HasTCPRouteSupport() {
-				log.Info("policy targets TCPRoute but CRD not installed",
-					"policy", policy.Name,
-					"targetRef", ref.Name,
-				)
-				return fmt.Errorf("TCPRoute CRD not installed")
-			}
-		case "UDPRoute":
-			if r.FeatureGates != nil && !r.FeatureGates.HasUDPRouteSupport() {
-				log.Info("policy targets UDPRoute but CRD not installed",
-					"policy", policy.Name,
-					"targetRef", ref.Name,
-				)
-				return fmt.Errorf("UDPRoute CRD not installed")
-			}
+			continue
 		default:
 			return fmt.Errorf("unsupported target kind: %s", ref.Kind)
 		}
@@ -804,7 +775,7 @@ func (r *CloudflareAccessPolicyReconciler) syncPolicies(
 //   - P0: No IdP (IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken)
 //   - P1: Basic IdP (Email, EmailList, EmailDomain, OIDCClaim)
 //   - P2: Google Workspace (GSuiteGroup)
-//   - P3: Deferred to v0.2.0 (Certificate, Group, GitHub, Azure, Okta, SAML, etc.)
+//   - P3: Not in current product scope (Certificate, Group, GitHub, Azure, Okta, SAML, etc.)
 func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.AccessRuleParam, error) {
 	var rules []cloudflare.AccessRuleParam
 	for _, r := range crdRules {
@@ -943,7 +914,7 @@ func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.Acce
 		}
 
 		// ============================================================
-		// P3: v0.2.0 - Not implemented in alpha.3
+		// P3: not in current product scope
 		// ============================================================
 		// Certificate, CommonName, Group, GitHub, Azure, Okta, SAML,
 		// AuthenticationMethod, DevicePosture, ExternalEvaluation, LoginMethod
@@ -1468,13 +1439,10 @@ func accessPolicyTargetIndexFunc(obj client.Object) []string {
 //   - CloudflareAccessPolicy (primary resource)
 //   - Secret (owned, for service token credentials)
 //   - HTTPRoute (for policies targeting HTTPRoute)
-//   - GRPCRoute (conditional, if CRD installed)
-//   - TCPRoute (conditional, if CRD installed)
-//   - UDPRoute (conditional, if CRD installed)
 //   - ReferenceGrant (conditional, for cross-namespace validation)
 //
 // Route watches use GenerationChangedPredicate to filter out status-only updates.
-// Optional CRD watches are registered only if the corresponding FeatureGate is enabled.
+// Optional CRD watches are registered only when their corresponding FeatureGate is enabled.
 func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controller").WithName("accesspolicy")
 	log.Info("registering controller with manager")
@@ -1499,33 +1467,6 @@ func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		)
 
-	// Conditionally watch GRPCRoute
-	if r.FeatureGates != nil && r.FeatureGates.HasGRPCRouteSupport() {
-		controllerBuilder = controllerBuilder.Watches(
-			&gateway.GRPCRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForGRPCRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		)
-	}
-
-	// Conditionally watch TCPRoute
-	if r.FeatureGates != nil && r.FeatureGates.HasTCPRouteSupport() {
-		controllerBuilder = controllerBuilder.Watches(
-			&gwapiv1alpha2.TCPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForTCPRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		)
-	}
-
-	// Conditionally watch UDPRoute
-	if r.FeatureGates != nil && r.FeatureGates.HasUDPRouteSupport() {
-		controllerBuilder = controllerBuilder.Watches(
-			&gwapiv1alpha2.UDPRoute{},
-			handler.EnqueueRequestsFromMapFunc(r.findPoliciesForUDPRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		)
-	}
-
 	// Conditionally watch ReferenceGrant
 	if r.FeatureGates != nil && r.FeatureGates.HasReferenceGrantSupport() {
 		controllerBuilder = controllerBuilder.Watches(
@@ -1541,21 +1482,6 @@ func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 // findPoliciesForHTTPRoute returns reconcile requests for policies targeting the given HTTPRoute.
 func (r *CloudflareAccessPolicyReconciler) findPoliciesForHTTPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
 	return r.findPoliciesForTarget(ctx, "HTTPRoute", obj)
-}
-
-// findPoliciesForGRPCRoute returns reconcile requests for policies targeting the given GRPCRoute.
-func (r *CloudflareAccessPolicyReconciler) findPoliciesForGRPCRoute(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.findPoliciesForTarget(ctx, "GRPCRoute", obj)
-}
-
-// findPoliciesForTCPRoute returns reconcile requests for policies targeting the given TCPRoute.
-func (r *CloudflareAccessPolicyReconciler) findPoliciesForTCPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.findPoliciesForTarget(ctx, "TCPRoute", obj)
-}
-
-// findPoliciesForUDPRoute returns reconcile requests for policies targeting the given UDPRoute.
-func (r *CloudflareAccessPolicyReconciler) findPoliciesForUDPRoute(ctx context.Context, obj client.Object) []reconcile.Request {
-	return r.findPoliciesForTarget(ctx, "UDPRoute", obj)
 }
 
 // findPoliciesForTarget finds all CloudflareAccessPolicies targeting a specific object.

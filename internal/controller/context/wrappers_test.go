@@ -1231,7 +1231,6 @@ func TestTargetInfoIsHTTPRoute(t *testing.T) {
 	}{
 		{"HTTPRoute", true},
 		{"Gateway", false},
-		{"TCPRoute", false},
 		{"", false},
 	}
 
@@ -1265,82 +1264,16 @@ func TestTargetInfoIsGateway(t *testing.T) {
 	}
 }
 
-func TestTargetInfoIsTCPRoute(t *testing.T) {
-	tests := []struct {
-		kind string
-		want bool
-	}{
-		{"TCPRoute", true},
-		{"HTTPRoute", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.kind, func(t *testing.T) {
-			ti := &TargetInfo{Kind: tt.kind}
-			if got := ti.IsTCPRoute(); got != tt.want {
-				t.Errorf("IsTCPRoute() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestTargetInfoIsUDPRoute(t *testing.T) {
-	tests := []struct {
-		kind string
-		want bool
-	}{
-		{"UDPRoute", true},
-		{"HTTPRoute", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.kind, func(t *testing.T) {
-			ti := &TargetInfo{Kind: tt.kind}
-			if got := ti.IsUDPRoute(); got != tt.want {
-				t.Errorf("IsUDPRoute() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestTargetInfoIsGRPCRoute(t *testing.T) {
-	tests := []struct {
-		kind string
-		want bool
-	}{
-		{"GRPCRoute", true},
-		{"HTTPRoute", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.kind, func(t *testing.T) {
-			ti := &TargetInfo{Kind: tt.kind}
-			if got := ti.IsGRPCRoute(); got != tt.want {
-				t.Errorf("IsGRPCRoute() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestTargetInfoIsKindExhaustive(t *testing.T) {
 	kinds := []struct {
 		kind        string
 		isHTTPRoute bool
 		isGateway   bool
-		isTCPRoute  bool
-		isUDPRoute  bool
-		isGRPCRoute bool
 	}{
-		{"HTTPRoute", true, false, false, false, false},
-		{"Gateway", false, true, false, false, false},
-		{"TCPRoute", false, false, true, false, false},
-		{"UDPRoute", false, false, false, true, false},
-		{"GRPCRoute", false, false, false, false, true},
-		{"FooRoute", false, false, false, false, false},
-		{"", false, false, false, false, false},
+		{"HTTPRoute", true, false},
+		{"Gateway", false, true},
+		{"FooRoute", false, false},
+		{"", false, false},
 	}
 
 	for _, tt := range kinds {
@@ -1351,15 +1284,6 @@ func TestTargetInfoIsKindExhaustive(t *testing.T) {
 			}
 			if ti.IsGateway() != tt.isGateway {
 				t.Errorf("IsGateway() = %v, want %v", ti.IsGateway(), tt.isGateway)
-			}
-			if ti.IsTCPRoute() != tt.isTCPRoute {
-				t.Errorf("IsTCPRoute() = %v, want %v", ti.IsTCPRoute(), tt.isTCPRoute)
-			}
-			if ti.IsUDPRoute() != tt.isUDPRoute {
-				t.Errorf("IsUDPRoute() = %v, want %v", ti.IsUDPRoute(), tt.isUDPRoute)
-			}
-			if ti.IsGRPCRoute() != tt.isGRPCRoute {
-				t.Errorf("IsGRPCRoute() = %v, want %v", ti.IsGRPCRoute(), tt.isGRPCRoute)
 			}
 		})
 	}

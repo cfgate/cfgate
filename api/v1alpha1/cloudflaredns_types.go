@@ -129,8 +129,8 @@ type DNSNamespaceSelector struct {
 
 // DNSGatewayRoutesSource configures automatic hostname discovery from Gateway API routes.
 //
-// DNSGatewayRoutesSource enables the controller to watch HTTPRoute, GRPCRoute, and other
-// Gateway API route resources to automatically discover hostnames that need DNS records.
+// DNSGatewayRoutesSource enables the controller to watch HTTPRoute resources to
+// automatically discover hostnames that need DNS records.
 // Routes can be filtered by annotation and namespace to control which routes trigger DNS sync.
 type DNSGatewayRoutesSource struct {
 	// Enabled enables watching Gateway API routes.

@@ -9,16 +9,18 @@ Manages Cloudflare Access Applications and Policies for zero-trust access contro
 
 ## Overview
 
-CloudflareAccessPolicy attaches to Gateway API resources (Gateway, HTTPRoute, GRPCRoute, TCPRoute, UDPRoute) using the `targetRefs` pattern and creates corresponding Cloudflare Access Applications. It manages application settings, access policy rules, service tokens for machine-to-machine auth, and mTLS certificate-based authentication.
+CloudflareAccessPolicy attaches to Gateway API resources (`Gateway`, `HTTPRoute`) using the `targetRefs` pattern and creates corresponding Cloudflare Access Applications. It manages application settings, access policy rules, service tokens for machine-to-machine auth, and mTLS certificate-based authentication.
 
 Access rules are organized into implementation tiers based on identity provider (IdP) requirements. The controller extracts hostnames from the targeted Gateway API resources and creates Access Applications protecting those hostnames. Credentials can be provided explicitly via `cloudflareRef` or inherited through the Gateway's tunnel binding chain.
+
+> Upgrade note: current target kinds are `Gateway` and `HTTPRoute`. Any existing policies targeting removed route kinds must be migrated before applying the current CRD.
 
 ## Spec Reference
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
 | `spec.targetRef.group` | `string` | `gateway.networking.k8s.io` | Yes (if targetRef set) | API group of the target resource. Must be `gateway.networking.k8s.io`. |
-| `spec.targetRef.kind` | `string` | *none* | Yes (if targetRef set) | Kind of the target. One of: `Gateway`, `HTTPRoute`, `GRPCRoute`, `TCPRoute`, `UDPRoute`. |
+| `spec.targetRef.kind` | `string` | *none* | Yes (if targetRef set) | Kind of the target. One of: `Gateway`, `HTTPRoute`. |
 | `spec.targetRef.name` | `string` | *none* | Yes (if targetRef set) | Name of the target resource. 1-253 chars. |
 | `spec.targetRef.namespace` | `*string` | *(policy namespace)* | No | Namespace of the target. Cross-namespace requires ReferenceGrant. |
 | `spec.targetRef.sectionName` | `*string` | *none* | No | Targets a specific listener (Gateway) or rule (Route). |
@@ -109,9 +111,6 @@ spec:
     - group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: web-app
-    - group: gateway.networking.k8s.io
-      kind: GRPCRoute
-      name: grpc-api
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: main-gateway
@@ -299,9 +298,9 @@ include:
       email: "engineering@company.com"
 ```
 
-#### P3: Deferred to v0.2.0
+#### P3: Not in current product scope
 
-The following rule types are planned but not available in the current release:
+The following rule types are retained only for SDK round-trip and internal model compatibility. They are not part of the current cfgate product surface:
 
 - **Certificate** (`CertificateRule`): mTLS client certificate validation
 - **CommonName** (`AccessCommonNameRule`): mTLS common name matching
@@ -503,8 +502,8 @@ spec:
       kind: HTTPRoute
       name: admin-panel
     - group: gateway.networking.k8s.io
-      kind: GRPCRoute
-      name: internal-grpc
+      kind: HTTPRoute
+      name: internal-api
   cloudflareRef:
     name: cloudflare-api-token
     namespace: cfgate-system

@@ -94,11 +94,8 @@ rules:
   resources:
   - gatewayclasses
   - gateways
-  - grpcroutes
   - httproutes
   - referencegrants
-  - tcproutes
-  - udproutes
   verbs:
   - get
   - list
@@ -109,8 +106,6 @@ rules:
   - gatewayclasses/status
   - gateways/status
   - httproutes/status
-  - tcproutes/status
-  - udproutes/status
   verbs:
   - get
   - patch

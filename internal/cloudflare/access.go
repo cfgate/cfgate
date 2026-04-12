@@ -316,7 +316,7 @@ type AccessRuleParam struct {
 	GSuiteGroup *GSuiteGroupParam
 
 	// ============================================================
-	// P3: v0.2.0 (not implemented in alpha.3)
+	// P3: retained for internal model and SDK round-trip compatibility
 	// ============================================================
 
 	// Certificate requires a valid client certificate (set to true).

@@ -39,11 +39,11 @@ const (
 	AnnotationTunnelRef = AnnotationPrefix + "tunnel-ref"
 )
 
-// Application-level annotations (HTTPRoute/TCPRoute/UDPRoute/GRPCRoute).
+// Application-level annotations applied to Gateway API route resources.
 const (
 	// AnnotationOriginProtocol specifies the origin protocol.
-	// Values: "http", "https", "tcp", "udp"
-	// Default: "http" for HTTPRoute, "tcp" for TCPRoute, "udp" for UDPRoute
+	// Values: "http", "https"
+	// Default: "http"
 	// Read from: Routes
 	AnnotationOriginProtocol = AnnotationPrefix + "origin-protocol"
 
@@ -71,9 +71,8 @@ const (
 	// Read from: Routes
 	AnnotationAccessPolicy = AnnotationPrefix + "access-policy"
 
-	// AnnotationHostname specifies the hostname for routes without spec.hostnames.
-	// REQUIRED for TCPRoute and UDPRoute (Gateway API has no hostnames field for these).
-	// Optional for HTTPRoute/GRPCRoute (overrides spec.hostnames).
+	// AnnotationHostname overrides the route hostname when set.
+	// Optional for HTTPRoute and ignored when not supported by the controller.
 	// Values: RFC 1123 hostname
 	// Read from: Routes
 	AnnotationHostname = AnnotationPrefix + "hostname"
@@ -138,8 +137,6 @@ const (
 var ValidOriginProtocols = map[string]bool{
 	"http":  true,
 	"https": true,
-	"tcp":   true,
-	"udp":   true,
 }
 
 // hostnameRegex validates RFC 1123 hostnames.
@@ -153,7 +150,7 @@ var hostnameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9
 
 // GetAnnotation retrieves an annotation value from an object's metadata.
 // Returns empty string if annotation not present or object is nil.
-// Works with any client.Object (HTTPRoute, TCPRoute, Gateway, etc.).
+// Works with any client.Object that carries annotations.
 func GetAnnotation(obj client.Object, key string) string {
 	if obj == nil {
 		return ""
@@ -254,7 +251,7 @@ func ValidateOriginProtocol(value string) error {
 		return nil // Empty is valid (will use default)
 	}
 	if !ValidOriginProtocols[strings.ToLower(value)] {
-		return fmt.Errorf("invalid origin protocol %q: must be one of http, https, tcp, udp", value)
+		return fmt.Errorf("invalid origin protocol %q: must be one of http, https", value)
 	}
 	return nil
 }
@@ -324,7 +321,7 @@ type ValidationResult struct {
 }
 
 // ValidateRouteAnnotations validates all cfgate annotations on a route object.
-// Set requireHostname=true for TCPRoute/UDPRoute (no spec.hostnames in Gateway API).
+// Set requireHostname=true only when a caller wants to enforce an explicit hostname override.
 // Returns validation result with errors and warnings.
 func ValidateRouteAnnotations(obj client.Object, requireHostname bool) ValidationResult {
 	result := ValidationResult{Valid: true}
@@ -377,7 +374,7 @@ func ValidateRouteAnnotations(obj client.Object, requireHostname bool) Validatio
 
 // OriginConfig represents the parsed origin configuration from route annotations.
 type OriginConfig struct {
-	// Protocol is the origin protocol (http, https, tcp, udp).
+	// Protocol is the origin protocol (http, https).
 	Protocol string
 
 	// SSLVerify enables/disables SSL certificate verification.

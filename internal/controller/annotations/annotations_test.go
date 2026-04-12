@@ -183,14 +183,14 @@ func TestValidateOriginProtocol(t *testing.T) {
 	}{
 		{"http", false},
 		{"https", false},
-		{"tcp", false},
-		{"udp", false},
 		{"HTTP", false},  // case insensitive
 		{"HTTPS", false}, // case insensitive
-		{"TCP", false},   // case insensitive
-		{"UDP", false},   // case insensitive
 		{"Http", false},  // mixed case
 		{"", false},      // empty is valid (will use default)
+		{"tcp", true},
+		{"udp", true},
+		{"TCP", true},
+		{"UDP", true},
 		{"grpc", true},   // invalid (not in allowed list)
 		{"ftp", true},    // invalid
 		{"ws", true},     // invalid
@@ -301,7 +301,7 @@ func TestValidateRouteAnnotations(t *testing.T) {
 			wantWarnings:    0,
 		},
 		{
-			name:            "valid TCPRoute with required hostname",
+			name:            "valid required hostname override",
 			annotations:     map[string]string{AnnotationHostname: "tcp.example.com"},
 			requireHostname: true,
 			wantValid:       true,

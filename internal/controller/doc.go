@@ -6,7 +6,7 @@
 //
 // # Controllers
 //
-// The package provides seven reconcilers:
+// The package provides five reconcilers:
 //
 //   - [CloudflareTunnelReconciler]: Manages CloudflareTunnel CRD lifecycle including
 //     tunnel creation/adoption, cloudflared deployment, and ingress configuration sync.
@@ -22,12 +22,6 @@
 //
 //   - [HTTPRouteReconciler]: Validates HTTPRoute resources against parent Gateways,
 //     resolves backend Services, and validates CloudflareAccessPolicy references.
-//
-//   - [TCPRouteReconciler]: Placeholder controller for TCPRoute support (v0.2.0).
-//     Requires Gateway API experimental channel and Cloudflare Spectrum.
-//
-//   - [UDPRouteReconciler]: Placeholder controller for UDPRoute support (v0.2.0).
-//     Requires Gateway API experimental channel and Cloudflare Spectrum.
 //
 // # Architecture
 //
@@ -62,9 +56,6 @@
 // # Feature Gates
 //
 // Optional Gateway API CRD support is controlled by [features.FeatureGates]:
-//   - TCPRoute: Requires experimental channel CRDs
-//   - UDPRoute: Requires experimental channel CRDs
-//   - GRPCRoute: Requires experimental channel CRDs
 //   - ReferenceGrant: Required for cross-namespace policy attachment
 //
 // Controllers check feature gates before registering watches to avoid startup

@@ -37,15 +37,14 @@ spec:
           CloudflareAccessPolicy is the Schema for the cloudflareaccesspolicies API.
 
           CloudflareAccessPolicy manages Cloudflare Access Applications and Policies for zero-trust
-          access control. It attaches to Gateway API resources (Gateway, HTTPRoute, GRPCRoute,
-          TCPRoute, UDPRoute) using the targetRefs pattern and creates corresponding Access
-          Applications in Cloudflare.
+          access control. It attaches to Gateway API Gateway and HTTPRoute resources using the
+          targetRefs pattern and creates corresponding Access Applications in Cloudflare.
 
           Access rules are organized into implementation tiers based on IdP requirements:
             - P0: IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken (no IdP)
             - P1: Email, EmailList, EmailDomain, OIDCClaim (basic IdP required)
             - P2: GSuiteGroup (Google Workspace required)
-            - P3: deferred to v0.2.0 (Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.)
+            - P3: not in current product scope (Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.)
 
           Status conditions:
             - Ready: policy is fully applied to all targets
@@ -438,7 +437,7 @@ spec:
                             - P0 (no IdP): IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken
                             - P1 (basic IdP): Email, EmailList, EmailDomain, OIDCClaim
                             - P2 (Google Workspace): GSuiteGroup
-                            - P3 (deferred to v0.2.0): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
+                            - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 
                           SDK types map directly to cloudflare-go v6.6.0: IPRule, IPListRule, CountryRule,
                           EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
@@ -629,7 +628,7 @@ spec:
                             - P0 (no IdP): IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken
                             - P1 (basic IdP): Email, EmailList, EmailDomain, OIDCClaim
                             - P2 (Google Workspace): GSuiteGroup
-                            - P3 (deferred to v0.2.0): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
+                            - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 
                           SDK types map directly to cloudflare-go v6.6.0: IPRule, IPListRule, CountryRule,
                           EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
@@ -841,7 +840,7 @@ spec:
                             - P0 (no IdP): IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken
                             - P1 (basic IdP): Email, EmailList, EmailDomain, OIDCClaim
                             - P2 (Google Workspace): GSuiteGroup
-                            - P3 (deferred to v0.2.0): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
+                            - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 
                           SDK types map directly to cloudflare-go v6.6.0: IPRule, IPListRule, CountryRule,
                           EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
@@ -1088,9 +1087,6 @@ spec:
                     enum:
                     - Gateway
                     - HTTPRoute
-                    - GRPCRoute
-                    - TCPRoute
-                    - UDPRoute
                     type: string
                   name:
                     description: Name is the name of the target resource.
@@ -1114,10 +1110,8 @@ spec:
                 x-kubernetes-validations:
                 - message: group must be gateway.networking.k8s.io
                   rule: self.group == 'gateway.networking.k8s.io'
-                - message: kind must be Gateway, HTTPRoute, GRPCRoute, TCPRoute, or
-                    UDPRoute
-                  rule: self.kind in ['Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute',
-                    'UDPRoute']
+                - message: kind must be Gateway or HTTPRoute
+                  rule: self.kind in ['Gateway', 'HTTPRoute']
               targetRefs:
                 description: TargetRefs identifies multiple targets for policy attachment.
                 items:
@@ -1125,9 +1119,9 @@ spec:
                     PolicyTargetReference identifies a Gateway API resource for Access policy attachment.
 
                     PolicyTargetReference follows the Gateway API LocalPolicyTargetReferenceWithSectionName
-                    pattern for policy attachment. It targets Gateway API resources (Gateway, HTTPRoute,
-                    GRPCRoute, TCPRoute, UDPRoute) and extracts hostnames from those resources to create
-                    corresponding Cloudflare Access applications.
+                    pattern for policy attachment. It targets Gateway API Gateway and HTTPRoute resources
+                    and extracts hostnames from those resources to create corresponding Cloudflare Access
+                    applications.
 
                     Cross-namespace references require a ReferenceGrant in the target namespace that permits
                     CloudflareAccessPolicy resources from the policy's namespace.
@@ -1141,9 +1135,6 @@ spec:
                       enum:
                       - Gateway
                       - HTTPRoute
-                      - GRPCRoute
-                      - TCPRoute
-                      - UDPRoute
                       type: string
                     name:
                       description: Name is the name of the target resource.
@@ -1167,10 +1158,8 @@ spec:
                   x-kubernetes-validations:
                   - message: group must be gateway.networking.k8s.io
                     rule: self.group == 'gateway.networking.k8s.io'
-                  - message: kind must be Gateway, HTTPRoute, GRPCRoute, TCPRoute,
-                      or UDPRoute
-                    rule: self.kind in ['Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute',
-                      'UDPRoute']
+                  - message: kind must be Gateway or HTTPRoute
+                    rule: self.kind in ['Gateway', 'HTTPRoute']
                 maxItems: 16
                 type: array
             required:
@@ -1211,9 +1200,6 @@ spec:
                           enum:
                           - Gateway
                           - HTTPRoute
-                          - GRPCRoute
-                          - TCPRoute
-                          - UDPRoute
                           type: string
                         name:
                           description: Name is the name of the target resource.
@@ -1237,10 +1223,8 @@ spec:
                       x-kubernetes-validations:
                       - message: group must be gateway.networking.k8s.io
                         rule: self.group == 'gateway.networking.k8s.io'
-                      - message: kind must be Gateway, HTTPRoute, GRPCRoute, TCPRoute,
-                          or UDPRoute
-                        rule: self.kind in ['Gateway', 'HTTPRoute', 'GRPCRoute', 'TCPRoute',
-                          'UDPRoute']
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
                     conditions:
                       description: Conditions for this specific target.
                       items:

@@ -4,11 +4,11 @@ Complete reference for all cfgate annotations.
 
 ## Route Annotations
 
-Per-route configuration applied to HTTPRoute, TCPRoute, UDPRoute, and GRPCRoute resources.
+Per-route configuration applied to Gateway API HTTPRoute resources.
 
 | Annotation | Values | Default | Description |
 |---|---|---|---|
-| `cfgate.io/origin-protocol` | `http`, `https`, `tcp`\*, `udp`\* | Route-type dependent | Backend protocol |
+| `cfgate.io/origin-protocol` | `http`, `https` | `http` | Backend protocol |
 | `cfgate.io/origin-ssl-verify` | `true`, `false` | `true` | TLS certificate verification |
 | `cfgate.io/origin-connect-timeout` | Duration string (`30s`, `1m`) | `30s` | Origin connection timeout |
 | `cfgate.io/origin-http-host-header` | Hostname string | *none* | Host header override sent to origin |
@@ -19,10 +19,9 @@ Per-route configuration applied to HTTPRoute, TCPRoute, UDPRoute, and GRPCRoute 
 | `cfgate.io/ttl` | `1`-`86400` | `1` (auto) | DNS record TTL in seconds |
 | `cfgate.io/cloudflare-proxied` | `true`, `false` | `true` | Cloudflare proxy (orange cloud) |
 | `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | References a CloudflareAccessPolicy |
-| `cfgate.io/hostname` | RFC 1123 hostname | *none* | Override or set hostname for the route |
-\*`tcp` and `udp` protocol values are accepted but TCPRoute and UDPRoute controllers are stubs, planned for v0.2.0.
+| `cfgate.io/hostname` | RFC 1123 hostname | *none* | Override the route hostname |
 
-**Default for `cfgate.io/origin-protocol`:** `http` for HTTPRoute, `tcp` for TCPRoute, `udp` for UDPRoute. GRPCRoute defaults to `http` (cloudflared handles gRPC over HTTP).
+**Default for `cfgate.io/origin-protocol`:** `http`
 
 ### Detailed Annotation Documentation
 
@@ -32,13 +31,9 @@ Per-route configuration applied to HTTPRoute, TCPRoute, UDPRoute, and GRPCRoute 
 
 Specifies the protocol used to connect from cloudflared to the backend service.
 
-**Valid values:** `http`, `https`, `tcp`, `udp`
+**Valid values:** `http`, `https`
 
-**Default:** Route-type dependent:
-- HTTPRoute: `http`
-- GRPCRoute: `http`
-- TCPRoute: `tcp`
-- UDPRoute: `udp`
+**Default:** `http`
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
@@ -179,7 +174,7 @@ metadata:
 
 #### `cfgate.io/origin-h2c`
 
-Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the origin server. Use this for backends that speak HTTP/2 without TLS, such as gRPC services, Envoy sidecars, or other h2c-speaking backends.
+Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the origin server. Use this for backends that speak HTTP/2 without TLS, such as Envoy sidecars or other h2c-speaking services.
 
 **Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
 
@@ -193,7 +188,7 @@ Mutually exclusive with `cfgate.io/origin-http2`. Requires the [inherent-design/
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: grpc-backend
+  name: http2-backend
   namespace: default
   annotations:
     cfgate.io/origin-h2c: "true"
@@ -202,10 +197,10 @@ spec:
     - name: cloudflare-tunnel
       namespace: cfgate-system
   hostnames:
-    - grpc.example.com
+    - h2c.example.com
   rules:
     - backendRefs:
-        - name: grpc-service
+        - name: http2-service
           port: 50051
 ```
 
@@ -275,29 +270,31 @@ metadata:
 
 #### `cfgate.io/hostname`
 
-Sets or overrides the hostname for a route. **Required** for TCPRoute and UDPRoute because the Gateway API spec does not include a `hostnames` field on these route types. Optional for HTTPRoute and GRPCRoute, where it overrides `spec.hostnames`.
+Sets or overrides the hostname for an HTTPRoute. When set, it overrides `spec.hostnames`.
 
 **Valid values:** RFC 1123 hostname (max 253 characters, labels max 63 characters, lowercase alphanumeric and hyphens)
 
 **Default:** Not set
 
-**Read by:** Route controllers (TCPRoute, UDPRoute, HTTPRoute, GRPCRoute)
+**Read by:** HTTPRoute-driven reconciliation paths
 
 ```yaml
-apiVersion: gateway.networking.k8s.io/v1alpha2
-kind: TCPRoute
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
 metadata:
-  name: my-tcp-service
+  name: my-app
   annotations:
-    cfgate.io/hostname: "tcp.example.com"
+    cfgate.io/hostname: "app.example.com"
 spec:
   parentRefs:
     - name: cloudflare-tunnel
       namespace: cfgate-system
+  hostnames:
+    - ignored.example.com
   rules:
     - backendRefs:
-        - name: my-tcp-service
-          port: 5432
+        - name: my-service
+          port: 80
 ```
 
 ---

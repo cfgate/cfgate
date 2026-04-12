@@ -2,13 +2,12 @@
 // types and processing logic. Based on Envoy Gateway's GatewayContext and
 // ListenerContext patterns, aligned with cfgate's composable CRD architecture.
 //
-// The package provides four primary context types, each wrapping a cfgate CRD
+// The package provides three primary context types, each wrapping a cfgate CRD
 // or Gateway API resource with computed state and helper methods:
 //
 //   - TunnelContext: Wraps CloudflareTunnel with resolved account ID and clients
 //   - DNSContext: Wraps CloudflareDNS with resolved tunnel reference and zones
 //   - AccessPolicyContext: Wraps CloudflareAccessPolicy with resolved targets
-//   - RouteContext: Wraps HTTPRoute/TCPRoute/UDPRoute/GRPCRoute with origin config
 //
 // Context wrappers serve multiple purposes:
 //   - Cache computed values to avoid repeated calculation in reconcile loops
@@ -55,17 +54,6 @@
 // Target resolution includes ReferenceGrant checking for cross-namespace
 // references. Errors are captured per-target in TargetInfo.Error to allow
 // partial resolution.
-//
-// # RouteContext
-//
-// RouteContext provides a unified interface for all Gateway API route types:
-//
-//	rc := context.NewRouteContext(httpRoute)
-//	hostnames := rc.GetHostnames()
-//	config := rc.OriginConfig()
-//
-// For TCPRoute and UDPRoute, hostnames come from the cfgate.io/hostname
-// annotation since Gateway API has no spec.hostnames field for L4 routes.
 //
 // # Builder Functions
 //

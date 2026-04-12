@@ -779,7 +779,7 @@ func accessRuleToAPI(rule *AccessRuleParam) zero_trust.AccessRuleUnionParam {
 	}
 
 	// ============================================================
-	// P3: v0.2.0 (kept for backward compatibility)
+	// P3: retained only for SDK round-trip compatibility
 	// ============================================================
 
 	if rule.Certificate != nil && *rule.Certificate {

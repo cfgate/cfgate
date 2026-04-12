@@ -289,7 +289,7 @@ func TestExecuteManager(t *testing.T) {
 			},
 			detectFeatures: func(*rest.Config) (*features.FeatureGates, error) {
 				calls = append(calls, "detectFeatures")
-				return &features.FeatureGates{GRPCRouteCRDExists: true}, nil
+				return &features.FeatureGates{ReferenceGrantCRDExists: true}, nil
 			},
 			registerControllers: func(manager.Manager, *features.FeatureGates) error {
 				calls = append(calls, "registerControllers")
