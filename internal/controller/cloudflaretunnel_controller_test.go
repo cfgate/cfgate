@@ -134,6 +134,9 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 	if tunnel.Annotations[configHashAnnotation] != storedHash {
 		t.Fatalf("in-memory config hash = %q, want %q", tunnel.Annotations[configHashAnnotation], storedHash)
 	}
+	if tunnel.ResourceVersion != current.ResourceVersion {
+		t.Fatalf("in-memory ResourceVersion = %q, want %q", tunnel.ResourceVersion, current.ResourceVersion)
+	}
 	if current.Status.TunnelID != "old-id" {
 		t.Fatalf("stored Status.TunnelID = %q, want old-id", current.Status.TunnelID)
 	}
