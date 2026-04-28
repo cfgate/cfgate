@@ -662,6 +662,28 @@ func TestBuildDeploymentExtended(t *testing.T) {
 			t.Errorf("Tolerations should be nil, got %v", deployment.Spec.Template.Spec.Tolerations)
 		}
 	})
+
+	t.Run("pod security context", func(t *testing.T) {
+		tunnel := newDeploymentTestTunnel("test")
+		deployment := builder.BuildDeployment(tunnel, "token")
+		securityContext := deployment.Spec.Template.Spec.SecurityContext
+		if securityContext == nil {
+			t.Fatal("SecurityContext should not be nil")
+			return
+		}
+		if securityContext.RunAsNonRoot == nil {
+			t.Fatal("RunAsNonRoot should not be nil")
+		}
+		if !*securityContext.RunAsNonRoot {
+			t.Error("RunAsNonRoot should be true")
+		}
+		if securityContext.SeccompProfile == nil {
+			t.Fatal("SeccompProfile should not be nil")
+		}
+		if securityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+			t.Errorf("SeccompProfile.Type = %q, want %q", securityContext.SeccompProfile.Type, corev1.SeccompProfileTypeRuntimeDefault)
+		}
+	})
 }
 
 func TestBuildContainerExtended(t *testing.T) {
@@ -778,6 +800,33 @@ func TestBuildContainerExtended(t *testing.T) {
 		ref := container.Env[0].ValueFrom.SecretKeyRef
 		if ref.Name != "my-secret-name" {
 			t.Errorf("secret ref name = %q, want %q", ref.Name, "my-secret-name")
+		}
+	})
+
+	t.Run("security context", func(t *testing.T) {
+		container := buildContainer(newDeploymentTestTunnel("test"), "test-secret")
+		securityContext := container.SecurityContext
+		if securityContext == nil {
+			t.Fatal("SecurityContext should not be nil")
+			return
+		}
+		if securityContext.AllowPrivilegeEscalation == nil {
+			t.Fatal("AllowPrivilegeEscalation should not be nil")
+		}
+		if *securityContext.AllowPrivilegeEscalation {
+			t.Error("AllowPrivilegeEscalation should be false")
+		}
+		if securityContext.Capabilities == nil {
+			t.Fatal("Capabilities should not be nil")
+		}
+		wantDrop := []corev1.Capability{"ALL"}
+		if len(securityContext.Capabilities.Drop) != len(wantDrop) {
+			t.Fatalf("Capabilities.Drop = %v, want %v", securityContext.Capabilities.Drop, wantDrop)
+		}
+		for i, want := range wantDrop {
+			if securityContext.Capabilities.Drop[i] != want {
+				t.Errorf("Capabilities.Drop[%d] = %q, want %q", i, securityContext.Capabilities.Drop[i], want)
+			}
 		}
 	})
 }
