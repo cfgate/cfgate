@@ -611,6 +611,7 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		log.Error(err, "failed to store config hash annotation")
 	} else {
 		tunnel.Annotations = annotationTunnel.Annotations
+		tunnel.ResourceVersion = annotationTunnel.ResourceVersion
 	}
 
 	tunnel.Status.ConnectedRouteCount = int32(routeCount)
