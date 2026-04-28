@@ -9,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 )
@@ -96,6 +97,12 @@ func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel
 					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptr.To(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{container},
 				},
 			},
@@ -203,6 +210,12 @@ func buildContainer(tunnel *cfgatev1alpha1.CloudflareTunnel, tokenSecretName str
 		Image:           image,
 		ImagePullPolicy: pullPolicy,
 		Args:            args,
+		SecurityContext: &corev1.SecurityContext{
+			AllowPrivilegeEscalation: ptr.To(false),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+		},
 		Env: []corev1.EnvVar{
 			{
 				Name: TokenEnvVar,

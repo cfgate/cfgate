@@ -270,6 +270,10 @@ flowchart TD
 | GatewayClass not accepted | Verify `spec.gatewayClassName` references an accepted GatewayClass |
 | cloudflared pods crashing | Check pod logs: `kubectl logs -n cfgate-system deploy/cloudflared-<tunnel-name> -c cloudflared` |
 
+### Pod Security Admission rejects cloudflared pods
+
+If pod creation fails with `violates PodSecurity "restricted:latest"` and mentions `allowPrivilegeEscalation != false`, `capabilities.drop=["ALL"]`, `runAsNonRoot != true`, or `seccompProfile`, upgrade cfgate to `v0.2.0-alpha.2` or newer. Older cfgate versions can use a less restricted namespace as a temporary workaround.
+
 ---
 
 ## Stuck Finalizers

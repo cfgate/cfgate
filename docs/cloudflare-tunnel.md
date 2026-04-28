@@ -102,6 +102,8 @@ Controls the cloudflared daemon Deployment. The controller creates a Deployment 
 
 **Metrics:** Enabled by default on port 44483. The endpoint serves Prometheus-compatible metrics at `/metrics` on each cloudflared pod. Use `podAnnotations` to configure Prometheus scraping.
 
+Generated cloudflared pods are compatible with Kubernetes `restricted` Pod Security by default. cfgate runs them as non-root, uses the runtime-default seccomp profile, disables privilege escalation, and drops all Linux capabilities.
+
 ```yaml
 spec:
   cloudflared:
