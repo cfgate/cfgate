@@ -191,10 +191,10 @@ func TestValidateOriginProtocol(t *testing.T) {
 		{"udp", true},
 		{"TCP", true},
 		{"UDP", true},
-		{"grpc", true},   // invalid (not in allowed list)
-		{"ftp", true},    // invalid
-		{"ws", true},     // invalid
-		{"wss", true},    // invalid
+		{"grpc", true}, // invalid (not in allowed list)
+		{"ftp", true},  // invalid
+		{"ws", true},   // invalid
+		{"wss", true},  // invalid
 	}
 
 	for _, tt := range tests {

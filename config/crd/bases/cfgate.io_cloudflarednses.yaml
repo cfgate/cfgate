@@ -308,8 +308,9 @@ spec:
                           type: boolean
                         target:
                           description: |-
-                            Target is the CNAME target. Supports template variable {{ .TunnelDomain }}.
-                            Defaults to tunnel domain when tunnelRef is specified.
+                            Target overrides the resolved record target for this hostname.
+                            Supports template variable {{ .TunnelDomain }} when tunnelRef is used.
+                            Defaults to the resource-level resolved target when omitted.
                             Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
                           maxLength: 253
                           type: string
