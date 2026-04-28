@@ -127,8 +127,12 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 	if err := baseClient.Get(ctx, client.ObjectKeyFromObject(storedTunnel), &current); err != nil {
 		t.Fatalf("Get() error = %v", err)
 	}
-	if current.Annotations[configHashAnnotation] == "" {
+	storedHash := current.Annotations[configHashAnnotation]
+	if storedHash == "" {
 		t.Fatal("config hash annotation was not stored")
+	}
+	if tunnel.Annotations[configHashAnnotation] != storedHash {
+		t.Fatalf("in-memory config hash = %q, want %q", tunnel.Annotations[configHashAnnotation], storedHash)
 	}
 	if current.Status.TunnelID != "old-id" {
 		t.Fatalf("stored Status.TunnelID = %q, want old-id", current.Status.TunnelID)
