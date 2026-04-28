@@ -601,12 +601,13 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		return fmt.Errorf("failed to update tunnel configuration: %w", err)
 	}
 
-	patch := client.MergeFrom(tunnel.DeepCopy())
-	if tunnel.Annotations == nil {
-		tunnel.Annotations = make(map[string]string)
+	annotationTunnel := tunnel.DeepCopy()
+	patch := client.MergeFrom(annotationTunnel.DeepCopy())
+	if annotationTunnel.Annotations == nil {
+		annotationTunnel.Annotations = make(map[string]string)
 	}
-	tunnel.Annotations[configHashAnnotation] = desiredHash
-	if err := r.Patch(ctx, tunnel, patch); err != nil {
+	annotationTunnel.Annotations[configHashAnnotation] = desiredHash
+	if err := r.Patch(ctx, annotationTunnel, patch); err != nil {
 		log.Error(err, "failed to store config hash annotation")
 	}
 
