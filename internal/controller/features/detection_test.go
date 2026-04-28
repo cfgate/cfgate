@@ -61,7 +61,7 @@ func (m *mockDiscovery) withEmptyGroup(gv string) *mockDiscovery {
 
 // Group version constants used in tests.
 var (
-	gvBeta1  = schema.GroupVersion{Group: GatewayAPIGroup, Version: V1Beta1}.String()
+	gvBeta1 = schema.GroupVersion{Group: GatewayAPIGroup, Version: V1Beta1}.String()
 )
 
 // fullMock returns a mock with the optional ReferenceGrant CRD present.
