@@ -738,7 +738,7 @@ func installCRDs() {
 	}
 
 	// Install Gateway API CRDs (standard channel).
-	gatewayAPICRDs := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml"
+	gatewayAPICRDs := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml"
 	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", gatewayAPICRDs)
 	cmd.Stdout = GinkgoWriter
 	cmd.Stderr = GinkgoWriter

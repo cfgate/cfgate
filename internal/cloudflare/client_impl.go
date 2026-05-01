@@ -768,7 +768,7 @@ func (c *clientImpl) GetAccessApplicationByName(ctx context.Context, accountID, 
 // CreateAccessPolicy creates a new Access policy for an application.
 func (c *clientImpl) CreateAccessPolicy(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error) {
 	// Build request options with fields missing from SDK's NewParams struct.
-	// cloudflare-go v6.6.0 doesn't include name, decision, include, exclude, require in NewParams.
+	// cloudflare-go v6 SDK NewParams omits name, decision, include, exclude, and require.
 	opts := []option.RequestOption{
 		option.WithJSONSet("name", params.Name),
 		option.WithJSONSet("decision", params.Decision),

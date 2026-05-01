@@ -33,7 +33,7 @@ jobs:
 
       - name: Upload E2E artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-e2e-${{ github.ref_name }}
           path: |
@@ -166,7 +166,7 @@ jobs:
         run: docker run --rm cfgate:smoke-test --help
 
       - id: trivy
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: cfgate:smoke-test
           format: sarif
@@ -218,7 +218,7 @@ jobs:
         env:
           GITHUB_REPO: ${{ github.repository }}
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body: ${{ steps.changelog.outputs.content }}
           prerelease: ${{ steps.channel.outputs.prerelease == 'true' }}
@@ -238,7 +238,7 @@ jobs:
           echo "- Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Digest: ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: oras-project/setup-oras@v1
+      - uses: oras-project/setup-oras@v2
 
       - name: Push Artifact Hub metadata
         run: |
