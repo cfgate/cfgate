@@ -1,5 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "configMigration": true,
   "extends": ["config:recommended"],
   "schedule": ["before 9am on monday"],
   "customManagers": [
@@ -23,17 +24,17 @@
   "packageRules": [
     {
       "description": "Group Kubernetes client libraries",
-      "matchPackagePatterns": ["^k8s\\.io/"],
+      "matchPackageNames": ["/^k8s\\.io\\//"],
       "groupName": "kubernetes"
     },
     {
       "description": "Group controller-runtime and gateway-api",
-      "matchPackagePatterns": ["^sigs\\.k8s\\.io/"],
+      "matchPackageNames": ["/^sigs\\.k8s\\.io\\//"],
       "groupName": "kubernetes-sigs"
     },
     {
       "description": "Group Ginkgo and Gomega",
-      "matchPackagePatterns": ["^github\\.com/onsi/"],
+      "matchPackageNames": ["/^github\\.com\\/onsi\\//"],
       "groupName": "ginkgo"
     },
     {

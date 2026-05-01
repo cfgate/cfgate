@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.0
+    controller-gen.kubebuilder.io/version: v0.20.1
   name: cloudflareaccesspolicies.cfgate.io
 spec:
   group: cfgate.io
@@ -399,7 +399,7 @@ spec:
                             - P2 (Google Workspace): GSuiteGroup
                             - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 
-                          SDK types map directly to cloudflare-go v6.6.0: IPRule, IPListRule, CountryRule,
+                          SDK types map directly to cloudflare-go v6 SDK: IPRule, IPListRule, CountryRule,
                           EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
                           EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
                         properties:
@@ -590,7 +590,7 @@ spec:
                             - P2 (Google Workspace): GSuiteGroup
                             - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 
-                          SDK types map directly to cloudflare-go v6.6.0: IPRule, IPListRule, CountryRule,
+                          SDK types map directly to cloudflare-go v6 SDK: IPRule, IPListRule, CountryRule,
                           EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
                           EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
                         properties:
@@ -802,7 +802,7 @@ spec:
                             - P2 (Google Workspace): GSuiteGroup
                             - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 
-                          SDK types map directly to cloudflare-go v6.6.0: IPRule, IPListRule, CountryRule,
+                          SDK types map directly to cloudflare-go v6 SDK: IPRule, IPListRule, CountryRule,
                           EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
                           EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
                         properties:
