@@ -155,7 +155,8 @@ var _ = Describe("Multi-Resource E2E", Label("cloudflare"), Ordered, func() {
 
 			var policyStatus cfgatev1alpha1.CloudflareAccessPolicy
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policy.Name, Namespace: policy.Namespace}, &policyStatus)).To(Succeed())
-			Expect(policyStatus.Status.ApplicationID).NotTo(BeEmpty(), "AccessPolicy should have application ID")
+			appStatus := waitForAccessApplicationReady(ctx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
+			Expect(firstAccessApplicationID(appStatus)).NotTo(BeEmpty(), "AccessApplication should have application ID")
 		})
 
 		It("should clean up both DNS record and Access policy on HTTPRoute deletion", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
@@ -711,7 +712,7 @@ var _ = Describe("Multi-Resource E2E", Label("cloudflare"), Ordered, func() {
 					From: []gatewayv1b1.ReferenceGrantFrom{
 						{
 							Group:     "cfgate.io",
-							Kind:      "CloudflareAccessPolicy",
+							Kind:      "CloudflareAccessApplication",
 							Namespace: gatewayv1b1.Namespace(policyNamespace.Name),
 						},
 					},
@@ -727,42 +728,33 @@ var _ = Describe("Multi-Resource E2E", Label("cloudflare"), Ordered, func() {
 
 			By("Creating CloudflareAccessPolicy in policy namespace targeting route in main namespace")
 			policyName := testID("policy")
-			everyone := true
-			policy := &cfgatev1alpha1.CloudflareAccessPolicy{
+			policy := createReusableAccessPolicy(ctx, k8sClient, policyName, policyNamespace.Name, "allow",
+				[]cfgatev1alpha1.AccessRule{{Everyone: ptrTo(true)}}, nil)
+			routeNS := namespace.Name
+			app := &cfgatev1alpha1.CloudflareAccessApplication{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      policyName,
 					Namespace: policyNamespace.Name,
 				},
-				Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+				Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
 					TargetRef: &cfgatev1alpha1.PolicyTargetReference{
 						Group:     "gateway.networking.k8s.io",
 						Kind:      "HTTPRoute",
 						Name:      routeName,
-						Namespace: &namespace.Name, // Cross-namespace reference
+						Namespace: &routeNS,
 					},
-					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
-					},
+					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{Name: "cloudflare-credentials", AccountID: testEnv.CloudflareAccountID},
 					Application: cfgatev1alpha1.AccessApplication{
-						Name:   policyName,
-						Domain: hostname,
+						Name: policyName,
 					},
-					Policies: []cfgatev1alpha1.AccessPolicyRule{
-						{
-							Name:     "allow-all",
-							Decision: "allow",
-							Include: []cfgatev1alpha1.AccessRule{
-								{Everyone: &everyone},
-							},
-						},
-					},
+					PolicyRefs: []cfgatev1alpha1.AccessPolicyReference{{Name: policyName}},
 				},
 			}
-			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
 			By("Waiting for AccessPolicy to become ready")
 			waitForAccessPolicyReady(ctx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
+			waitForAccessApplicationReady(ctx, k8sClient, app.Name, app.Namespace, DefaultTimeout)
 
 			By("Verifying Access Application is created in Cloudflare")
 			Eventually(func() bool {

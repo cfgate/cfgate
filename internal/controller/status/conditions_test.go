@@ -634,8 +634,8 @@ func TestSimpleConditionConstructors(t *testing.T) {
 		{"NewRecordsSyncedCondition", NewRecordsSyncedCondition, ConditionTypeRecordsSynced},
 		{"NewOwnershipVerifiedCondition", NewOwnershipVerifiedCondition, ConditionTypeOwnershipVerified},
 		{"NewTargetsResolvedCondition", NewTargetsResolvedCondition, ConditionTypeTargetsResolved},
-		{"NewApplicationCreatedCondition", NewApplicationCreatedCondition, ConditionTypeApplicationCreated},
-		{"NewPoliciesAttachedCondition", NewPoliciesAttachedCondition, ConditionTypePoliciesAttached},
+		{"NewApplicationCreatedCondition", NewApplicationCreatedCondition, ConditionTypeApplicationSynced},
+		{"NewPoliciesAttachedCondition", NewPoliciesAttachedCondition, ConditionTypePoliciesLinked},
 		{"NewServiceTokensReadyCondition", NewServiceTokensReadyCondition, ConditionTypeServiceTokensReady},
 		{"NewPolicyAcceptedCondition", NewPolicyAcceptedCondition, PolicyConditionAccepted},
 	}
@@ -866,9 +866,7 @@ func TestNewDNSReadyCondition(t *testing.T) {
 func TestNewAccessPolicyReadyCondition(t *testing.T) {
 	accessSubConditions := []string{
 		ConditionTypeCredentialsValid,
-		ConditionTypeTargetsResolved,
-		ConditionTypeApplicationCreated,
-		ConditionTypePoliciesAttached,
+		ConditionTypePolicySynced,
 	}
 
 	accessWithST := append(append([]string{}, accessSubConditions...), ConditionTypeServiceTokensReady)
@@ -929,25 +927,11 @@ func TestNewAccessPolicyReadyCondition(t *testing.T) {
 			wantReason:       "CredsFailed",
 		},
 		{
-			name:             "targets not resolved",
-			conditions:       setConditionStatus(allTrueConditions(accessSubConditions...), ConditionTypeTargetsResolved, metav1.ConditionFalse, "TRFailed", "bad"),
+			name:             "policy not synced",
+			conditions:       setConditionStatus(allTrueConditions(accessSubConditions...), ConditionTypePolicySynced, metav1.ConditionFalse, "PolicyFailed", "bad"),
 			hasServiceTokens: false,
 			wantStatus:       metav1.ConditionFalse,
-			wantReason:       "TRFailed",
-		},
-		{
-			name:             "app not created",
-			conditions:       setConditionStatus(allTrueConditions(accessSubConditions...), ConditionTypeApplicationCreated, metav1.ConditionFalse, "AppFailed", "bad"),
-			hasServiceTokens: false,
-			wantStatus:       metav1.ConditionFalse,
-			wantReason:       "AppFailed",
-		},
-		{
-			name:             "policies not attached",
-			conditions:       setConditionStatus(allTrueConditions(accessSubConditions...), ConditionTypePoliciesAttached, metav1.ConditionFalse, "PAFailed", "bad"),
-			hasServiceTokens: false,
-			wantStatus:       metav1.ConditionFalse,
-			wantReason:       "PAFailed",
+			wantReason:       "PolicyFailed",
 		},
 		{
 			name:             "empty conditions without service tokens",

@@ -624,18 +624,18 @@ func (r *HTTPRouteReconciler) resolveAccessPolicy(
 		), true
 	}
 
-	log.V(1).Info("resolved access policy",
+	log.V(1).Info("resolved deprecated access policy annotation",
 		"policy", policyRef,
-		"applicationId", policy.Status.ApplicationID,
+		"policyId", policy.Status.PolicyID,
 	)
 	r.Recorder.Eventf(route, nil, corev1.EventTypeNormal, status.ConditionTypeAccessPolicyResolved, "Resolve",
-		"Attached to CloudflareAccessPolicy %q", policyRef)
+		"Deprecated annotation resolved CloudflareAccessPolicy %q; create CloudflareAccessApplication to attach Access resources", policyRef)
 
 	return status.NewCondition(
 		status.ConditionTypeAccessPolicyResolved,
 		metav1.ConditionTrue,
 		status.ReasonResolved,
-		fmt.Sprintf("Resolved CloudflareAccessPolicy %s/%s", policyNS, policyName),
+		fmt.Sprintf("Deprecated annotation resolved CloudflareAccessPolicy %s/%s; create CloudflareAccessApplication to attach Access resources", policyNS, policyName),
 		route.Generation,
 	), true
 }

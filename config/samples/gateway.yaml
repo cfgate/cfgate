@@ -44,7 +44,6 @@ metadata:
   name: admin-app
   namespace: default
   annotations:
-    cfgate.io/access-policy: cfgate-system/internal-apps
     cfgate.io/origin-protocol: https
     cfgate.io/origin-ssl-verify: "true"
 spec:

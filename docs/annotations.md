@@ -18,7 +18,7 @@ Per-route configuration applied to Gateway API HTTPRoute resources.
 | `cfgate.io/origin-h2c` | `true`, `false` | `false` | HTTP/2 cleartext (h2c) to origin |
 | `cfgate.io/ttl` | `1`-`86400` | `1` (auto) | DNS record TTL in seconds |
 | `cfgate.io/cloudflare-proxied` | `true`, `false` | `true` | Cloudflare proxy (orange cloud) |
-| `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | References a CloudflareAccessPolicy |
+| `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | Deprecated: resolves a policy reference for status only |
 | `cfgate.io/hostname` | RFC 1123 hostname | *none* | Override the route hostname |
 
 **Default for `cfgate.io/origin-protocol`:** `http`
@@ -244,13 +244,13 @@ metadata:
 
 #### `cfgate.io/access-policy`
 
-References a [CloudflareAccessPolicy](cloudflare-access-policy.md) resource to protect this route with Cloudflare Access zero-trust authentication.
+Deprecated. Resolves a [CloudflareAccessPolicy](cloudflare-access-policy.md) reference for HTTPRoute status and warnings only. It does not create Cloudflare Access Applications and does not link policies. Use [CloudflareAccessApplication](cloudflare-access-application.md) to protect Gateway API targets.
 
 **Valid values:** `name` (same namespace) or `namespace/name`
 
-**Default:** Not set (no Access protection)
+**Default:** Not set
 
-**Read by:** HTTPRoute controller
+**Read by:** HTTPRoute controller for deprecated status resolution only
 
 ```yaml
 metadata:
@@ -316,7 +316,7 @@ Connects a Gateway to a [CloudflareTunnel](cloudflare-tunnel.md) resource. This 
 
 **Format:** `namespace/name` (recommended) or `name` (same namespace)
 
-**Read by:** CloudflareTunnel controller (finds Gateways referencing this tunnel), CloudflareDNS controller (finds Gateways for route discovery), CloudflareAccessPolicy controller (credential inheritance)
+**Read by:** CloudflareTunnel controller (finds Gateways referencing this tunnel), CloudflareDNS controller (finds Gateways for route discovery), CloudflareAccessApplication controller (credential inheritance)
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -349,7 +349,7 @@ The tunnel endpoint domain, set automatically by the CloudflareTunnel controller
 
 ## Lifecycle Annotations
 
-Applied to CloudflareTunnel, CloudflareDNS, and CloudflareAccessPolicy resources to control deletion behavior.
+Applied to CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, and CloudflareAccessApplication resources to control deletion behavior.
 
 | Annotation | Values | Default | Description |
 |---|---|---|---|
@@ -368,7 +368,8 @@ Controls what happens to Cloudflare-side resources when the Kubernetes resource 
 **Supported on:**
 - **CloudflareTunnel:** When set to `orphan`, the tunnel remains in Cloudflare but the K8s resource is removed. The controller skips tunnel deletion and proceeds directly to finalizer removal.
 - **CloudflareDNS:** When set to `orphan`, the DNS records remain in Cloudflare but the K8s resource is removed. The controller skips record cleanup and proceeds directly to finalizer removal.
-- **CloudflareAccessPolicy:** When set to `orphan`, the Access Application, policies, and service tokens remain in Cloudflare. The controller skips all Cloudflare cleanup and proceeds directly to finalizer removal.
+- **CloudflareAccessPolicy:** When set to `orphan`, the reusable Access policy and service tokens remain in Cloudflare. The controller skips cleanup and proceeds directly to finalizer removal.
+- **CloudflareAccessApplication:** When set to `orphan`, Access Applications remain in Cloudflare. The controller skips application cleanup and proceeds directly to finalizer removal.
 
 **Use cases:**
 - Migrating resources between clusters (delete from old cluster without destroying the Cloudflare resource)

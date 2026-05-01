@@ -103,23 +103,23 @@ type AccessAppOps interface {
 	GetAccessApplicationByName(ctx context.Context, accountID, name string) (*AccessApplication, error)
 }
 
-// AccessPolicyOps defines operations for managing Cloudflare Access policies
-// scoped to an application, including creation, retrieval, update, and deletion.
+// AccessPolicyOps defines operations for managing reusable Cloudflare Access policies
+// at account scope.
 type AccessPolicyOps interface {
-	// CreateAccessPolicy creates a new Access policy for an application.
-	CreateAccessPolicy(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error)
+	// CreateAccessPolicy creates a new reusable Access policy.
+	CreateAccessPolicy(ctx context.Context, accountID string, params PolicyParams) (*AccessPolicy, error)
 
 	// GetAccessPolicy retrieves an Access policy by ID.
-	GetAccessPolicy(ctx context.Context, accountID, appID, policyID string) (*AccessPolicy, error)
+	GetAccessPolicy(ctx context.Context, accountID, policyID string) (*AccessPolicy, error)
 
 	// UpdateAccessPolicy updates an existing Access policy.
-	UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, params PolicyParams) (*AccessPolicy, error)
+	UpdateAccessPolicy(ctx context.Context, accountID, policyID string, params PolicyParams) (*AccessPolicy, error)
 
 	// DeleteAccessPolicy deletes an Access policy.
-	DeleteAccessPolicy(ctx context.Context, accountID, appID, policyID string) error
+	DeleteAccessPolicy(ctx context.Context, accountID, policyID string) error
 
-	// ListAccessPolicies lists all Access policies for an application.
-	ListAccessPolicies(ctx context.Context, accountID, appID string) ([]AccessPolicy, error)
+	// ListAccessPolicies lists all reusable Access policies.
+	ListAccessPolicies(ctx context.Context, accountID string) ([]AccessPolicy, error)
 }
 
 // AccessGroupOps defines operations for managing Cloudflare Access groups,

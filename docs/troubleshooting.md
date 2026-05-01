@@ -296,6 +296,7 @@ cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS r
    - `cfgate.io/tunnel-cleanup` (CloudflareTunnel)
    - `cfgate.io/dns-cleanup` (CloudflareDNS)
    - `cfgate.io/access-policy-cleanup` (CloudflareAccessPolicy)
+   - `cfgate.io/access-application-cleanup` (CloudflareAccessApplication)
 
 2. Check if credentials are still valid. If the secret was deleted before the resource, the finalizer cannot complete cleanup.
 

@@ -52,11 +52,11 @@ type MockClient struct {
 	GetAccessApplicationByNameFunc func(ctx context.Context, accountID, name string) (*AccessApplication, error)
 
 	// Access Policy operations
-	CreateAccessPolicyFunc func(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error)
-	GetAccessPolicyFunc    func(ctx context.Context, accountID, appID, policyID string) (*AccessPolicy, error)
-	UpdateAccessPolicyFunc func(ctx context.Context, accountID, appID, policyID string, params PolicyParams) (*AccessPolicy, error)
-	DeleteAccessPolicyFunc func(ctx context.Context, accountID, appID, policyID string) error
-	ListAccessPoliciesFunc func(ctx context.Context, accountID, appID string) ([]AccessPolicy, error)
+	CreateAccessPolicyFunc func(ctx context.Context, accountID string, params PolicyParams) (*AccessPolicy, error)
+	GetAccessPolicyFunc    func(ctx context.Context, accountID, policyID string) (*AccessPolicy, error)
+	UpdateAccessPolicyFunc func(ctx context.Context, accountID, policyID string, params PolicyParams) (*AccessPolicy, error)
+	DeleteAccessPolicyFunc func(ctx context.Context, accountID, policyID string) error
+	ListAccessPoliciesFunc func(ctx context.Context, accountID string) ([]AccessPolicy, error)
 
 	// Access Group operations
 	CreateAccessGroupFunc    func(ctx context.Context, accountID string, params GroupParams) (*AccessGroup, error)
@@ -257,37 +257,37 @@ func (m *MockClient) GetAccessApplicationByName(ctx context.Context, accountID, 
 
 // Access Policy operations
 
-func (m *MockClient) CreateAccessPolicy(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error) {
+func (m *MockClient) CreateAccessPolicy(ctx context.Context, accountID string, params PolicyParams) (*AccessPolicy, error) {
 	if m.CreateAccessPolicyFunc != nil {
-		return m.CreateAccessPolicyFunc(ctx, accountID, appID, params)
+		return m.CreateAccessPolicyFunc(ctx, accountID, params)
 	}
 	return nil, nil
 }
 
-func (m *MockClient) GetAccessPolicy(ctx context.Context, accountID, appID, policyID string) (*AccessPolicy, error) {
+func (m *MockClient) GetAccessPolicy(ctx context.Context, accountID, policyID string) (*AccessPolicy, error) {
 	if m.GetAccessPolicyFunc != nil {
-		return m.GetAccessPolicyFunc(ctx, accountID, appID, policyID)
+		return m.GetAccessPolicyFunc(ctx, accountID, policyID)
 	}
 	return nil, nil
 }
 
-func (m *MockClient) UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, params PolicyParams) (*AccessPolicy, error) {
+func (m *MockClient) UpdateAccessPolicy(ctx context.Context, accountID, policyID string, params PolicyParams) (*AccessPolicy, error) {
 	if m.UpdateAccessPolicyFunc != nil {
-		return m.UpdateAccessPolicyFunc(ctx, accountID, appID, policyID, params)
+		return m.UpdateAccessPolicyFunc(ctx, accountID, policyID, params)
 	}
 	return nil, nil
 }
 
-func (m *MockClient) DeleteAccessPolicy(ctx context.Context, accountID, appID, policyID string) error {
+func (m *MockClient) DeleteAccessPolicy(ctx context.Context, accountID, policyID string) error {
 	if m.DeleteAccessPolicyFunc != nil {
-		return m.DeleteAccessPolicyFunc(ctx, accountID, appID, policyID)
+		return m.DeleteAccessPolicyFunc(ctx, accountID, policyID)
 	}
 	return nil
 }
 
-func (m *MockClient) ListAccessPolicies(ctx context.Context, accountID, appID string) ([]AccessPolicy, error) {
+func (m *MockClient) ListAccessPolicies(ctx context.Context, accountID string) ([]AccessPolicy, error) {
 	if m.ListAccessPoliciesFunc != nil {
-		return m.ListAccessPoliciesFunc(ctx, accountID, appID)
+		return m.ListAccessPoliciesFunc(ctx, accountID)
 	}
 	return nil, nil
 }

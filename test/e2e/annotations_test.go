@@ -3,6 +3,7 @@ package e2e_test
 
 import (
 	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -12,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 )
@@ -572,7 +572,7 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 	})
 
 	Context("access policy reference", func() {
-		It("should link route to AccessPolicy in same namespace via access-policy annotation", func() {
+		It("should resolve deprecated access-policy annotation without creating Access resources", func() {
 			By("Creating test Service")
 			svcName := testID("svc")
 			createTestService(ctx, k8sClient, svcName, namespace.Name, 8080)
@@ -620,20 +620,21 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 			}
 			Expect(k8sClient.Create(ctx, route)).To(Succeed())
 
-			By("Creating CloudflareAccessPolicy targeting the route")
-			policy := createCloudflareAccessPolicy(ctx, k8sClient, policyName, namespace.Name, routeName, hostname)
+			By("Creating reusable CloudflareAccessPolicy")
+			policy := createReusableAccessPolicy(ctx, k8sClient, policyName, namespace.Name, "allow",
+				[]cfgatev1alpha1.AccessRule{{Everyone: ptrTo(true)}}, nil)
 
 			By("Waiting for AccessPolicy to become ready")
 			waitForAccessPolicyReady(ctx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
 
-			By("Verifying Access Application is created in Cloudflare")
-			Eventually(func() bool {
+			By("Verifying annotation did not create an Access Application")
+			Consistently(func() bool {
 				app, err := getAccessApplicationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, policyName)
-				return err == nil && app != nil
-			}, DefaultTimeout, DefaultInterval).Should(BeTrue(), "Access Application should be created in Cloudflare")
+				return err == nil && app == nil
+			}, 10*time.Second, DefaultInterval).Should(BeTrue(), "deprecated annotation must not create Access Application")
 		})
 
-		It("should link route to AccessPolicy across namespaces via access-policy annotation with namespace prefix", func() {
+		It("should resolve deprecated access-policy annotation across namespaces", func() {
 			By("Creating separate namespace for cross-namespace test")
 			policyNS := createTestNamespace("cfgate-policy-ns")
 			createCloudflareCredentialsSecret(policyNS.Name)
@@ -686,74 +687,18 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 			}
 			Expect(k8sClient.Create(ctx, route)).To(Succeed())
 
-			By("Creating ReferenceGrant to allow cross-namespace policy reference")
-			rg := &gatewayv1b1.ReferenceGrant{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testID("grant"),
-					Namespace: namespace.Name, // Grant in target namespace (where HTTPRoute lives)
-				},
-				Spec: gatewayv1b1.ReferenceGrantSpec{
-					From: []gatewayv1b1.ReferenceGrantFrom{
-						{
-							Group:     "cfgate.io",
-							Kind:      "CloudflareAccessPolicy",
-							Namespace: gatewayv1b1.Namespace(policyNS.Name),
-						},
-					},
-					To: []gatewayv1b1.ReferenceGrantTo{
-						{
-							Group: "gateway.networking.k8s.io",
-							Kind:  "HTTPRoute",
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, rg)).To(Succeed())
-
-			By("Creating CloudflareAccessPolicy in separate namespace targeting the route")
-			everyone := true
-			policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      policyName,
-					Namespace: policyNS.Name,
-				},
-				Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-					// Cross-namespace targetRef pointing to the HTTPRoute
-					TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-						Group:     "gateway.networking.k8s.io",
-						Kind:      "HTTPRoute",
-						Name:      routeName,
-						Namespace: &namespace.Name,
-					},
-					CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-						Name:      "cloudflare-credentials",
-						AccountID: testEnv.CloudflareAccountID,
-					},
-					Application: cfgatev1alpha1.AccessApplication{
-						Name:   policyName,
-						Domain: hostname,
-					},
-					Policies: []cfgatev1alpha1.AccessPolicyRule{
-						{
-							Name:     "allow-all",
-							Decision: "allow",
-							Include: []cfgatev1alpha1.AccessRule{
-								{Everyone: &everyone},
-							},
-						},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+			By("Creating reusable CloudflareAccessPolicy in separate namespace")
+			policy := createReusableAccessPolicy(ctx, k8sClient, policyName, policyNS.Name, "allow",
+				[]cfgatev1alpha1.AccessRule{{Everyone: ptrTo(true)}}, nil)
 
 			By("Waiting for AccessPolicy to become ready")
 			waitForAccessPolicyReady(ctx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
 
-			By("Verifying Access Application is created in Cloudflare")
-			Eventually(func() bool {
+			By("Verifying annotation did not create an Access Application")
+			Consistently(func() bool {
 				app, err := getAccessApplicationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, policyName)
-				return err == nil && app != nil && app.Domain == hostname
-			}, DefaultTimeout, DefaultInterval).Should(BeTrue(), "Access Application should be created with correct domain")
+				return err == nil && app == nil
+			}, 10*time.Second, DefaultInterval).Should(BeTrue(), "deprecated annotation must not create Access Application")
 
 			// Cleanup the extra namespace
 			if !testEnv.SkipCleanup {

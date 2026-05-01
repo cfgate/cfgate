@@ -126,6 +126,15 @@ var (
 			CredentialCache: credCache,
 		}).SetupWithManager(mgr)
 	}
+	setupAccessApplicationController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache) error {
+		return (&controller.CloudflareAccessApplicationReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			Recorder:        mgr.GetEventRecorder("cloudflareaccessapplication-controller"),
+			FeatureGates:    featureGates,
+			CredentialCache: credCache,
+		}).SetupWithManager(mgr)
+	}
 )
 
 func (e cliExitError) Error() string {
@@ -347,6 +356,10 @@ func registerControllers(mgr manager.Manager, featureGates *features.FeatureGate
 
 	if err := setupAccessPolicyController(mgr, featureGates, credCache); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareAccessPolicy: %w", err)
+	}
+
+	if err := setupAccessApplicationController(mgr, featureGates, credCache); err != nil {
+		return fmt.Errorf("unable to create controller CloudflareAccessApplication: %w", err)
 	}
 
 	return nil

@@ -1,0 +1,666 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: cloudflareaccessapplications.cfgate.io
+spec:
+  group: cfgate.io
+  names:
+    kind: CloudflareAccessApplication
+    listKind: CloudflareAccessApplicationList
+    plural: cloudflareaccessapplications
+    shortNames:
+    - cfaa
+    - cfaccessapp
+    singular: cloudflareaccessapplication
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.attachedTargets
+      name: Targets
+      type: integer
+    - jsonPath: .status.applications[0].id
+      name: Application
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CloudflareAccessApplication binds Gateway API targets to reusable
+          Cloudflare Access policies.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: CloudflareAccessApplicationSpec defines Gateway API target
+              bindings to reusable Access policies.
+            properties:
+              application:
+                description: |-
+                  Application defines Access Application settings shared by generated apps.
+                  The path field overrides any path derived from HTTPRoute rules.
+                properties:
+                  allowedIdps:
+                    description: |-
+                      AllowedIdps restricts which identity providers can authenticate.
+                      Values are Cloudflare Identity Provider UUIDs.
+                      When empty, all IdPs configured in the account are allowed.
+                    items:
+                      type: string
+                    maxItems: 25
+                    type: array
+                  appLauncherVisible:
+                    default: true
+                    description: |-
+                      AppLauncherVisible controls whether the application appears in the
+                      Cloudflare App Launcher dashboard. Use pointer to distinguish
+                      explicit false (hidden) from absent (default visible).
+                    type: boolean
+                  autoRedirectToIdentity:
+                    description: |-
+                      AutoRedirectToIdentity auto-redirects to the identity provider
+                      when a single IdP is configured in allowedIdps. Skips the IdP
+                      selection page.
+                    type: boolean
+                  corsHeaders:
+                    description: |-
+                      CORSHeaders configures CORS for browser-based APIs behind Access.
+                      When set, Cloudflare responds to OPTIONS preflight on behalf of the origin.
+                      Mutually exclusive with optionsPreflightBypass.
+                    properties:
+                      allowAllHeaders:
+                        description: AllowAllHeaders allows all HTTP request headers.
+                        type: boolean
+                      allowAllMethods:
+                        description: AllowAllMethods allows all HTTP request methods.
+                        type: boolean
+                      allowAllOrigins:
+                        description: AllowAllOrigins allows all origins.
+                        type: boolean
+                      allowCredentials:
+                        description: |-
+                          AllowCredentials includes credentials (cookies, authorization headers,
+                          or TLS client certificates) with CORS requests.
+                        type: boolean
+                      allowedHeaders:
+                        description: |-
+                          AllowedHeaders lists specific allowed HTTP request headers.
+                          Ignored when allowAllHeaders is true.
+                        items:
+                          type: string
+                        maxItems: 50
+                        type: array
+                      allowedMethods:
+                        description: |-
+                          AllowedMethods lists specific allowed HTTP request methods.
+                          Ignored when allowAllMethods is true.
+                        items:
+                          description: CORSAllowedMethod is an HTTP method allowed
+                            for CORS requests.
+                          enum:
+                          - GET
+                          - POST
+                          - HEAD
+                          - PUT
+                          - DELETE
+                          - CONNECT
+                          - OPTIONS
+                          - TRACE
+                          - PATCH
+                          type: string
+                        maxItems: 9
+                        type: array
+                      allowedOrigins:
+                        description: |-
+                          AllowedOrigins lists specific allowed origins.
+                          Ignored when allowAllOrigins is true.
+                        items:
+                          type: string
+                        maxItems: 50
+                        type: array
+                      maxAge:
+                        description: MaxAge is the maximum number of seconds preflight
+                          results can be cached.
+                        maximum: 86400
+                        minimum: 0
+                        type: integer
+                    type: object
+                  customDenyMessage:
+                    description: CustomDenyMessage shown when access is denied.
+                    maxLength: 1024
+                    type: string
+                  customDenyUrl:
+                    description: CustomDenyURL redirects to this URL when denied (instead
+                      of message).
+                    type: string
+                  customNonIdentityDenyUrl:
+                    description: |-
+                      CustomNonIdentityDenyURL is the URL users are redirected to when
+                      denied by a non-identity (service auth) policy. Separate from
+                      customDenyUrl which handles identity-based denials.
+                    maxLength: 1024
+                    type: string
+                  domain:
+                    description: |-
+                      Domain is the protected domain (auto-generated from routes if omitted).
+                      Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+                    maxLength: 253
+                    type: string
+                    x-kubernetes-validations:
+                    - message: each DNS label must not exceed 63 octets (RFC 1035
+                        section 2.3.4)
+                      rule: self == '' || self.split('.').all(s, size(s) <= 63)
+                  enableBindingCookie:
+                    default: false
+                    description: EnableBindingCookie enables binding cookies for sticky
+                      sessions.
+                    type: boolean
+                  httpOnlyCookieAttribute:
+                    default: true
+                    description: HttpOnlyCookieAttribute adds HttpOnly to session
+                      cookies.
+                    type: boolean
+                  logoUrl:
+                    description: LogoURL is the application logo in dashboard.
+                    maxLength: 1024
+                    type: string
+                  name:
+                    description: |-
+                      Name is the display name in Cloudflare dashboard.
+                      Defaults to CR name if omitted.
+                    maxLength: 255
+                    type: string
+                  optionsPreflightBypass:
+                    description: |-
+                      OptionsPreflightBypass allows OPTIONS preflight requests to bypass
+                      Access authentication and go directly to the origin. Enabling this
+                      removes all CORS header settings. Mutually exclusive with corsHeaders.
+                    type: boolean
+                  path:
+                    default: /
+                    description: |-
+                      Path restricts protection to specific path prefix.
+                      Cloudflare Access paths must not include ports, query strings, or fragments.
+                    maxLength: 1024
+                    pattern: ^/[^?#]*$
+                    type: string
+                  pathCookieAttribute:
+                    description: |-
+                      PathCookieAttribute scopes the Access JWT cookie to the application
+                      path instead of the hostname. When enabled, users must re-authenticate
+                      for different paths on the same hostname.
+                    type: boolean
+                  readServiceTokensFromHeader:
+                    description: |-
+                      ReadServiceTokensFromHeader enables reading service tokens from a
+                      single custom HTTP header instead of the standard CF-Access-Client-Id
+                      and CF-Access-Client-Secret header pair. The value is the header name.
+                      The header value must contain a JSON object with "cf-access-client-id"
+                      and "cf-access-client-secret" keys.
+                    maxLength: 256
+                    type: string
+                  sameSiteCookieAttribute:
+                    default: lax
+                    description: SameSiteCookieAttribute controls cross-site cookie
+                      behavior.
+                    enum:
+                    - strict
+                    - lax
+                    - none
+                    type: string
+                  serviceAuth401Redirect:
+                    description: |-
+                      ServiceAuth401Redirect returns a 401 status code instead of
+                      redirecting to the Access login page when a request is blocked by a
+                      Service Auth (non_identity) policy. Enable for API consumers.
+                    type: boolean
+                  sessionDuration:
+                    default: 24h
+                    description: SessionDuration controls session cookie lifetime.
+                    pattern: ^([0-9]+(ns|us|ms|s|m|h))+$
+                    type: string
+                  skipInterstitial:
+                    default: false
+                    description: SkipInterstitial bypasses the Access login page for
+                      API requests.
+                    type: boolean
+                  type:
+                    default: self_hosted
+                    description: Type is the application type.
+                    enum:
+                    - self_hosted
+                    - saas
+                    - ssh
+                    - vnc
+                    - browser_isolation
+                    type: string
+                type: object
+                x-kubernetes-validations:
+                - message: corsHeaders and optionsPreflightBypass are mutually exclusive
+                  rule: '!(has(self.corsHeaders) && has(self.optionsPreflightBypass)
+                    && self.optionsPreflightBypass)'
+              cloudflareRef:
+                description: |-
+                  CloudflareRef references Cloudflare credentials. When omitted, credentials
+                  are inherited from the target Gateway's tunnel binding.
+                properties:
+                  accountId:
+                    description: AccountID is the Cloudflare account ID.
+                    maxLength: 32
+                    type: string
+                  accountName:
+                    description: AccountName is the Cloudflare account name (looked
+                      up via API).
+                    maxLength: 255
+                    type: string
+                  name:
+                    description: Name of the secret containing credentials.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret (defaults to policy namespace).
+                    type: string
+                required:
+                - name
+                type: object
+              policyRefs:
+                description: PolicyRefs lists reusable CloudflareAccessPolicy resources
+                  to attach.
+                items:
+                  description: AccessPolicyReference references a reusable CloudflareAccessPolicy.
+                  properties:
+                    name:
+                      description: Name is the CloudflareAccessPolicy name.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the CloudflareAccessPolicy namespace. Defaults to application namespace.
+                        Cross-namespace references require ReferenceGrant.
+                      type: string
+                    precedence:
+                      description: |-
+                        Precedence determines policy evaluation order for the application. Lower values run first.
+                        When omitted, the controller uses list order starting at 1.
+                      maximum: 9999
+                      minimum: 1
+                      type: integer
+                  required:
+                  - name
+                  type: object
+                maxItems: 50
+                minItems: 1
+                type: array
+              targetRef:
+                description: TargetRef identifies a single Gateway API target.
+                properties:
+                  group:
+                    default: gateway.networking.k8s.io
+                    description: Group is the API group of the target resource.
+                    type: string
+                  kind:
+                    description: Kind is the kind of the target resource.
+                    enum:
+                    - Gateway
+                    - HTTPRoute
+                    type: string
+                  name:
+                    description: Name is the name of the target resource.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: |-
+                      Namespace is the namespace of the target resource.
+                      Cross-namespace targeting requires ReferenceGrant.
+                    type: string
+                  sectionName:
+                    description: SectionName targets specific listener (Gateway) or
+                      rule (Route).
+                    type: string
+                required:
+                - group
+                - kind
+                - name
+                type: object
+                x-kubernetes-validations:
+                - message: group must be gateway.networking.k8s.io
+                  rule: self.group == 'gateway.networking.k8s.io'
+                - message: kind must be Gateway or HTTPRoute
+                  rule: self.kind in ['Gateway', 'HTTPRoute']
+              targetRefs:
+                description: TargetRefs identifies multiple Gateway API targets.
+                items:
+                  description: |-
+                    PolicyTargetReference identifies a Gateway API resource for Access application attachment.
+
+                    PolicyTargetReference follows the Gateway API LocalPolicyTargetReferenceWithSectionName
+                    pattern. It targets Gateway API Gateway and HTTPRoute resources and extracts
+                    hostnames and paths from those resources to create corresponding Cloudflare Access
+                    applications.
+
+                    Cross-namespace references require a ReferenceGrant in the target namespace that permits
+                    CloudflareAccessApplication resources from the application's namespace.
+                  properties:
+                    group:
+                      default: gateway.networking.k8s.io
+                      description: Group is the API group of the target resource.
+                      type: string
+                    kind:
+                      description: Kind is the kind of the target resource.
+                      enum:
+                      - Gateway
+                      - HTTPRoute
+                      type: string
+                    name:
+                      description: Name is the name of the target resource.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace of the target resource.
+                        Cross-namespace targeting requires ReferenceGrant.
+                      type: string
+                    sectionName:
+                      description: SectionName targets specific listener (Gateway)
+                        or rule (Route).
+                      type: string
+                  required:
+                  - group
+                  - kind
+                  - name
+                  type: object
+                  x-kubernetes-validations:
+                  - message: group must be gateway.networking.k8s.io
+                    rule: self.group == 'gateway.networking.k8s.io'
+                  - message: kind must be Gateway or HTTPRoute
+                    rule: self.kind in ['Gateway', 'HTTPRoute']
+                maxItems: 16
+                type: array
+            required:
+            - policyRefs
+            type: object
+            x-kubernetes-validations:
+            - message: either targetRef or targetRefs must be specified
+              rule: has(self.targetRef) || has(self.targetRefs)
+            - message: targetRef and targetRefs are mutually exclusive
+              rule: '!(has(self.targetRef) && has(self.targetRefs))'
+            - message: policyRefs must not contain duplicate name/namespace pairs
+              rule: 'self.policyRefs.map(p, (has(p.namespace) ? p.namespace : '''')
+                + ''/'' + p.name).all(k, self.policyRefs.map(p, (has(p.namespace)
+                ? p.namespace : '''') + ''/'' + p.name).filter(x, x == k).size() ==
+                1)'
+          status:
+            description: CloudflareAccessApplicationStatus defines observed Access
+              application state.
+            properties:
+              ancestors:
+                description: Ancestors contains status for each targetRef.
+                items:
+                  description: |-
+                    PolicyAncestorStatus describes the policy attachment status for a specific target.
+
+                    PolicyAncestorStatus follows the Gateway API PolicyAncestorStatus pattern to report
+                    per-target attachment status. Each target reference in the spec has a corresponding
+                    ancestor status entry showing whether the policy was successfully attached.
+                  properties:
+                    ancestorRef:
+                      description: AncestorRef identifies the target.
+                      properties:
+                        group:
+                          default: gateway.networking.k8s.io
+                          description: Group is the API group of the target resource.
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          enum:
+                          - Gateway
+                          - HTTPRoute
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the target resource.
+                            Cross-namespace targeting requires ReferenceGrant.
+                          type: string
+                        sectionName:
+                          description: SectionName targets specific listener (Gateway)
+                            or rule (Route).
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: group must be gateway.networking.k8s.io
+                        rule: self.group == 'gateway.networking.k8s.io'
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
+                    conditions:
+                      description: Conditions for this specific target.
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      type: array
+                    controllerName:
+                      description: ControllerName identifies the controller managing
+                        this attachment.
+                      type: string
+                  required:
+                  - ancestorRef
+                  - controllerName
+                  type: object
+                type: array
+              applications:
+                description: Applications are Cloudflare Access Applications managed
+                  by this resource.
+                items:
+                  description: AccessApplicationObserved records a Cloudflare Access
+                    Application created for one host/path target.
+                  properties:
+                    aud:
+                      description: AUD is the Application Audience Tag.
+                      type: string
+                    domain:
+                      description: Domain is the protected hostname/path in Cloudflare.
+                      type: string
+                    id:
+                      description: ID is the Cloudflare Access Application ID.
+                      type: string
+                    targetRef:
+                      description: TargetRef identifies the Gateway API target that
+                        produced this application.
+                      properties:
+                        group:
+                          default: gateway.networking.k8s.io
+                          description: Group is the API group of the target resource.
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          enum:
+                          - Gateway
+                          - HTTPRoute
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the target resource.
+                            Cross-namespace targeting requires ReferenceGrant.
+                          type: string
+                        sectionName:
+                          description: SectionName targets specific listener (Gateway)
+                            or rule (Route).
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: group must be gateway.networking.k8s.io
+                        rule: self.group == 'gateway.networking.k8s.io'
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
+                  type: object
+                type: array
+              attachedTargets:
+                description: AttachedTargets is the count of successfully attached
+                  Gateway API targets.
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions describe current state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the last generation processed.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

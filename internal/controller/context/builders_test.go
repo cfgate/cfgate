@@ -135,14 +135,14 @@ func TestBuildDNSContext(t *testing.T) {
 	}
 }
 
-func TestBuildAccessPolicyContext(t *testing.T) {
+func TestBuildAccessApplicationContext(t *testing.T) {
 	scheme := testScheme(t)
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
 	}
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "policy", Namespace: "app"},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+	app := &cfgatev1alpha1.CloudflareAccessApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
 			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
 				Group: "gateway.networking.k8s.io",
 				Kind:  "HTTPRoute",
@@ -151,16 +151,16 @@ func TestBuildAccessPolicyContext(t *testing.T) {
 		},
 	}
 
-	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route, policy).Build()
-	got, err := BuildAccessPolicyContext(context.Background(), k8sClient, types.NamespacedName{
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route, app).Build()
+	got, err := BuildAccessApplicationContext(context.Background(), k8sClient, types.NamespacedName{
 		Namespace: "app",
-		Name:      "policy",
+		Name:      "app",
 	})
 	if err != nil {
-		t.Fatalf("BuildAccessPolicyContext() error = %v", err)
+		t.Fatalf("BuildAccessApplicationContext() error = %v", err)
 	}
 	if got == nil {
-		t.Fatal("BuildAccessPolicyContext() returned nil context")
+		t.Fatal("BuildAccessApplicationContext() returned nil context")
 	}
 	if !got.AllTargetsResolved() {
 		t.Fatalf("AllTargetsResolved() = false, want true")
@@ -178,7 +178,7 @@ func TestResolveTarget(t *testing.T) {
 		Spec: gatewayv1b1.ReferenceGrantSpec{
 			From: []gatewayv1b1.ReferenceGrantFrom{{
 				Group:     gatewayv1.Group(cfgatev1alpha1.GroupVersion.Group),
-				Kind:      gatewayv1.Kind("CloudflareAccessPolicy"),
+				Kind:      gatewayv1.Kind("CloudflareAccessApplication"),
 				Namespace: gatewayv1.Namespace("policy-ns"),
 			}},
 			To: []gatewayv1b1.ReferenceGrantTo{{
@@ -215,9 +215,9 @@ func TestResolveTargets(t *testing.T) {
 	scheme := testScheme(t)
 	route1 := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "route-1", Namespace: "app"}}
 	route2 := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "route-2", Namespace: "app"}}
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "policy", Namespace: "app"},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+	app := &cfgatev1alpha1.CloudflareAccessApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
 			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
 				Group: gatewayv1.GroupName,
 				Kind:  "HTTPRoute",
@@ -232,7 +232,7 @@ func TestResolveTargets(t *testing.T) {
 	}
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route1, route2).Build()
-	targets := resolveTargets(context.Background(), policy, k8sClient, testLogger())
+	targets := resolveTargets(context.Background(), app, k8sClient, testLogger())
 	if len(targets) != 2 {
 		t.Fatalf("len(resolveTargets()) = %d, want 2", len(targets))
 	}
@@ -261,7 +261,7 @@ func TestCheckReferenceGrant(t *testing.T) {
 		Spec: gatewayv1b1.ReferenceGrantSpec{
 			From: []gatewayv1b1.ReferenceGrantFrom{{
 				Group:     gatewayv1.Group(cfgatev1alpha1.GroupVersion.Group),
-				Kind:      gatewayv1.Kind("CloudflareAccessPolicy"),
+				Kind:      gatewayv1.Kind("CloudflareAccessApplication"),
 				Namespace: gatewayv1.Namespace("source"),
 			}},
 			To: []gatewayv1b1.ReferenceGrantTo{{

@@ -19,6 +19,8 @@ func TestAddToSchemeRegistersCfgateTypes(t *testing.T) {
 		&CloudflareDNSList{},
 		&CloudflareAccessPolicy{},
 		&CloudflareAccessPolicyList{},
+		&CloudflareAccessApplication{},
+		&CloudflareAccessApplicationList{},
 	} {
 		gvks, _, err := scheme.ObjectKinds(obj)
 		if err != nil {

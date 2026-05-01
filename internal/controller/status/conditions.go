@@ -78,11 +78,17 @@ const (
 	// ConditionTypeTargetsResolved indicates target references are resolved.
 	ConditionTypeTargetsResolved = "TargetsResolved"
 
-	// ConditionTypeApplicationCreated indicates Access Application exists.
-	ConditionTypeApplicationCreated = "ApplicationCreated"
+	// ConditionTypePolicySynced indicates reusable Access Policy exists.
+	ConditionTypePolicySynced = "PolicySynced"
 
-	// ConditionTypePoliciesAttached indicates Access Policies are attached.
-	ConditionTypePoliciesAttached = "PoliciesAttached"
+	// ConditionTypeApplicationSynced indicates Access Application exists.
+	ConditionTypeApplicationSynced = "ApplicationSynced"
+
+	// ConditionTypePoliciesResolved indicates referenced Access Policies are ready.
+	ConditionTypePoliciesResolved = "PoliciesResolved"
+
+	// ConditionTypePoliciesLinked indicates reusable Access Policies are linked to applications.
+	ConditionTypePoliciesLinked = "PoliciesLinked"
 
 	// ConditionTypeServiceTokensReady indicates service tokens are ready.
 	ConditionTypeServiceTokensReady = "ServiceTokensReady"
@@ -164,11 +170,17 @@ const (
 	ReasonTargetNotFound         = "TargetNotFound"
 	ReasonApplicationCreated     = "ApplicationCreated"
 	ReasonApplicationError       = "ApplicationError"
+	ReasonApplicationSynced      = "ApplicationSynced"
+	ReasonPolicySynced           = "PolicySynced"
+	ReasonPoliciesResolved       = "PoliciesResolved"
+	ReasonPoliciesLinked         = "PoliciesLinked"
 	ReasonPoliciesAttached       = "PoliciesAttached"
 	ReasonPolicyError            = "PolicyError"
 	ReasonServiceTokensReady     = "ServiceTokensReady"
 	ReasonServiceTokenError      = "ServiceTokenError"
 	ReasonReferenceGrantRequired = "ReferenceGrantRequired"
+	ReasonUnsupportedPathMatch   = "UnsupportedPathMatch"
+	ReasonAccountMismatch        = "AccountMismatch"
 
 	// Gateway reasons.
 	ReasonMissingTunnelRef = "MissingTunnelRef"
@@ -491,7 +503,7 @@ func NewApplicationCreatedCondition(created bool, reason, message string, genera
 	if created {
 		status = metav1.ConditionTrue
 	}
-	return NewCondition(ConditionTypeApplicationCreated, status, reason, message, generation)
+	return NewCondition(ConditionTypeApplicationSynced, status, reason, message, generation)
 }
 
 // NewPoliciesAttachedCondition creates a PoliciesAttached condition.
@@ -500,7 +512,7 @@ func NewPoliciesAttachedCondition(attached bool, reason, message string, generat
 	if attached {
 		status = metav1.ConditionTrue
 	}
-	return NewCondition(ConditionTypePoliciesAttached, status, reason, message, generation)
+	return NewCondition(ConditionTypePoliciesLinked, status, reason, message, generation)
 }
 
 // NewServiceTokensReadyCondition creates a ServiceTokensReady condition.
@@ -513,13 +525,11 @@ func NewServiceTokensReadyCondition(ready bool, reason, message string, generati
 }
 
 // NewAccessPolicyReadyCondition creates the overall Ready condition for CloudflareAccessPolicy.
-// Ready = CredentialsValid AND TargetsResolved AND ApplicationCreated AND PoliciesAttached
+// Ready = CredentialsValid AND PolicySynced
 // ServiceTokensReady is optional (only required if serviceTokens configured)
 func NewAccessPolicyReadyCondition(conditions []metav1.Condition, hasServiceTokens bool, generation int64) metav1.Condition {
 	ready := ConditionTrue(conditions, ConditionTypeCredentialsValid) &&
-		ConditionTrue(conditions, ConditionTypeTargetsResolved) &&
-		ConditionTrue(conditions, ConditionTypeApplicationCreated) &&
-		ConditionTrue(conditions, ConditionTypePoliciesAttached)
+		ConditionTrue(conditions, ConditionTypePolicySynced)
 
 	// ServiceTokensReady required only if service tokens configured
 	if hasServiceTokens {
@@ -534,9 +544,7 @@ func NewAccessPolicyReadyCondition(conditions []metav1.Condition, hasServiceToke
 	// Find first failing condition for message
 	checkOrder := []string{
 		ConditionTypeCredentialsValid,
-		ConditionTypeTargetsResolved,
-		ConditionTypeApplicationCreated,
-		ConditionTypePoliciesAttached,
+		ConditionTypePolicySynced,
 	}
 	if hasServiceTokens {
 		checkOrder = append(checkOrder, ConditionTypeServiceTokensReady)
@@ -552,6 +560,38 @@ func NewAccessPolicyReadyCondition(conditions []metav1.Condition, hasServiceToke
 
 	return NewCondition(ConditionTypeReady, metav1.ConditionUnknown,
 		ReasonReconciling, "Reconciling access policy.", generation)
+}
+
+// NewAccessApplicationReadyCondition creates the overall Ready condition for CloudflareAccessApplication.
+func NewAccessApplicationReadyCondition(conditions []metav1.Condition, generation int64) metav1.Condition {
+	ready := ConditionTrue(conditions, ConditionTypeCredentialsValid) &&
+		ConditionTrue(conditions, ConditionTypeTargetsResolved) &&
+		ConditionTrue(conditions, ConditionTypeReferenceGrantValid) &&
+		ConditionTrue(conditions, ConditionTypePoliciesResolved) &&
+		ConditionTrue(conditions, ConditionTypeApplicationSynced) &&
+		ConditionTrue(conditions, ConditionTypePoliciesLinked)
+
+	if ready {
+		return NewCondition(ConditionTypeReady, metav1.ConditionTrue,
+			ReasonReconcileSuccess, "Access application is ready.", generation)
+	}
+
+	for _, t := range []string{
+		ConditionTypeCredentialsValid,
+		ConditionTypeTargetsResolved,
+		ConditionTypeReferenceGrantValid,
+		ConditionTypePoliciesResolved,
+		ConditionTypeApplicationSynced,
+		ConditionTypePoliciesLinked,
+	} {
+		c := FindCondition(conditions, t)
+		if c != nil && c.Status != metav1.ConditionTrue {
+			return NewCondition(ConditionTypeReady, metav1.ConditionFalse, c.Reason, c.Message, generation)
+		}
+	}
+
+	return NewCondition(ConditionTypeReady, metav1.ConditionUnknown,
+		ReasonReconciling, "Reconciling access application.", generation)
 }
 
 // NewPolicyAcceptedCondition creates an Accepted condition for policy status.

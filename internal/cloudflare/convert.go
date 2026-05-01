@@ -2,6 +2,7 @@
 package cloudflare
 
 import (
+	"encoding/json"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
@@ -212,6 +213,22 @@ func approvalGroupsFromAPI(groups []zero_trust.ApprovalGroup) []ApprovalGroupPar
 	return result
 }
 
+// approvalGroupsToAPI converts internal approval group params to SDK params.
+func approvalGroupsToAPI(groups []ApprovalGroupParam) []zero_trust.ApprovalGroupParam {
+	if len(groups) == 0 {
+		return nil
+	}
+	result := make([]zero_trust.ApprovalGroupParam, len(groups))
+	for i, g := range groups {
+		result[i] = zero_trust.ApprovalGroupParam{
+			EmailAddresses:  cf.F(g.EmailAddresses),
+			EmailListUUID:   cf.F(g.EmailListUUID),
+			ApprovalsNeeded: cf.F(float64(g.ApprovalsNeeded)),
+		}
+	}
+	return result
+}
+
 // =============================================================================
 // Access Application response converters
 // =============================================================================
@@ -258,6 +275,7 @@ func applicationFromNewResponse(resp *zero_trust.AccessApplicationNewResponse) *
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
+	applyApplicationExtras(app, resp.JSON.RawJSON())
 
 	return app
 }
@@ -302,6 +320,7 @@ func applicationFromGetResponse(resp *zero_trust.AccessApplicationGetResponse) *
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
+	applyApplicationExtras(app, resp.JSON.RawJSON())
 
 	return app
 }
@@ -346,6 +365,7 @@ func applicationFromUpdateResponse(resp *zero_trust.AccessApplicationUpdateRespo
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
+	applyApplicationExtras(app, resp.JSON.RawJSON())
 
 	return app
 }
@@ -390,40 +410,51 @@ func applicationFromListResponse(resp *zero_trust.AccessApplicationListResponse)
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
+	applyApplicationExtras(app, resp.JSON.RawJSON())
 
 	return app
+}
+
+func applyApplicationExtras(app *AccessApplication, raw string) {
+	if app == nil || raw == "" {
+		return
+	}
+	var extra struct {
+		Tags         []string `json:"tags"`
+		Destinations []struct {
+			Type string `json:"type"`
+			URI  string `json:"uri"`
+		} `json:"destinations"`
+		Policies []struct {
+			ID         string `json:"id"`
+			Precedence int64  `json:"precedence"`
+		} `json:"policies"`
+	}
+	if err := json.Unmarshal([]byte(raw), &extra); err != nil {
+		return
+	}
+	app.Tags = extra.Tags
+	for _, destination := range extra.Destinations {
+		if destination.Type == "public" && destination.URI != "" {
+			app.Destinations = append(app.Destinations, destination.URI)
+		}
+	}
+	for _, policy := range extra.Policies {
+		if policy.ID != "" {
+			app.Policies = append(app.Policies, ApplicationPolicyLink{
+				ID:         policy.ID,
+				Precedence: int(policy.Precedence),
+			})
+		}
+	}
 }
 
 // =============================================================================
 // Access Policy response converters
 // =============================================================================
 
-// policyFromNewResponse converts AccessApplicationPolicyNewResponse to AccessPolicy.
-func policyFromNewResponse(resp *zero_trust.AccessApplicationPolicyNewResponse, name, decision string) *AccessPolicy {
-	if resp == nil {
-		return nil
-	}
-
-	return &AccessPolicy{
-		ID:                           resp.ID,
-		Name:                         name,
-		Decision:                     decision,
-		Precedence:                   int(resp.Precedence),
-		Include:                      accessRulesFromAPI(resp.Include),
-		Exclude:                      accessRulesFromAPI(resp.Exclude),
-		Require:                      accessRulesFromAPI(resp.Require),
-		SessionDuration:              resp.SessionDuration,
-		PurposeJustificationRequired: resp.PurposeJustificationRequired,
-		PurposeJustificationPrompt:   resp.PurposeJustificationPrompt,
-		ApprovalRequired:             resp.ApprovalRequired,
-		ApprovalGroups:               approvalGroupsFromAPI(resp.ApprovalGroups),
-		CreatedAt:                    resp.CreatedAt,
-		UpdatedAt:                    resp.UpdatedAt,
-	}
-}
-
-// policyFromGetResponse converts AccessApplicationPolicyGetResponse to AccessPolicy.
-func policyFromGetResponse(resp *zero_trust.AccessApplicationPolicyGetResponse) *AccessPolicy {
+// policyFromNewResponse converts AccessPolicyNewResponse to AccessPolicy.
+func policyFromNewResponse(resp *zero_trust.AccessPolicyNewResponse) *AccessPolicy {
 	if resp == nil {
 		return nil
 	}
@@ -432,7 +463,8 @@ func policyFromGetResponse(resp *zero_trust.AccessApplicationPolicyGetResponse) 
 		ID:                           resp.ID,
 		Name:                         resp.Name,
 		Decision:                     string(resp.Decision),
-		Precedence:                   int(resp.Precedence),
+		Reusable:                     bool(resp.Reusable),
+		AppCount:                     resp.AppCount,
 		Include:                      accessRulesFromAPI(resp.Include),
 		Exclude:                      accessRulesFromAPI(resp.Exclude),
 		Require:                      accessRulesFromAPI(resp.Require),
@@ -446,32 +478,8 @@ func policyFromGetResponse(resp *zero_trust.AccessApplicationPolicyGetResponse) 
 	}
 }
 
-// policyFromUpdateResponse converts AccessApplicationPolicyUpdateResponse to AccessPolicy.
-func policyFromUpdateResponse(resp *zero_trust.AccessApplicationPolicyUpdateResponse, name, decision string) *AccessPolicy {
-	if resp == nil {
-		return nil
-	}
-
-	return &AccessPolicy{
-		ID:                           resp.ID,
-		Name:                         name,
-		Decision:                     decision,
-		Precedence:                   int(resp.Precedence),
-		Include:                      accessRulesFromAPI(resp.Include),
-		Exclude:                      accessRulesFromAPI(resp.Exclude),
-		Require:                      accessRulesFromAPI(resp.Require),
-		SessionDuration:              resp.SessionDuration,
-		PurposeJustificationRequired: resp.PurposeJustificationRequired,
-		PurposeJustificationPrompt:   resp.PurposeJustificationPrompt,
-		ApprovalRequired:             resp.ApprovalRequired,
-		ApprovalGroups:               approvalGroupsFromAPI(resp.ApprovalGroups),
-		CreatedAt:                    resp.CreatedAt,
-		UpdatedAt:                    resp.UpdatedAt,
-	}
-}
-
-// policyFromListResponse converts AccessApplicationPolicyListResponse to AccessPolicy.
-func policyFromListResponse(resp *zero_trust.AccessApplicationPolicyListResponse) *AccessPolicy {
+// policyFromGetResponse converts AccessPolicyGetResponse to AccessPolicy.
+func policyFromGetResponse(resp *zero_trust.AccessPolicyGetResponse) *AccessPolicy {
 	if resp == nil {
 		return nil
 	}
@@ -480,7 +488,58 @@ func policyFromListResponse(resp *zero_trust.AccessApplicationPolicyListResponse
 		ID:                           resp.ID,
 		Name:                         resp.Name,
 		Decision:                     string(resp.Decision),
-		Precedence:                   int(resp.Precedence),
+		Reusable:                     bool(resp.Reusable),
+		AppCount:                     resp.AppCount,
+		Include:                      accessRulesFromAPI(resp.Include),
+		Exclude:                      accessRulesFromAPI(resp.Exclude),
+		Require:                      accessRulesFromAPI(resp.Require),
+		SessionDuration:              resp.SessionDuration,
+		PurposeJustificationRequired: resp.PurposeJustificationRequired,
+		PurposeJustificationPrompt:   resp.PurposeJustificationPrompt,
+		ApprovalRequired:             resp.ApprovalRequired,
+		ApprovalGroups:               approvalGroupsFromAPI(resp.ApprovalGroups),
+		CreatedAt:                    resp.CreatedAt,
+		UpdatedAt:                    resp.UpdatedAt,
+	}
+}
+
+// policyFromUpdateResponse converts AccessPolicyUpdateResponse to AccessPolicy.
+func policyFromUpdateResponse(resp *zero_trust.AccessPolicyUpdateResponse) *AccessPolicy {
+	if resp == nil {
+		return nil
+	}
+
+	return &AccessPolicy{
+		ID:                           resp.ID,
+		Name:                         resp.Name,
+		Decision:                     string(resp.Decision),
+		Reusable:                     bool(resp.Reusable),
+		AppCount:                     resp.AppCount,
+		Include:                      accessRulesFromAPI(resp.Include),
+		Exclude:                      accessRulesFromAPI(resp.Exclude),
+		Require:                      accessRulesFromAPI(resp.Require),
+		SessionDuration:              resp.SessionDuration,
+		PurposeJustificationRequired: resp.PurposeJustificationRequired,
+		PurposeJustificationPrompt:   resp.PurposeJustificationPrompt,
+		ApprovalRequired:             resp.ApprovalRequired,
+		ApprovalGroups:               approvalGroupsFromAPI(resp.ApprovalGroups),
+		CreatedAt:                    resp.CreatedAt,
+		UpdatedAt:                    resp.UpdatedAt,
+	}
+}
+
+// policyFromListResponse converts AccessPolicyListResponse to AccessPolicy.
+func policyFromListResponse(resp *zero_trust.AccessPolicyListResponse) *AccessPolicy {
+	if resp == nil {
+		return nil
+	}
+
+	return &AccessPolicy{
+		ID:                           resp.ID,
+		Name:                         resp.Name,
+		Decision:                     string(resp.Decision),
+		Reusable:                     bool(resp.Reusable),
+		AppCount:                     resp.AppCount,
 		Include:                      accessRulesFromAPI(resp.Include),
 		Exclude:                      accessRulesFromAPI(resp.Exclude),
 		Require:                      accessRulesFromAPI(resp.Require),

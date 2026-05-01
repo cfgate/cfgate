@@ -1,0 +1,16 @@
+apiVersion: cfgate.io/v1alpha1
+kind: CloudflareAccessApplication
+metadata:
+  name: internal-apps
+  namespace: cfgate-system
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: admin-app
+  application:
+    name: Internal Application
+    sessionDuration: 24h
+    type: self_hosted
+  policyRefs:
+    - name: internal-apps

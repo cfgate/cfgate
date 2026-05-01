@@ -801,8 +801,8 @@ func TestGetTargetRefs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			apc := &AccessPolicyContext{
-				CloudflareAccessPolicy: &cfgatev1alpha1.CloudflareAccessPolicy{
-					Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+				CloudflareAccessApplication: &cfgatev1alpha1.CloudflareAccessApplication{
+					Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
 						TargetRef:  tt.targetRef,
 						TargetRefs: tt.targetRefs,
 					},
