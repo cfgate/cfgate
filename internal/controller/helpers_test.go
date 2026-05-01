@@ -490,17 +490,16 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 		}
 	})
 
-	t.Run("indexes access policy targets", func(t *testing.T) {
+	t.Run("collects access application targets", func(t *testing.T) {
 		otherNS := "edge"
-		policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-			ObjectMeta: metav1.ObjectMeta{Name: "policy", Namespace: "app"},
-			Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-				TargetRef: &cfgatev1alpha1.PolicyTargetReference{
+		app := &cfgatev1alpha1.CloudflareAccessApplication{
+			ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "app"},
+			Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
+				TargetRefs: []cfgatev1alpha1.PolicyTargetReference{{
 					Group: "gateway.networking.k8s.io",
 					Kind:  "Gateway",
 					Name:  "public",
-				},
-				TargetRefs: []cfgatev1alpha1.PolicyTargetReference{{
+				}, {
 					Group:     "gateway.networking.k8s.io",
 					Kind:      "HTTPRoute",
 					Name:      "route",
@@ -509,9 +508,13 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 			},
 		}
 
-		keys := accessPolicyTargetIndexFunc(policy)
+		refs := accessApplicationTargetRefs(app)
+		keys := []string{
+			accessPolicyTargetKey(refs[0].Kind, app.Namespace, refs[0].Name),
+			accessPolicyTargetKey(refs[1].Kind, *refs[1].Namespace, refs[1].Name),
+		}
 		if !slices.Equal(keys, []string{"Gateway/app/public", "HTTPRoute/edge/route"}) {
-			t.Fatalf("accessPolicyTargetIndexFunc() = %#v", keys)
+			t.Fatalf("access application target keys = %#v", keys)
 		}
 		if got := accessPolicyTargetKey("HTTPRoute", "app", "route"); got != "HTTPRoute/app/route" {
 			t.Fatalf("accessPolicyTargetKey() = %q", got)
@@ -523,7 +526,7 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 			Spec: gatewayv1beta1.ReferenceGrantSpec{
 				From: []gatewayv1beta1.ReferenceGrantFrom{{
 					Group:     "cfgate.io",
-					Kind:      "CloudflareAccessPolicy",
+					Kind:      "CloudflareAccessApplication",
 					Namespace: "app",
 				}},
 				To: []gatewayv1beta1.ReferenceGrantTo{{
@@ -533,7 +536,7 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 			},
 		}
 
-		r := &CloudflareAccessPolicyReconciler{}
+		r := &CloudflareAccessApplicationReconciler{}
 		if !r.grantPermitsAccess(grant, "app", "HTTPRoute") {
 			t.Fatal("grantPermitsAccess() = false, want true")
 		}
@@ -599,9 +602,10 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 
 	t.Run("compares access policy statuses ignoring transition time", func(t *testing.T) {
 		base := &cfgatev1alpha1.CloudflareAccessPolicyStatus{
-			ApplicationID:      "app-1",
-			ApplicationAUD:     "aud-1",
-			AttachedTargets:    2,
+			PolicyID:           "policy-1",
+			AccountID:          "account-1",
+			Reusable:           true,
+			AppCount:           2,
 			ObservedGeneration: 5,
 			ServiceTokenIDs:    map[string]string{"svc": "token-1"},
 			Conditions: []metav1.Condition{{
@@ -611,31 +615,15 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 				Message:            "ok",
 				LastTransitionTime: metav1.Now(),
 			}},
-			Ancestors: []cfgatev1alpha1.PolicyAncestorStatus{{
-				AncestorRef: cfgatev1alpha1.PolicyTargetReference{
-					Group: "gateway.networking.k8s.io",
-					Kind:  "HTTPRoute",
-					Name:  "route",
-				},
-				ControllerName: GatewayControllerName,
-				Conditions: []metav1.Condition{{
-					Type:               status.ConditionTypeReady,
-					Status:             metav1.ConditionTrue,
-					Reason:             status.ReasonResolved,
-					Message:            "ok",
-					LastTransitionTime: metav1.Now(),
-				}},
-			}},
 		}
 		same := base.DeepCopy()
 		same.Conditions[0].LastTransitionTime = metav1.NewTime(base.Conditions[0].LastTransitionTime.Add(10))
-		same.Ancestors[0].Conditions[0].LastTransitionTime = metav1.NewTime(base.Ancestors[0].Conditions[0].LastTransitionTime.Add(10))
 		if !accessPolicyStatusEqual(base, same) {
 			t.Fatal("accessPolicyStatusEqual() = false, want true when only transition times differ")
 		}
-		same.ApplicationAUD = "other"
+		same.PolicyID = "other"
 		if accessPolicyStatusEqual(base, same) {
-			t.Fatal("accessPolicyStatusEqual() = true, want false when application data differs")
+			t.Fatal("accessPolicyStatusEqual() = true, want false when policy data differs")
 		}
 	})
 }

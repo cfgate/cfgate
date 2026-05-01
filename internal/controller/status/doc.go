@@ -4,7 +4,8 @@
 // across all cfgate CRDs:
 //   - CloudflareTunnel: Tunnel lifecycle, credentials, cloudflared deployment
 //   - CloudflareDNS: DNS sync, zone resolution, ownership verification
-//   - CloudflareAccessPolicy: Access application, policies, service tokens
+//   - CloudflareAccessPolicy: reusable Access policy and service tokens
+//   - CloudflareAccessApplication: Gateway API target binding and policy links
 //
 // The package adapts patterns from Envoy Gateway for condition merging,
 // message formatting, and Gateway API PolicyStatus handling.
@@ -45,12 +46,19 @@
 //   - OwnershipVerified: TXT ownership records verified
 //
 // CloudflareAccessPolicy conditions:
-//   - Ready: Policy fully applied to all targets
+//   - Ready: Reusable policy fully synced
+//   - CredentialsValid: Cloudflare API credentials validated
+//   - ServiceTokensReady: All service tokens created and stored
+//   - PolicySynced: Reusable Access policy exists in Cloudflare
+//
+// CloudflareAccessApplication conditions:
+//   - Ready: Applications fully synced and policies linked
 //   - CredentialsValid: Cloudflare API credentials validated
 //   - TargetsResolved: All targetRefs found and valid
-//   - ApplicationCreated: Access Application exists in Cloudflare
-//   - PoliciesAttached: Access policies attached to application
-//   - ServiceTokensReady: All service tokens created and stored
+//   - ReferenceGrantValid: Cross-namespace references are permitted
+//   - PoliciesResolved: Referenced reusable policies are ready
+//   - ApplicationSynced: Access Applications exist in Cloudflare
+//   - PoliciesLinked: Reusable policies attached to applications
 //
 // # CRD-Specific Constructors
 //
@@ -70,11 +78,17 @@
 //	NewDNSReadyCondition(conditions []metav1.Condition, generation int64)
 //
 //	// CloudflareAccessPolicy
-//	NewTargetsResolvedCondition(resolved bool, reason, message string, generation int64)
-//	NewApplicationCreatedCondition(created bool, reason, message string, generation int64)
-//	NewPoliciesAttachedCondition(attached bool, reason, message string, generation int64)
 //	NewServiceTokensReadyCondition(ready bool, reason, message string, generation int64)
+//	NewPolicySyncedCondition(synced bool, reason, message string, generation int64)
 //	NewAccessPolicyReadyCondition(conditions []metav1.Condition, hasServiceTokens bool, generation int64)
+//
+//	// CloudflareAccessApplication
+//	NewTargetsResolvedCondition(resolved bool, reason, message string, generation int64)
+//	NewReferenceGrantValidCondition(valid bool, reason, message string, generation int64)
+//	NewPoliciesResolvedCondition(resolved bool, reason, message string, generation int64)
+//	NewApplicationSyncedCondition(synced bool, reason, message string, generation int64)
+//	NewPoliciesLinkedCondition(linked bool, reason, message string, generation int64)
+//	NewAccessApplicationReadyCondition(conditions []metav1.Condition, generation int64)
 //
 // # Logging
 //

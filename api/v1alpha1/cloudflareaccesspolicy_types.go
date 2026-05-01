@@ -5,15 +5,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// PolicyTargetReference identifies a Gateway API resource for Access policy attachment.
+// PolicyTargetReference identifies a Gateway API resource for Access application attachment.
 //
 // PolicyTargetReference follows the Gateway API LocalPolicyTargetReferenceWithSectionName
-// pattern for policy attachment. It targets Gateway API Gateway and HTTPRoute resources
-// and extracts hostnames from those resources to create corresponding Cloudflare Access
+// pattern. It targets Gateway API Gateway and HTTPRoute resources and extracts
+// hostnames and paths from those resources to create corresponding Cloudflare Access
 // applications.
 //
 // Cross-namespace references require a ReferenceGrant in the target namespace that permits
-// CloudflareAccessPolicy resources from the policy's namespace.
+// CloudflareAccessApplication resources from the application's namespace.
 //
 // +kubebuilder:validation:XValidation:rule="self.group == 'gateway.networking.k8s.io'",message="group must be gateway.networking.k8s.io"
 // +kubebuilder:validation:XValidation:rule="self.kind in ['Gateway', 'HTTPRoute']",message="kind must be Gateway or HTTPRoute"
@@ -44,8 +44,9 @@ type PolicyTargetReference struct {
 // CloudflareSecretRef references Cloudflare credentials for Access API operations.
 //
 // CloudflareSecretRef identifies the Secret containing Cloudflare API credentials.
-// When omitted, the controller attempts to inherit credentials from the associated
-// CloudflareTunnel (via the target Gateway's tunnel binding).
+// CloudflareAccessPolicy requires this reference explicitly. CloudflareAccessApplication
+// may omit it and inherit credentials from the associated CloudflareTunnel via the
+// target Gateway's tunnel binding.
 type CloudflareSecretRef struct {
 	// Name of the secret containing credentials.
 	// +kubebuilder:validation:MinLength=1
@@ -139,15 +140,17 @@ type AccessApplication struct {
 	Domain string `json:"domain,omitempty"`
 
 	// Path restricts protection to specific path prefix.
+	// Cloudflare Access paths must not include ports, query strings, or fragments.
 	// +optional
 	// +kubebuilder:default="/"
 	// +kubebuilder:validation:MaxLength=1024
+	// +kubebuilder:validation:Pattern=`^/[^?#]*$`
 	Path string `json:"path,omitempty"`
 
 	// SessionDuration controls session cookie lifetime.
 	// +optional
 	// +kubebuilder:default="24h"
-	// +kubebuilder:validation:Pattern=`^[0-9]+(h|m|s)$`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(ns|us|ms|s|m|h))+$`
 	SessionDuration string `json:"sessionDuration,omitempty"`
 
 	// Type is the application type.
@@ -250,73 +253,6 @@ type AccessApplication struct {
 	ReadServiceTokensFromHeader string `json:"readServiceTokensFromHeader,omitempty"`
 }
 
-// AccessPolicyRule defines an access allow, deny, bypass, or non_identity rule.
-//
-// AccessPolicyRule specifies who can access the protected application. Rules are evaluated
-// in precedence order (lower precedence = higher priority). Each rule contains Include
-// (ANY must match), Exclude (if ANY match, rule does not apply), and Require (ALL must match)
-// conditions.
-//
-// +kubebuilder:validation:XValidation:rule="self.decision in ['bypass', 'non_identity'] || size(self.include) > 0",message="include rules are required for allow and deny decisions"
-type AccessPolicyRule struct {
-	// Name is a human-readable identifier.
-	// +kubebuilder:validation:MinLength=1
-	// +kubebuilder:validation:MaxLength=255
-	Name string `json:"name"`
-
-	// Decision is the policy action.
-	// +kubebuilder:validation:Enum=allow;deny;bypass;non_identity
-	// +kubebuilder:default=allow
-	Decision string `json:"decision"`
-
-	// Precedence determines rule evaluation order (lower = first).
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=9999
-	// +optional
-	Precedence *int `json:"precedence,omitempty"`
-
-	// Include rules (ANY must match for rule to apply).
-	// +optional
-	// +kubebuilder:validation:MaxItems=25
-	Include []AccessRule `json:"include,omitempty"`
-
-	// Exclude rules (if ANY match, rule does not apply).
-	// +optional
-	// +kubebuilder:validation:MaxItems=25
-	Exclude []AccessRule `json:"exclude,omitempty"`
-
-	// Require rules (ALL must match for rule to apply).
-	// +optional
-	// +kubebuilder:validation:MaxItems=25
-	Require []AccessRule `json:"require,omitempty"`
-
-	// SessionDuration overrides application session duration for this rule.
-	// +optional
-	// +kubebuilder:validation:MaxLength=10
-	// +kubebuilder:validation:Pattern=`^[0-9]+(h|m|s)$`
-	SessionDuration string `json:"sessionDuration,omitempty"`
-
-	// PurposeJustificationRequired requires user to provide justification.
-	// +optional
-	// +kubebuilder:default=false
-	PurposeJustificationRequired bool `json:"purposeJustificationRequired,omitempty"`
-
-	// PurposeJustificationPrompt is the prompt shown to user.
-	// +optional
-	// +kubebuilder:validation:MaxLength=1024
-	PurposeJustificationPrompt string `json:"purposeJustificationPrompt,omitempty"`
-
-	// ApprovalRequired requires approval from specific users.
-	// +optional
-	// +kubebuilder:default=false
-	ApprovalRequired bool `json:"approvalRequired,omitempty"`
-
-	// ApprovalGroups defines who can approve access.
-	// +optional
-	// +kubebuilder:validation:MaxItems=10
-	ApprovalGroups []ApprovalGroup `json:"approvalGroups,omitempty"`
-}
-
 // AccessRule defines identity matching criteria for Access policies.
 //
 // AccessRule specifies conditions that identify users or services. Rules are organized
@@ -330,7 +266,7 @@ type AccessPolicyRule struct {
 // EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
 // EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
 //
-// +kubebuilder:validation:XValidation:rule="[has(self.ip), has(self.ipList), has(self.country), has(self.everyone), has(self.serviceToken), has(self.anyValidServiceToken), has(self.email), has(self.emailList), has(self.emailDomain), has(self.oidcClaim), has(self.gsuiteGroup)].exists(x, x)",message="at least one rule type must be specified"
+// +kubebuilder:validation:XValidation:rule="[has(self.ip), has(self.ipList), has(self.country), has(self.everyone), has(self.serviceToken), has(self.anyValidServiceToken), has(self.email), has(self.emailList), has(self.emailDomain), has(self.oidcClaim), has(self.gsuiteGroup), has(self.group)].exists(x, x)",message="at least one rule type must be specified"
 type AccessRule struct {
 	// ============================================================
 	// P0: No IdP Required
@@ -399,13 +335,17 @@ type AccessRule struct {
 	// +optional
 	GSuiteGroup *AccessGSuiteGroupRule `json:"gsuiteGroup,omitempty"`
 
+	// Group matches a Cloudflare Access Group by ID.
+	// SDK: GroupRule
+	// +optional
+	Group *AccessGroupRule `json:"group,omitempty"`
+
 	// ============================================================
 	// P3: Not in current product scope.
 	// ============================================================
 	// The following rule types are not part of the current CRD surface:
 	// - Certificate (CertificateRule) - client certificate matching
 	// - CommonName (AccessCommonNameRule) - certificate common-name matching
-	// - Group (GroupRule) - Access Groups
 	// - GitHub (GitHubOrganizationRule) - GitHub org/team
 	// - Azure (AzureGroupRule) - Azure AD groups
 	// - Okta (OktaGroupRule) - Okta groups
@@ -458,16 +398,24 @@ type AccessCountryRule struct {
 	Codes []string `json:"codes"`
 }
 
-// AccessServiceTokenRule matches a specific service token by ID (P0 - no IdP required).
+// AccessServiceTokenRule matches a specific service token by ID or by serviceTokens name.
 //
 // AccessServiceTokenRule enables machine-to-machine authentication using a specific
 // Cloudflare service token. The TokenID is the Cloudflare-assigned identifier for
 // the service token. Maps to cloudflare-go ServiceTokenRule.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.tokenId) || has(self.name)",message="either tokenId or name must be specified"
 type AccessServiceTokenRule struct {
 	// TokenID is the Cloudflare service token ID.
-	// +kubebuilder:validation:MinLength=1
+	// +optional
 	// +kubebuilder:validation:MaxLength=36
-	TokenID string `json:"tokenId"`
+	TokenID string `json:"tokenId,omitempty"`
+
+	// Name references an entry in spec.serviceTokens. The controller replaces it
+	// with the created Cloudflare service token ID during policy sync.
+	// +optional
+	// +kubebuilder:validation:MaxLength=255
+	Name string `json:"name,omitempty"`
 }
 
 // AccessEmailRule matches specific email addresses (P1 - basic IdP required).
@@ -551,6 +499,14 @@ type AccessGSuiteGroupRule struct {
 	Email string `json:"email"`
 }
 
+// AccessGroupRule matches a Cloudflare Access Group by ID.
+type AccessGroupRule struct {
+	// ID is the Cloudflare Access Group ID.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=36
+	ID string `json:"id"`
+}
+
 // AccessGroupRef references a Cloudflare Access Group.
 //
 // AccessGroupRef enables referencing reusable identity rules defined as Access Groups
@@ -572,21 +528,20 @@ type AccessGroupRef struct {
 
 // ApprovalGroup defines who can approve access requests for approval-required policies.
 //
-// ApprovalGroup specifies approvers by email address or email domain. When a policy
-// requires approval, users matching this group can approve or deny access requests.
+// ApprovalGroup specifies approvers by email address or email list UUID. When a
+// policy requires approval, users matching this group can approve or deny access requests.
 //
-// +kubebuilder:validation:XValidation:rule="size(self.emails) > 0 || has(self.emailDomain)",message="at least one approver (emails or emailDomain) must be specified"
+// +kubebuilder:validation:XValidation:rule="size(self.emails) > 0 || has(self.emailListUuid)",message="at least one approver (emails or emailListUuid) must be specified"
 type ApprovalGroup struct {
 	// Emails of approvers.
 	// +optional
 	// +kubebuilder:validation:MaxItems=50
 	Emails []string `json:"emails,omitempty"`
 
-	// EmailDomain allows any user from domain to approve.
-	// Max 253: RFC 1035 section 2.3.4 FQDN presentation-format limit.
+	// EmailListUUID is a Cloudflare Access email list UUID whose members can approve.
 	// +optional
-	// +kubebuilder:validation:MaxLength=253
-	EmailDomain string `json:"emailDomain,omitempty"`
+	// +kubebuilder:validation:MaxLength=36
+	EmailListUUID string `json:"emailListUuid,omitempty"`
 
 	// ApprovalsNeeded is number of approvals required.
 	// +kubebuilder:validation:Minimum=1
@@ -627,40 +582,66 @@ type ServiceTokenSecretRef struct {
 	Name string `json:"name"`
 }
 
-// CloudflareAccessPolicySpec defines the desired state of a CloudflareAccessPolicy resource.
+// CloudflareAccessPolicySpec defines a reusable Cloudflare Access policy.
 //
-// CloudflareAccessPolicySpec configures Cloudflare Access protection for Gateway API resources.
-// It specifies which resources to protect (via targetRef/targetRefs), the Access Application
-// settings, and the access policies that control who can access the protected hostnames.
+// CloudflareAccessPolicySpec manages account-level reusable Access policies. Applications
+// attach these policies through CloudflareAccessApplication policyRefs.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.targetRef) || has(self.targetRefs)",message="either targetRef or targetRefs must be specified"
-// +kubebuilder:validation:XValidation:rule="!(has(self.targetRef) && has(self.targetRefs))",message="targetRef and targetRefs are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="size(self.include) > 0",message="include rules are required"
 type CloudflareAccessPolicySpec struct {
-	// TargetRef identifies a single target for policy attachment.
-	// +optional
-	TargetRef *PolicyTargetReference `json:"targetRef,omitempty"`
+	// CloudflareRef references Cloudflare credentials.
+	CloudflareRef CloudflareSecretRef `json:"cloudflareRef"`
 
-	// TargetRefs identifies multiple targets for policy attachment.
-	// +optional
-	// +kubebuilder:validation:MaxItems=16
-	TargetRefs []PolicyTargetReference `json:"targetRefs,omitempty"`
+	// Name is the Cloudflare Access policy display name.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	Name string `json:"name"`
 
-	// CloudflareRef references Cloudflare credentials (inherits from tunnel if omitted).
-	// +optional
-	CloudflareRef *CloudflareSecretRef `json:"cloudflareRef,omitempty"`
+	// Decision is the policy action.
+	// +kubebuilder:validation:Enum=allow;deny;bypass;non_identity
+	// +kubebuilder:default=allow
+	Decision string `json:"decision"`
 
-	// Application defines the Access Application settings.
-	Application AccessApplication `json:"application"`
+	// Include rules (ANY must match for policy to apply).
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=25
+	Include []AccessRule `json:"include"`
 
-	// Policies define access rules (evaluated in order).
+	// Exclude rules (if ANY match, policy does not apply).
 	// +optional
-	// +kubebuilder:validation:MaxItems=50
-	Policies []AccessPolicyRule `json:"policies,omitempty"`
+	// +kubebuilder:validation:MaxItems=25
+	Exclude []AccessRule `json:"exclude,omitempty"`
 
-	// GroupRefs reference reusable identity rules.
+	// Require rules (ALL must match for policy to apply).
 	// +optional
-	// +kubebuilder:validation:MaxItems=50
-	GroupRefs []AccessGroupRef `json:"groupRefs,omitempty"`
+	// +kubebuilder:validation:MaxItems=25
+	Require []AccessRule `json:"require,omitempty"`
+
+	// SessionDuration overrides application session duration for this policy.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	// +kubebuilder:validation:Pattern=`^([0-9]+(ns|us|ms|s|m|h))+$`
+	SessionDuration string `json:"sessionDuration,omitempty"`
+
+	// PurposeJustificationRequired requires user to provide justification.
+	// +optional
+	// +kubebuilder:default=false
+	PurposeJustificationRequired bool `json:"purposeJustificationRequired,omitempty"`
+
+	// PurposeJustificationPrompt is the prompt shown to user.
+	// +optional
+	// +kubebuilder:validation:MaxLength=1024
+	PurposeJustificationPrompt string `json:"purposeJustificationPrompt,omitempty"`
+
+	// ApprovalRequired requires approval from specific users.
+	// +optional
+	// +kubebuilder:default=false
+	ApprovalRequired bool `json:"approvalRequired,omitempty"`
+
+	// ApprovalGroups defines who can approve access.
+	// +optional
+	// +kubebuilder:validation:MaxItems=10
+	ApprovalGroups []ApprovalGroup `json:"approvalGroups,omitempty"`
 
 	// ServiceTokens for machine-to-machine authentication.
 	// +optional
@@ -685,18 +666,18 @@ type PolicyAncestorStatus struct {
 }
 
 // CloudflareAccessPolicyStatus defines the observed state of a CloudflareAccessPolicy resource.
-//
-// CloudflareAccessPolicyStatus captures the Cloudflare-assigned identifiers for the
-// Access Application and policies, service token mappings, and per-target attachment status.
 type CloudflareAccessPolicyStatus struct {
-	// ApplicationID is the Cloudflare Access Application ID.
-	ApplicationID string `json:"applicationId,omitempty"`
+	// PolicyID is the Cloudflare Access reusable policy ID.
+	PolicyID string `json:"policyId,omitempty"`
 
-	// ApplicationAUD is the Application Audience Tag.
-	ApplicationAUD string `json:"applicationAud,omitempty"`
+	// AccountID is the Cloudflare account ID used for this policy.
+	AccountID string `json:"accountId,omitempty"`
 
-	// AttachedTargets is the count of successfully attached targets.
-	AttachedTargets int32 `json:"attachedTargets,omitempty"`
+	// Reusable reports whether Cloudflare returned this policy as reusable.
+	Reusable bool `json:"reusable,omitempty"`
+
+	// AppCount is the number of Access Applications currently using this policy.
+	AppCount int64 `json:"appCount,omitempty"`
 
 	// ServiceTokenIDs maps token names to Cloudflare IDs.
 	ServiceTokenIDs map[string]string `json:"serviceTokenIds,omitempty"`
@@ -711,16 +692,12 @@ type CloudflareAccessPolicyStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Ancestors contains status for each targetRef (Gateway API PolicyStatus).
-	// +optional
-	Ancestors []PolicyAncestorStatus `json:"ancestors,omitempty"`
 }
 
 // CloudflareAccessPolicy is the Schema for the cloudflareaccesspolicies API.
 //
-// CloudflareAccessPolicy manages Cloudflare Access Applications and Policies for zero-trust
-// access control. It attaches to Gateway API Gateway and HTTPRoute resources using the
-// targetRefs pattern and creates corresponding Access Applications in Cloudflare.
+// CloudflareAccessPolicy manages a reusable account-level Cloudflare Access Policy.
+// CloudflareAccessApplication attaches reusable policies to Gateway API targets.
 //
 // Access rules are organized into implementation tiers based on IdP requirements:
 //   - P0: IP, IPList, Country, Everyone, ServiceToken, AnyValidServiceToken (no IdP)
@@ -729,20 +706,17 @@ type CloudflareAccessPolicyStatus struct {
 //   - P3: not in current product scope (Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.)
 //
 // Status conditions:
-//   - Ready: policy is fully applied to all targets
+//   - Ready: policy is synced and service tokens are ready when configured
 //   - CredentialsValid: Cloudflare credentials have been validated
-//   - TargetsResolved: all targetRefs have been found and validated
-//   - ReferenceGrantValid: cross-namespace references are authorized
-//   - ApplicationCreated: Access Application exists in Cloudflare
-//   - PoliciesAttached: Access policies are attached to the application
 //   - ServiceTokensReady: all service tokens have been created
+//   - PolicySynced: reusable Access policy exists in Cloudflare
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=cfap;cfaccess
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
-// +kubebuilder:printcolumn:name="Application",type="string",JSONPath=".status.applicationId"
-// +kubebuilder:printcolumn:name="Targets",type="integer",JSONPath=".status.attachedTargets"
+// +kubebuilder:printcolumn:name="Policy",type="string",JSONPath=".status.policyId"
+// +kubebuilder:printcolumn:name="Apps",type="integer",JSONPath=".status.appCount"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 type CloudflareAccessPolicy struct {
 	metav1.TypeMeta   `json:",inline"`

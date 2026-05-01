@@ -50,6 +50,15 @@ type AccessApplication struct {
 	// Domain is the protected domain.
 	Domain string
 
+	// Destinations are public destination URIs secured by Access.
+	Destinations []string
+
+	// Tags are Cloudflare Access application tags.
+	Tags []string
+
+	// Policies are reusable policy links attached to the application.
+	Policies []ApplicationPolicyLink
+
 	// Type is the application type (self_hosted, saas, ssh, vnc, etc.).
 	Type string
 
@@ -131,6 +140,15 @@ type ApplicationParams struct {
 	// Domain is the protected domain.
 	Domain string
 
+	// Destinations are public destination URIs secured by Access.
+	Destinations []string
+
+	// Tags are Cloudflare Access application tags.
+	Tags []string
+
+	// Policies are reusable policy links attached to the application.
+	Policies []ApplicationPolicyLink
+
 	// Type is the application type. Defaults to self_hosted.
 	Type string
 
@@ -200,6 +218,12 @@ type AccessPolicy struct {
 	// Precedence is the evaluation order (lower = first).
 	Precedence int
 
+	// Reusable reports whether the policy is reusable at account level.
+	Reusable bool
+
+	// AppCount is the number of Access applications using the reusable policy.
+	AppCount int64
+
 	// Include are rules that must match (ANY).
 	Include []AccessRuleParam
 
@@ -265,6 +289,15 @@ type PolicyParams struct {
 
 	// ApprovalGroups is the approval configuration.
 	ApprovalGroups []ApprovalGroupParam
+}
+
+// ApplicationPolicyLink links a reusable policy to an application.
+type ApplicationPolicyLink struct {
+	// ID is the reusable policy ID.
+	ID string
+
+	// Precedence is the execution order within the application.
+	Precedence int
 }
 
 // AccessRuleParam represents an access rule parameter.
@@ -486,6 +519,58 @@ func (s *AccessService) EnsureApplication(ctx context.Context, accountID string,
 	return app, true, nil
 }
 
+// EnsureApplicationByIDOrTags ensures an application exists without adopting by name.
+// It first uses statusID, then adopts only an application with the same domain and
+// all desired tags. This keeps cfgate ownership unambiguous.
+func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, accountID, statusID string, params ApplicationParams) (*AccessApplication, error) {
+	var existing *AccessApplication
+	var err error
+	if statusID != "" {
+		existing, err = s.client.GetAccessApplication(ctx, accountID, statusID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get application by status ID: %w", err)
+		}
+	}
+	if existing == nil {
+		apps, err := s.client.ListAccessApplications(ctx, accountID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list applications for adoption: %w", err)
+		}
+		for i := range apps {
+			if apps[i].Domain == params.Domain && stringSliceContainsAll(apps[i].Tags, params.Tags) {
+				if existing != nil {
+					return nil, fmt.Errorf("multiple cfgate-tagged applications found for domain %q", params.Domain)
+				}
+				existing = &apps[i]
+			}
+		}
+	}
+	if existing != nil {
+		if accessApplicationNeedsUpdate(existing, &params) {
+			updated, err := s.client.UpdateAccessApplication(ctx, accountID, existing.ID, params)
+			if err != nil {
+				return nil, fmt.Errorf("failed to update application: %w", err)
+			}
+			return updated, nil
+		}
+		return existing, nil
+	}
+	created, err := s.client.CreateAccessApplication(ctx, accountID, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create application: %w", err)
+	}
+	return created, nil
+}
+
+func stringSliceContainsAll(haystack, needles []string) bool {
+	for _, needle := range needles {
+		if !slices.Contains(haystack, needle) {
+			return false
+		}
+	}
+	return true
+}
+
 // accessApplicationNeedsUpdate compares an existing application against desired params.
 // Returns true if any managed field has drifted and an update is needed.
 //
@@ -496,6 +581,19 @@ func accessApplicationNeedsUpdate(existing *AccessApplication, desired *Applicat
 		return true
 	}
 	if existing.Domain != desired.Domain {
+		return true
+	}
+	desiredDestinations := desired.Destinations
+	if len(desiredDestinations) == 0 && desired.Domain != "" {
+		desiredDestinations = []string{desired.Domain}
+	}
+	if len(existing.Destinations) > 0 && !stringSlicesEqual(existing.Destinations, desiredDestinations) {
+		return true
+	}
+	if len(existing.Tags) > 0 && !stringSlicesEqual(existing.Tags, desired.Tags) {
+		return true
+	}
+	if len(existing.Policies) > 0 && !policyLinksEqual(existing.Policies, desired.Policies) {
 		return true
 	}
 	desiredType := desired.Type
@@ -571,99 +669,68 @@ func accessApplicationNeedsUpdate(existing *AccessApplication, desired *Applicat
 	return false
 }
 
-// SyncPolicies synchronizes access policies for an application.
-// It deletes policies not in the desired set, updates existing policies if different,
-// and creates new policies for additions.
-// Returns the policy IDs after sync.
-func (s *AccessService) SyncPolicies(ctx context.Context, accountID, appID string, desired []PolicyParams) ([]string, error) {
-	// List existing policies
-	existing, err := s.client.ListAccessPolicies(ctx, accountID, appID)
+func policyLinksEqual(a, b []ApplicationPolicyLink) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// EnsureReusablePolicy ensures an account-level reusable Access policy exists.
+// If statusID is present it is preferred. Otherwise an existing reusable policy is
+// adopted only when exactly one policy has the desired name.
+func (s *AccessService) EnsureReusablePolicy(ctx context.Context, accountID, statusID string, desired PolicyParams) (*AccessPolicy, error) {
+	if statusID != "" {
+		existing, err := s.client.GetAccessPolicy(ctx, accountID, statusID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get reusable policy %s: %w", statusID, err)
+		}
+		if existing != nil {
+			if accessPolicyEqual(existing, &desired) {
+				return existing, nil
+			}
+			return s.client.UpdateAccessPolicy(ctx, accountID, existing.ID, desired)
+		}
+	}
+
+	existing, err := s.findReusablePolicyByExactName(ctx, accountID, desired.Name)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list existing policies: %w", err)
+		return nil, err
+	}
+	if existing != nil {
+		if accessPolicyEqual(existing, &desired) {
+			return existing, nil
+		}
+		return s.client.UpdateAccessPolicy(ctx, accountID, existing.ID, desired)
 	}
 
-	s.log.Info("syncing access policies",
-		"applicationId", appID,
-		"desiredCount", len(desired),
-		"existingCount", len(existing),
-	)
+	return s.client.CreateAccessPolicy(ctx, accountID, desired)
+}
 
-	// Build maps for comparison
-	existingByName := make(map[string]*AccessPolicy)
-	for i := range existing {
-		existingByName[existing[i].Name] = &existing[i]
+func (s *AccessService) findReusablePolicyByExactName(ctx context.Context, accountID, name string) (*AccessPolicy, error) {
+	policies, err := s.client.ListAccessPolicies(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list reusable policies: %w", err)
 	}
-
-	desiredByName := make(map[string]PolicyParams)
-	for _, p := range desired {
-		desiredByName[p.Name] = p
-	}
-
-	var resultIDs []string
-	var toCreate, toUpdate, toDelete int
-
-	// Delete policies not in desired set
-	for name, policy := range existingByName {
-		if _, found := desiredByName[name]; !found {
-			toDelete++
-			s.log.V(1).Info("policy operation",
-				"applicationId", appID,
-				"policyName", name,
-				"operation", "delete",
-			)
-			if err := s.client.DeleteAccessPolicy(ctx, accountID, appID, policy.ID); err != nil {
-				return nil, fmt.Errorf("failed to delete policy %s: %w", name, err)
-			}
+	var matches []AccessPolicy
+	for _, policy := range policies {
+		if policy.Name == name {
+			matches = append(matches, policy)
 		}
 	}
-
-	// Create or update policies
-	for name, params := range desiredByName {
-		if existingPolicy, found := existingByName[name]; found {
-			// Update if different
-			if !accessPolicyEqual(existingPolicy, &params) {
-				toUpdate++
-				s.log.V(1).Info("policy operation",
-					"applicationId", appID,
-					"policyName", name,
-					"operation", "update",
-				)
-				updated, err := s.client.UpdateAccessPolicy(ctx, accountID, appID, existingPolicy.ID, params)
-				if err != nil {
-					return nil, fmt.Errorf("failed to update policy %s: %w", name, err)
-				}
-				resultIDs = append(resultIDs, updated.ID)
-			} else {
-				s.log.V(1).Info("skipping policy update, content unchanged",
-					"applicationId", appID,
-					"policyName", name,
-				)
-				resultIDs = append(resultIDs, existingPolicy.ID)
-			}
-		} else {
-			// Create new policy
-			toCreate++
-			s.log.V(1).Info("policy operation",
-				"applicationId", appID,
-				"policyName", name,
-				"operation", "create",
-			)
-			created, err := s.client.CreateAccessPolicy(ctx, accountID, appID, params)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create policy %s: %w", name, err)
-			}
-			resultIDs = append(resultIDs, created.ID)
-		}
+	switch len(matches) {
+	case 0:
+		return nil, nil
+	case 1:
+		return &matches[0], nil
+	default:
+		return nil, fmt.Errorf("found %d reusable policies named %q; refusing ambiguous adoption", len(matches), name)
 	}
-
-	s.log.Info("access policies synced",
-		"applicationId", appID,
-		"toCreate", toCreate,
-		"toUpdate", toUpdate,
-		"toDelete", toDelete,
-	)
-
-	return resultIDs, nil
 }
 
 // accessPolicyEqual compares desired vs existing access policy content.

@@ -216,6 +216,7 @@ func TestRegisterControllers(t *testing.T) {
 	origGatewayClass := setupGatewayClassController
 	origHTTPRoute := setupHTTPRouteController
 	origAccess := setupAccessPolicyController
+	origAccessApp := setupAccessApplicationController
 	t.Cleanup(func() {
 		setupTunnelController = origTunnel
 		setupDNSController = origDNS
@@ -223,6 +224,7 @@ func TestRegisterControllers(t *testing.T) {
 		setupGatewayClassController = origGatewayClass
 		setupHTTPRouteController = origHTTPRoute
 		setupAccessPolicyController = origAccess
+		setupAccessApplicationController = origAccessApp
 	})
 
 	t.Run("success", func(t *testing.T) {
@@ -251,12 +253,16 @@ func TestRegisterControllers(t *testing.T) {
 			calls = append(calls, "access")
 			return nil
 		}
+		setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+			calls = append(calls, "accessapp")
+			return nil
+		}
 
 		if err := registerControllers(nil, &features.FeatureGates{}); err != nil {
 			t.Fatalf("registerControllers() error = %v", err)
 		}
 
-		want := "tunnel,dns,gateway,gatewayclass,httproute,access"
+		want := "tunnel,dns,gateway,gatewayclass,httproute,access,accessapp"
 		if got := strings.Join(calls, ","); got != want {
 			t.Fatalf("calls = %q, want %q", got, want)
 		}

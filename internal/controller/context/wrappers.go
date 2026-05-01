@@ -327,11 +327,12 @@ func (dc *DNSContext) DNSClient() *cloudflare.DNSService {
 // AccessPolicyContext
 // -----------------------------------------------------------------------------
 
-// AccessPolicyContext wraps CloudflareAccessPolicy with resolved targets and
-// helper methods for reconciliation.
+// AccessPolicyContext wraps Access policy/application resources with resolved
+// targets and helper methods for reconciliation. Reusable policies no longer
+// carry targets; target resolution is populated for CloudflareAccessApplication.
 type AccessPolicyContext struct {
-	// Embedded policy resource
 	*cfgatev1alpha1.CloudflareAccessPolicy
+	*cfgatev1alpha1.CloudflareAccessApplication
 
 	// Computed fields (populated by NewAccessPolicyContext)
 	resolvedTargets []TargetInfo
@@ -350,8 +351,23 @@ func NewAccessPolicyContext(
 	log := ctrl.Log.WithName("context").WithName("accesspolicy").
 		WithValues("policy", policy.Namespace+"/"+policy.Name)
 
-	// Resolve targets
-	targets := resolveTargets(ctx, policy, k8sClient, log)
+	return &AccessPolicyContext{
+		CloudflareAccessPolicy: policy,
+		log:                    log,
+	}
+}
+
+// NewAccessApplicationContext creates an AccessPolicyContext with resolved
+// CloudflareAccessApplication targets.
+func NewAccessApplicationContext(
+	ctx context.Context,
+	app *cfgatev1alpha1.CloudflareAccessApplication,
+	k8sClient client.Client,
+) *AccessPolicyContext {
+	log := ctrl.Log.WithName("context").WithName("accessapplication").
+		WithValues("application", app.Namespace+"/"+app.Name)
+
+	targets := resolveTargets(ctx, app, k8sClient, log)
 	log.V(1).Info("resolved targets",
 		"total", len(targets),
 		"resolved", countResolved(targets),
@@ -359,20 +375,23 @@ func NewAccessPolicyContext(
 	)
 
 	return &AccessPolicyContext{
-		CloudflareAccessPolicy: policy,
-		resolvedTargets:        targets,
-		log:                    log,
+		CloudflareAccessApplication: app,
+		resolvedTargets:             targets,
+		log:                         log,
 	}
 }
 
 // GetTargetRefs returns all target references (merged from targetRef and targetRefs).
 func (apc *AccessPolicyContext) GetTargetRefs() []cfgatev1alpha1.PolicyTargetReference {
+	if apc.CloudflareAccessApplication == nil {
+		return nil
+	}
 	var refs []cfgatev1alpha1.PolicyTargetReference
 
-	if apc.Spec.TargetRef != nil {
-		refs = append(refs, *apc.Spec.TargetRef)
+	if apc.CloudflareAccessApplication.Spec.TargetRef != nil {
+		refs = append(refs, *apc.CloudflareAccessApplication.Spec.TargetRef)
 	}
-	refs = append(refs, apc.Spec.TargetRefs...)
+	refs = append(refs, apc.CloudflareAccessApplication.Spec.TargetRefs...)
 
 	return refs
 }
@@ -429,13 +448,16 @@ func (apc *AccessPolicyContext) AllTargetsResolved() bool {
 
 // RequiresServiceTokens returns true if service tokens are configured.
 func (apc *AccessPolicyContext) RequiresServiceTokens() bool {
-	return len(apc.Spec.ServiceTokens) > 0
+	if apc.CloudflareAccessPolicy == nil {
+		return false
+	}
+	return len(apc.CloudflareAccessPolicy.Spec.ServiceTokens) > 0
 }
 
 // HasCrossNamespaceTargets returns true if any targets are in different namespace.
 func (apc *AccessPolicyContext) HasCrossNamespaceTargets() bool {
 	for _, t := range apc.resolvedTargets {
-		if t.Namespace != apc.Namespace {
+		if t.Namespace != apc.namespace() {
 			return true
 		}
 	}
@@ -470,6 +492,16 @@ func (apc *AccessPolicyContext) ExtractHostnames(
 	}
 	sort.Strings(hostnames)
 	return hostnames, nil
+}
+
+func (apc *AccessPolicyContext) namespace() string {
+	if apc.CloudflareAccessApplication != nil {
+		return apc.CloudflareAccessApplication.Namespace
+	}
+	if apc.CloudflareAccessPolicy != nil {
+		return apc.CloudflareAccessPolicy.Namespace
+	}
+	return ""
 }
 
 // -----------------------------------------------------------------------------
@@ -600,6 +632,27 @@ func BuildAccessPolicyContext(
 	return NewAccessPolicyContext(ctx, &policy, k8sClient), nil
 }
 
+// BuildAccessApplicationContext creates an AccessPolicyContext for a
+// CloudflareAccessApplication with resolved targets.
+func BuildAccessApplicationContext(
+	ctx context.Context,
+	k8sClient client.Client,
+	ref types.NamespacedName,
+) (*AccessPolicyContext, error) {
+	log := ctrl.Log.WithName("context").WithValues("application", ref)
+
+	var app cfgatev1alpha1.CloudflareAccessApplication
+	if err := k8sClient.Get(ctx, ref, &app); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.V(1).Info("application not found")
+			return nil, nil
+		}
+		return nil, fmt.Errorf("fetching application: %w", err)
+	}
+
+	return NewAccessApplicationContext(ctx, &app, k8sClient), nil
+}
+
 // -----------------------------------------------------------------------------
 // Helper Functions
 // -----------------------------------------------------------------------------
@@ -607,21 +660,21 @@ func BuildAccessPolicyContext(
 // resolveTargets resolves all targetRefs to TargetInfo.
 func resolveTargets(
 	ctx context.Context,
-	policy *cfgatev1alpha1.CloudflareAccessPolicy,
+	app *cfgatev1alpha1.CloudflareAccessApplication,
 	k8sClient client.Client,
 	log logr.Logger,
 ) []TargetInfo {
 	var targets []TargetInfo
 
 	// Handle single targetRef
-	if policy.Spec.TargetRef != nil {
-		target := resolveTarget(ctx, policy.Spec.TargetRef, policy.Namespace, k8sClient, log)
+	if app.Spec.TargetRef != nil {
+		target := resolveTarget(ctx, app.Spec.TargetRef, app.Namespace, k8sClient, log)
 		targets = append(targets, target)
 	}
 
 	// Handle multiple targetRefs
-	for i := range policy.Spec.TargetRefs {
-		target := resolveTarget(ctx, &policy.Spec.TargetRefs[i], policy.Namespace, k8sClient, log)
+	for i := range app.Spec.TargetRefs {
+		target := resolveTarget(ctx, &app.Spec.TargetRefs[i], app.Namespace, k8sClient, log)
 		targets = append(targets, target)
 	}
 
@@ -728,7 +781,7 @@ func checkReferenceGrant(
 			if from.Group != "cfgate.io" {
 				continue
 			}
-			if from.Kind != "CloudflareAccessPolicy" {
+			if from.Kind != "CloudflareAccessApplication" {
 				continue
 			}
 			// Namespace is a required string type in ReferenceGrantFrom

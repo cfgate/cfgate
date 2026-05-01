@@ -67,6 +67,9 @@ const (
 	AnnotationCloudflareProxied = AnnotationPrefix + "cloudflare-proxied"
 
 	// AnnotationAccessPolicy references a CloudflareAccessPolicy.
+	// Deprecated: create CloudflareAccessApplication resources instead. The
+	// HTTPRoute controller only validates and warns for this annotation; it does
+	// not create or link Cloudflare Access resources.
 	// Values: "name" (same namespace) or "namespace/name"
 	// Read from: Routes
 	AnnotationAccessPolicy = AnnotationPrefix + "access-policy"

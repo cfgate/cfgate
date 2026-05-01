@@ -308,15 +308,12 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 
 			var ap cfgatev1alpha1.CloudflareAccessPolicy
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policy.Name, Namespace: policy.Namespace}, &ap)).To(Succeed())
+			app := waitForAccessApplicationReady(ctx, k8sClient, policy.Name, policy.Namespace, DefaultTimeout)
 
-			By("INV-A1: Core sub-conditions must be True when Ready=True")
-			// Condition names from status/conditions.go + inline strings in access controller.
-			// NOTE: ReferenceGrantValid is NOT in Ready formula.
+			By("INV-A1: Policy sub-conditions must be True when Ready=True")
 			for _, condType := range []string{
 				"CredentialsValid",
-				"TargetsResolved",
-				"ApplicationCreated",
-				"PoliciesAttached",
+				"PolicySynced",
 			} {
 				cond := findCondition(ap.Status.Conditions, condType)
 				Expect(cond).NotTo(BeNil(), "Condition %s must exist", condType)
@@ -325,12 +322,28 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 					condType, cond.Status, cond.Reason)
 			}
 
-			By("INV-A3: ApplicationID must be populated")
-			Expect(ap.Status.ApplicationID).NotTo(BeEmpty(),
-				"ApplicationID must be populated when Ready=True")
+			By("INV-A2: Application sub-conditions must be True when Ready=True")
+			for _, condType := range []string{
+				"CredentialsValid",
+				"TargetsResolved",
+				"ReferenceGrantValid",
+				"PoliciesResolved",
+				"ApplicationSynced",
+				"PoliciesLinked",
+			} {
+				cond := findCondition(app.Status.Conditions, condType)
+				Expect(cond).NotTo(BeNil(), "Condition %s must exist", condType)
+				Expect(cond.Status).To(Equal(metav1.ConditionTrue),
+					"Condition %s must be True when Ready=True, got %s (reason: %s)",
+					condType, cond.Status, cond.Reason)
+			}
+
+			By("INV-A3: Application ID must be populated")
+			Expect(firstAccessApplicationID(app)).NotTo(BeEmpty(),
+				"Application ID must be populated when Ready=True")
 
 			By("INV-A4: AttachedTargets must be >= 1")
-			Expect(ap.Status.AttachedTargets).To(BeNumerically(">=", 1),
+			Expect(app.Status.AttachedTargets).To(BeNumerically(">=", 1),
 				"AttachedTargets must be >= 1 when Ready=True")
 
 			By("INV-A5: Finalizer must be present")
@@ -342,7 +355,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 				"ObservedGeneration must match Generation")
 
 			By("INV-A7: Access Application must exist in Cloudflare API")
-			cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, ap.Status.ApplicationID)
+			cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, firstAccessApplicationID(app))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfApp).NotTo(BeNil(), "Access Application must exist in Cloudflare when Ready=True")
 
@@ -351,7 +364,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 				"Cloudflare app domain (%s) must match hostname (%s)",
 				cfApp.Domain, hostname)
 			Expect(cfApp.Name).To(Equal(policyName),
-				"Cloudflare app name (%s) must match policy name (%s)",
+				"Cloudflare app name (%s) must match application name (%s)",
 				cfApp.Name, policyName)
 		})
 
@@ -681,50 +694,37 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 			routeName := testID("cred-route")
 			createHTTPRoute(ctx, k8sClient, routeName, namespace.Name, gwName, []string{hostname}, svcName, 8080)
 
-			By("Creating AccessPolicy WITHOUT explicit cloudflareRef (must inherit)")
+			By("Creating reusable AccessPolicy and AccessApplication WITHOUT explicit cloudflareRef (must inherit)")
 			policyName := testID("cred-policy")
-			policy := &cfgatev1alpha1.CloudflareAccessPolicy{
+			policy := createReusableAccessPolicy(ctx, k8sClient, policyName, namespace.Name, "allow",
+				[]cfgatev1alpha1.AccessRule{{Everyone: ptrTo(true)}}, nil)
+			app := &cfgatev1alpha1.CloudflareAccessApplication{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      policyName,
 					Namespace: namespace.Name,
 				},
-				Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-					// Target HTTPRoute (not Gateway) -- tests path 3: HTTPRoute -> parentRef -> Gateway -> tunnel-ref -> Tunnel
+				Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
 					TargetRef: &cfgatev1alpha1.PolicyTargetReference{
 						Group: "gateway.networking.k8s.io",
 						Kind:  "HTTPRoute",
 						Name:  routeName,
 					},
-					// NO cloudflareRef -- must inherit from tunnel via Gateway chain
 					Application: cfgatev1alpha1.AccessApplication{
-						Name:   policyName,
-						Domain: hostname,
+						Name: policyName,
 					},
-					Policies: []cfgatev1alpha1.AccessPolicyRule{
-						{
-							Name:     "allow-all",
-							Decision: "allow",
-							Include: []cfgatev1alpha1.AccessRule{
-								{
-									Everyone: ptrTo(true),
-								},
-							},
-						},
-					},
+					PolicyRefs: []cfgatev1alpha1.AccessPolicyReference{{Name: policyName}},
 				},
 			}
-			Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
 
-			By("Waiting for AccessPolicy to reach Ready=True (proves credential inheritance worked)")
+			By("Waiting for AccessPolicy and AccessApplication to reach Ready=True")
 			waitForAccessPolicyReady(ctx, k8sClient, policy.Name, namespace.Name, DefaultTimeout)
+			readyApp := waitForAccessApplicationReady(ctx, k8sClient, app.Name, namespace.Name, DefaultTimeout)
 
-			var ap cfgatev1alpha1.CloudflareAccessPolicy
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policy.Name, Namespace: namespace.Name}, &ap)).To(Succeed())
-
-			Expect(findCondition(ap.Status.Conditions, "CredentialsValid")).NotTo(BeNil())
-			Expect(findCondition(ap.Status.Conditions, "CredentialsValid").Status).To(Equal(metav1.ConditionTrue),
+			Expect(findCondition(readyApp.Status.Conditions, "CredentialsValid")).NotTo(BeNil())
+			Expect(findCondition(readyApp.Status.Conditions, "CredentialsValid").Status).To(Equal(metav1.ConditionTrue),
 				"CredentialsValid must be True via inherited credentials")
-			Expect(ap.Status.ApplicationID).NotTo(BeEmpty(),
+			Expect(firstAccessApplicationID(readyApp)).NotTo(BeEmpty(),
 				"ApplicationID must be populated (proves CF API call succeeded with inherited creds)")
 		})
 	})
@@ -796,10 +796,8 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 			policyName := testID("del-policy")
 			policy := createCloudflareAccessPolicy(ctx, k8sClient, policyName, delNS.Name, delRouteName, hostname)
 			waitForAccessPolicyReady(ctx, k8sClient, policy.Name, delNS.Name, DefaultTimeout)
-
-			var ap cfgatev1alpha1.CloudflareAccessPolicy
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policy.Name, Namespace: delNS.Name}, &ap)).To(Succeed())
-			appID := ap.Status.ApplicationID
+			delApp := waitForAccessApplicationReady(ctx, k8sClient, policyName, delNS.Name, DefaultTimeout)
+			appID := firstAccessApplicationID(delApp)
 			Expect(appID).NotTo(BeEmpty())
 
 			By("INV-DEL1: Deleting namespace triggers finalizer-based cleanup")

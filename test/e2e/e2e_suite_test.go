@@ -235,6 +235,15 @@ var _ = SynchronizedBeforeSuite(
 		}
 		Expect(accessReconciler.SetupWithManager(mgr)).To(Succeed(), "Failed to setup access policy controller")
 
+		accessApplicationReconciler := &controller.CloudflareAccessApplicationReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			Recorder:        mgr.GetEventRecorder("cloudflareaccessapplication-controller"),
+			FeatureGates:    featureGates,
+			CredentialCache: credCache,
+		}
+		Expect(accessApplicationReconciler.SetupWithManager(mgr)).To(Succeed(), "Failed to setup access application controller")
+
 		httpRouteReconciler := &controller.HTTPRouteReconciler{
 			Client:   mgr.GetClient(),
 			Scheme:   mgr.GetScheme(),
@@ -772,6 +781,13 @@ func installCRDs() {
 			}
 		}
 
+		app := &cfgatev1alpha1.CloudflareAccessApplication{}
+		if err := k8sClient.Get(ctx, client.ObjectKey{Name: "test", Namespace: "default"}, app); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return false
+			}
+		}
+
 		return true
 	}, 30*time.Second, 1*time.Second).Should(BeTrue(), "cfgate CRDs not fully registered in API server")
 }
@@ -813,6 +829,12 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 	}
 
 	var policies cfgatev1alpha1.CloudflareAccessPolicyList
+	var apps cfgatev1alpha1.CloudflareAccessApplicationList
+	if err := k8sClient.List(ctx, &apps, client.InNamespace(ns.Name)); err == nil {
+		for i := range apps.Items {
+			_ = k8sClient.Delete(ctx, &apps.Items[i])
+		}
+	}
 	if err := k8sClient.List(ctx, &policies, client.InNamespace(ns.Name)); err == nil {
 		for i := range policies.Items {
 			_ = k8sClient.Delete(ctx, &policies.Items[i])
@@ -822,18 +844,24 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 	// Wait for DNS and Access CRs to be fully deleted before touching tunnels.
 	Eventually(func() bool {
 		var dCheck cfgatev1alpha1.CloudflareDNSList
+		var aCheck cfgatev1alpha1.CloudflareAccessApplicationList
 		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
 		dErr := k8sClient.List(ctx, &dCheck, client.InNamespace(ns.Name))
+		aErr := k8sClient.List(ctx, &aCheck, client.InNamespace(ns.Name))
 		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
 		dDone := dErr == nil && len(dCheck.Items) == 0
+		aDone := aErr == nil && len(aCheck.Items) == 0
 		pDone := pErr == nil && len(pCheck.Items) == 0
 		if apierrors.IsNotFound(dErr) {
 			dDone = true
 		}
+		if apierrors.IsNotFound(aErr) {
+			aDone = true
+		}
 		if apierrors.IsNotFound(pErr) {
 			pDone = true
 		}
-		return dDone && pDone
+		return dDone && aDone && pDone
 	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
 		"DNS/Access CRs in namespace %s did not terminate", ns.Name)
 
@@ -909,23 +937,5 @@ func skipIfNoZone() {
 	skipIfNoCredentials()
 	if testEnv.CloudflareZoneName == "" {
 		Skip("CLOUDFLARE_ZONE_NAME not set - skipping DNS E2E test")
-	}
-}
-
-// skipIfNoIdP skips the test if Identity Provider is not configured.
-// Required for P1 tests: email, emailDomain, oidcClaim rules.
-func skipIfNoIdP() {
-	skipIfNoZone()
-	if testEnv.CloudflareIdPID == "" {
-		Skip("CLOUDFLARE_IDP_ID not set - required for IdP-dependent Access tests")
-	}
-}
-
-// skipIfNoGSuiteGroup skips the test if GSuite group testing is not configured.
-// Required for P2 tests: gsuiteGroup rules.
-func skipIfNoGSuiteGroup() {
-	skipIfNoIdP()
-	if testEnv.CloudflareTestGroup == "" {
-		Skip("CLOUDFLARE_TEST_GROUP not set - required for GSuite group tests")
 	}
 }

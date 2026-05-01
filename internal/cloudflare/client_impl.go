@@ -624,6 +624,9 @@ func (c *clientImpl) CreateAccessApplication(ctx context.Context, accountID stri
 		ServiceAuth401Redirect:      cf.F(params.ServiceAuth401Redirect),
 		CustomNonIdentityDenyURL:    cf.F(params.CustomNonIdentityDenyURL),
 		ReadServiceTokensFromHeader: cf.F(params.ReadServiceTokensFromHeader),
+		Destinations:                 cf.F(accessApplicationNewDestinations(params)),
+		Policies:                     cf.F(accessApplicationNewPolicyLinks(params.Policies)),
+		Tags:                         cf.F(params.Tags),
 	}
 	if params.CORSHeaders != nil {
 		body.CORSHeaders = cf.F(corsHeadersToSDK(params.CORSHeaders))
@@ -692,6 +695,9 @@ func (c *clientImpl) UpdateAccessApplication(ctx context.Context, accountID, app
 		ServiceAuth401Redirect:      cf.F(params.ServiceAuth401Redirect),
 		CustomNonIdentityDenyURL:    cf.F(params.CustomNonIdentityDenyURL),
 		ReadServiceTokensFromHeader: cf.F(params.ReadServiceTokensFromHeader),
+		Destinations:                 cf.F(accessApplicationUpdateDestinations(params)),
+		Policies:                     cf.F(accessApplicationUpdatePolicyLinks(params.Policies)),
+		Tags:                         cf.F(params.Tags),
 	}
 	if params.CORSHeaders != nil {
 		body.CORSHeaders = cf.F(corsHeadersToSDK(params.CORSHeaders))
@@ -706,6 +712,60 @@ func (c *clientImpl) UpdateAccessApplication(ctx context.Context, accountID, app
 	}
 
 	return applicationFromUpdateResponse(result), nil
+}
+
+func accessApplicationDestinationURIs(params ApplicationParams) []string {
+	destinations := params.Destinations
+	if len(destinations) == 0 && params.Domain != "" {
+		destinations = []string{params.Domain}
+	}
+	return destinations
+}
+
+func accessApplicationNewDestinations(params ApplicationParams) []zero_trust.AccessApplicationNewParamsBodySelfHostedApplicationDestinationUnion {
+	uris := accessApplicationDestinationURIs(params)
+	result := make([]zero_trust.AccessApplicationNewParamsBodySelfHostedApplicationDestinationUnion, 0, len(uris))
+	for _, uri := range uris {
+		result = append(result, zero_trust.AccessApplicationNewParamsBodySelfHostedApplicationDestinationsPublicDestination{
+			Type: cf.F(zero_trust.AccessApplicationNewParamsBodySelfHostedApplicationDestinationsPublicDestinationTypePublic),
+			URI:  cf.F(uri),
+		})
+	}
+	return result
+}
+
+func accessApplicationUpdateDestinations(params ApplicationParams) []zero_trust.AccessApplicationUpdateParamsBodySelfHostedApplicationDestinationUnion {
+	uris := accessApplicationDestinationURIs(params)
+	result := make([]zero_trust.AccessApplicationUpdateParamsBodySelfHostedApplicationDestinationUnion, 0, len(uris))
+	for _, uri := range uris {
+		result = append(result, zero_trust.AccessApplicationUpdateParamsBodySelfHostedApplicationDestinationsPublicDestination{
+			Type: cf.F(zero_trust.AccessApplicationUpdateParamsBodySelfHostedApplicationDestinationsPublicDestinationTypePublic),
+			URI:  cf.F(uri),
+		})
+	}
+	return result
+}
+
+func accessApplicationNewPolicyLinks(links []ApplicationPolicyLink) []zero_trust.AccessApplicationNewParamsBodySelfHostedApplicationPolicyUnion {
+	result := make([]zero_trust.AccessApplicationNewParamsBodySelfHostedApplicationPolicyUnion, 0, len(links))
+	for _, link := range links {
+		result = append(result, zero_trust.AccessApplicationNewParamsBodySelfHostedApplicationPoliciesAccessAppPolicyLink{
+			ID:         cf.F(link.ID),
+			Precedence: cf.F(int64(link.Precedence)),
+		})
+	}
+	return result
+}
+
+func accessApplicationUpdatePolicyLinks(links []ApplicationPolicyLink) []zero_trust.AccessApplicationUpdateParamsBodySelfHostedApplicationPolicyUnion {
+	result := make([]zero_trust.AccessApplicationUpdateParamsBodySelfHostedApplicationPolicyUnion, 0, len(links))
+	for _, link := range links {
+		result = append(result, zero_trust.AccessApplicationUpdateParamsBodySelfHostedApplicationPoliciesAccessAppPolicyLink{
+			ID:         cf.F(link.ID),
+			Precedence: cf.F(int64(link.Precedence)),
+		})
+	}
+	return result
 }
 
 // DeleteAccessApplication deletes an Access application.
@@ -762,45 +822,34 @@ func (c *clientImpl) GetAccessApplicationByName(ctx context.Context, accountID, 
 }
 
 // =============================================================================
-// Access Policy operations (application-scoped)
+// Reusable Access Policy operations
 // =============================================================================
 
-// CreateAccessPolicy creates a new Access policy for an application.
-func (c *clientImpl) CreateAccessPolicy(ctx context.Context, accountID, appID string, params PolicyParams) (*AccessPolicy, error) {
-	// Build request options with fields missing from SDK's NewParams struct.
-	// cloudflare-go v6 SDK NewParams omits name, decision, include, exclude, and require.
-	opts := []option.RequestOption{
-		option.WithJSONSet("name", params.Name),
-		option.WithJSONSet("decision", params.Decision),
-	}
-	if len(params.Include) > 0 {
-		opts = append(opts, option.WithJSONSet("include", accessRulesToAPI(params.Include)))
-	}
-	if len(params.Exclude) > 0 {
-		opts = append(opts, option.WithJSONSet("exclude", accessRulesToAPI(params.Exclude)))
-	}
-	if len(params.Require) > 0 {
-		opts = append(opts, option.WithJSONSet("require", accessRulesToAPI(params.Require)))
-	}
-
-	result, err := c.api.ZeroTrust.Access.Applications.Policies.New(ctx, appID, zero_trust.AccessApplicationPolicyNewParams{
+// CreateAccessPolicy creates a new reusable Access policy.
+func (c *clientImpl) CreateAccessPolicy(ctx context.Context, accountID string, params PolicyParams) (*AccessPolicy, error) {
+	result, err := c.api.ZeroTrust.Access.Policies.New(ctx, zero_trust.AccessPolicyNewParams{
 		AccountID:                    cf.F(accountID),
-		Precedence:                   cf.F(int64(params.Precedence)),
+		Name:                         cf.F(params.Name),
+		Decision:                     cf.F(zero_trust.Decision(params.Decision)),
+		Include:                      cf.F(accessRulesToAPI(params.Include)),
+		Exclude:                      cf.F(accessRulesToAPI(params.Exclude)),
+		Require:                      cf.F(accessRulesToAPI(params.Require)),
 		SessionDuration:              cf.F(params.SessionDuration),
 		PurposeJustificationRequired: cf.F(params.PurposeJustificationRequired),
 		PurposeJustificationPrompt:   cf.F(params.PurposeJustificationPrompt),
 		ApprovalRequired:             cf.F(params.ApprovalRequired),
-	}, opts...)
+		ApprovalGroups:               cf.F(approvalGroupsToAPI(params.ApprovalGroups)),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create access policy: %w", err)
 	}
 
-	return policyFromNewResponse(result, params.Name, params.Decision), nil
+	return policyFromNewResponse(result), nil
 }
 
 // GetAccessPolicy retrieves an Access policy by ID.
-func (c *clientImpl) GetAccessPolicy(ctx context.Context, accountID, appID, policyID string) (*AccessPolicy, error) {
-	result, err := c.api.ZeroTrust.Access.Applications.Policies.Get(ctx, appID, policyID, zero_trust.AccessApplicationPolicyGetParams{
+func (c *clientImpl) GetAccessPolicy(ctx context.Context, accountID, policyID string) (*AccessPolicy, error) {
+	result, err := c.api.ZeroTrust.Access.Policies.Get(ctx, policyID, zero_trust.AccessPolicyGetParams{
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
@@ -814,40 +863,30 @@ func (c *clientImpl) GetAccessPolicy(ctx context.Context, accountID, appID, poli
 }
 
 // UpdateAccessPolicy updates an existing Access policy.
-func (c *clientImpl) UpdateAccessPolicy(ctx context.Context, accountID, appID, policyID string, params PolicyParams) (*AccessPolicy, error) {
-	// Build request options with fields missing from SDK's UpdateParams struct.
-	opts := []option.RequestOption{
-		option.WithJSONSet("name", params.Name),
-		option.WithJSONSet("decision", params.Decision),
-	}
-	if len(params.Include) > 0 {
-		opts = append(opts, option.WithJSONSet("include", accessRulesToAPI(params.Include)))
-	}
-	if len(params.Exclude) > 0 {
-		opts = append(opts, option.WithJSONSet("exclude", accessRulesToAPI(params.Exclude)))
-	}
-	if len(params.Require) > 0 {
-		opts = append(opts, option.WithJSONSet("require", accessRulesToAPI(params.Require)))
-	}
-
-	result, err := c.api.ZeroTrust.Access.Applications.Policies.Update(ctx, appID, policyID, zero_trust.AccessApplicationPolicyUpdateParams{
+func (c *clientImpl) UpdateAccessPolicy(ctx context.Context, accountID, policyID string, params PolicyParams) (*AccessPolicy, error) {
+	result, err := c.api.ZeroTrust.Access.Policies.Update(ctx, policyID, zero_trust.AccessPolicyUpdateParams{
 		AccountID:                    cf.F(accountID),
-		Precedence:                   cf.F(int64(params.Precedence)),
+		Name:                         cf.F(params.Name),
+		Decision:                     cf.F(zero_trust.Decision(params.Decision)),
+		Include:                      cf.F(accessRulesToAPI(params.Include)),
+		Exclude:                      cf.F(accessRulesToAPI(params.Exclude)),
+		Require:                      cf.F(accessRulesToAPI(params.Require)),
 		SessionDuration:              cf.F(params.SessionDuration),
 		PurposeJustificationRequired: cf.F(params.PurposeJustificationRequired),
 		PurposeJustificationPrompt:   cf.F(params.PurposeJustificationPrompt),
 		ApprovalRequired:             cf.F(params.ApprovalRequired),
-	}, opts...)
+		ApprovalGroups:               cf.F(approvalGroupsToAPI(params.ApprovalGroups)),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update access policy: %w", err)
 	}
 
-	return policyFromUpdateResponse(result, params.Name, params.Decision), nil
+	return policyFromUpdateResponse(result), nil
 }
 
 // DeleteAccessPolicy deletes an Access policy.
-func (c *clientImpl) DeleteAccessPolicy(ctx context.Context, accountID, appID, policyID string) error {
-	_, err := c.api.ZeroTrust.Access.Applications.Policies.Delete(ctx, appID, policyID, zero_trust.AccessApplicationPolicyDeleteParams{
+func (c *clientImpl) DeleteAccessPolicy(ctx context.Context, accountID, policyID string) error {
+	_, err := c.api.ZeroTrust.Access.Policies.Delete(ctx, policyID, zero_trust.AccessPolicyDeleteParams{
 		AccountID: cf.F(accountID),
 	})
 	if err != nil {
@@ -860,11 +899,11 @@ func (c *clientImpl) DeleteAccessPolicy(ctx context.Context, accountID, appID, p
 	return nil
 }
 
-// ListAccessPolicies lists all Access policies for an application.
-func (c *clientImpl) ListAccessPolicies(ctx context.Context, accountID, appID string) ([]AccessPolicy, error) {
+// ListAccessPolicies lists all reusable Access policies.
+func (c *clientImpl) ListAccessPolicies(ctx context.Context, accountID string) ([]AccessPolicy, error) {
 	var policies []AccessPolicy
 
-	page := c.api.ZeroTrust.Access.Applications.Policies.ListAutoPaging(ctx, appID, zero_trust.AccessApplicationPolicyListParams{
+	page := c.api.ZeroTrust.Access.Policies.ListAutoPaging(ctx, zero_trust.AccessPolicyListParams{
 		AccountID: cf.F(accountID),
 	})
 

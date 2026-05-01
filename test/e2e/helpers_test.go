@@ -103,49 +103,6 @@ func listTunnelsByPrefixFromCloudflare(ctx context.Context, cfClient *cloudflare
 	return tunnels, nil
 }
 
-// createCloudflareAccessPolicyWithApplicationFields creates an AccessPolicy with custom application fields.
-func createCloudflareAccessPolicyWithApplicationFields(
-	ctx context.Context,
-	k8sClient client.Client,
-	name, namespace, targetRouteName, hostname string,
-	appConfig cfgatev1alpha1.AccessApplication,
-) *cfgatev1alpha1.CloudflareAccessPolicy {
-	appConfig.Name = name
-	appConfig.Domain = hostname
-
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: appConfig,
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-all",
-					Decision: "allow",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							Everyone: ptrTo(true),
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-	return policy
-}
-
 // Note: testID is defined in e2e_suite_test.go
 
 // ============================================================
@@ -520,26 +477,6 @@ func waitForAccessPolicyReady(ctx context.Context, k8sClient client.Client, name
 	return &policy
 }
 
-// waitForAccessPolicyCondition waits for a specific condition on a CloudflareAccessPolicy.
-func waitForAccessPolicyCondition(ctx context.Context, k8sClient client.Client, name, namespace, conditionType string, status metav1.ConditionStatus, timeout time.Duration) *cfgatev1alpha1.CloudflareAccessPolicy {
-	var policy cfgatev1alpha1.CloudflareAccessPolicy
-
-	Eventually(func() bool {
-		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &policy)
-		if err != nil {
-			return false
-		}
-		for _, cond := range policy.Status.Conditions {
-			if cond.Type == conditionType && cond.Status == status {
-				return true
-			}
-		}
-		return false
-	}, timeout, DefaultInterval).Should(BeTrue(), fmt.Sprintf("AccessPolicy condition %s did not become %s", conditionType, status))
-
-	return &policy
-}
-
 // waitForAccessPolicyDeleted waits for a CloudflareAccessPolicy to be deleted from Kubernetes.
 func waitForAccessPolicyDeleted(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) {
 	Eventually(func() bool {
@@ -652,18 +589,6 @@ func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Cli
 	}
 
 	return nil, nil // Not found.
-}
-
-// waitForServiceTokenDeletedFromCloudflare waits for a Service Token to be deleted from Cloudflare.
-func waitForServiceTokenDeletedFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tokenName string, timeout time.Duration) {
-	Eventually(func() bool {
-		token, err := getServiceTokenFromCloudflare(ctx, cfClient, accountID, tokenName)
-		if err != nil {
-			GinkgoWriter.Printf("waitForServiceTokenDeletedFromCloudflare: API error (will retry): %v\n", err)
-			return false
-		}
-		return token == nil
-	}, timeout, DefaultInterval).Should(BeTrue(), "Service Token was not deleted from Cloudflare")
 }
 
 // waitForServiceTokenSecretCreated waits for a service token Secret to be created.
@@ -1001,341 +926,117 @@ func createCloudflareDNSWithGatewayRoutes(ctx context.Context, k8sClient client.
 }
 
 // ============================================================
-// CloudflareAccessPolicy Creation Helpers
+// CloudflareAccessPolicy / CloudflareAccessApplication Creation Helpers
 // ============================================================
 
-// createCloudflareAccessPolicy creates a CloudflareAccessPolicy CR with "everyone" rule (no IdP required).
+func cloudflareSecretRef() cfgatev1alpha1.CloudflareSecretRef {
+	return cfgatev1alpha1.CloudflareSecretRef{
+		Name:      "cloudflare-credentials",
+		AccountID: testEnv.CloudflareAccountID,
+	}
+}
+
+func createReusableAccessPolicy(
+	ctx context.Context,
+	k8sClient client.Client,
+	name, namespace, decision string,
+	include []cfgatev1alpha1.AccessRule,
+	serviceTokens []cfgatev1alpha1.ServiceTokenConfig,
+) *cfgatev1alpha1.CloudflareAccessPolicy {
+	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
+			CloudflareRef:   cloudflareSecretRef(),
+			Name:            name,
+			Decision:        decision,
+			Include:         include,
+			ServiceTokens:   serviceTokens,
+			SessionDuration: "24h",
+		},
+	}
+	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+	return policy
+}
+
+func createCloudflareAccessApplication(
+	ctx context.Context,
+	k8sClient client.Client,
+	name, namespace, targetRouteName string,
+	appConfig cfgatev1alpha1.AccessApplication,
+	policyRefs ...cfgatev1alpha1.AccessPolicyReference,
+) *cfgatev1alpha1.CloudflareAccessApplication {
+	if appConfig.Name == "" {
+		appConfig.Name = name
+	}
+	app := &cfgatev1alpha1.CloudflareAccessApplication{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
+			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
+				Group: "gateway.networking.k8s.io",
+				Kind:  "HTTPRoute",
+				Name:  targetRouteName,
+			},
+			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
+				Name:      "cloudflare-credentials",
+				AccountID: testEnv.CloudflareAccountID,
+			},
+			Application: appConfig,
+			PolicyRefs:  policyRefs,
+		},
+	}
+	Expect(k8sClient.Create(ctx, app)).To(Succeed())
+	return app
+}
+
+func waitForAccessApplicationReady(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) *cfgatev1alpha1.CloudflareAccessApplication {
+	var app cfgatev1alpha1.CloudflareAccessApplication
+	Eventually(func() bool {
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &app)
+		if err != nil {
+			return false
+		}
+		for _, cond := range app.Status.Conditions {
+			if cond.Type == "Ready" && cond.Status == metav1.ConditionTrue {
+				return true
+			}
+		}
+		return false
+	}, timeout, DefaultInterval).Should(BeTrue(), "AccessApplication did not become ready")
+	return &app
+}
+
+func waitForAccessApplicationDeleted(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) {
+	Eventually(func() bool {
+		var app cfgatev1alpha1.CloudflareAccessApplication
+		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &app)
+		return apierrors.IsNotFound(err)
+	}, timeout, DefaultInterval).Should(BeTrue(), "AccessApplication was not deleted")
+}
+
+func firstAccessApplicationID(app *cfgatev1alpha1.CloudflareAccessApplication) string {
+	Expect(app.Status.Applications).NotTo(BeEmpty())
+	return app.Status.Applications[0].ID
+}
+
+func firstAccessApplicationAUD(app *cfgatev1alpha1.CloudflareAccessApplication) string {
+	Expect(app.Status.Applications).NotTo(BeEmpty())
+	return app.Status.Applications[0].AUD
+}
+
 func createCloudflareAccessPolicy(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-all",
-					Decision: "allow",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							Everyone: ptrTo(true),
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+	policy := createReusableAccessPolicy(ctx, k8sClient, name, namespace, "allow", []cfgatev1alpha1.AccessRule{{Everyone: ptrTo(true)}}, nil)
+	createCloudflareAccessApplication(ctx, k8sClient, name, namespace, targetRouteName, cfgatev1alpha1.AccessApplication{Name: name}, cfgatev1alpha1.AccessPolicyReference{Name: name})
 	return policy
 }
 
-// createCloudflareAccessPolicyWithServiceToken creates an AccessPolicy with service token authentication.
 func createCloudflareAccessPolicyWithServiceToken(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname, tokenSecretName string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
+	policy := createReusableAccessPolicy(ctx, k8sClient, name, namespace, "non_identity", []cfgatev1alpha1.AccessRule{{ServiceToken: &cfgatev1alpha1.AccessServiceTokenRule{Name: name + "-token"}}}, []cfgatev1alpha1.ServiceTokenConfig{{
+		Name:     name + "-token",
+		Duration: "8760h",
+		SecretRef: cfgatev1alpha1.ServiceTokenSecretRef{
+			Name: tokenSecretName,
 		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-service-token",
-					Decision: "non_identity",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							AnyValidServiceToken: ptrTo(true),
-						},
-					},
-				},
-			},
-			ServiceTokens: []cfgatev1alpha1.ServiceTokenConfig{
-				{
-					Name:     name + "-token",
-					Duration: "8760h",
-					SecretRef: cfgatev1alpha1.ServiceTokenSecretRef{
-						Name: tokenSecretName,
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
+	}})
+	createCloudflareAccessApplication(ctx, k8sClient, name, namespace, targetRouteName, cfgatev1alpha1.AccessApplication{Name: name}, cfgatev1alpha1.AccessPolicyReference{Name: name})
 	return policy
 }
-
-// createCloudflareAccessPolicyWithIPRule creates an AccessPolicy with IP range allow rule.
-// Uses SDK-aligned AccessIPRule type with Ranges field.
-func createCloudflareAccessPolicyWithIPRule(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname string, ipRanges []string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-ip-ranges",
-					Decision: "bypass",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							IP: &cfgatev1alpha1.AccessIPRule{
-								Ranges: ipRanges,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-	return policy
-}
-
-// createCloudflareAccessPolicyWithCountryRule creates an AccessPolicy with country allow rule.
-// Uses SDK-aligned AccessCountryRule type with Codes field (ISO 3166-1 alpha-2).
-func createCloudflareAccessPolicyWithCountryRule(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname string, countryCodes []string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-countries",
-					Decision: "allow",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							Country: &cfgatev1alpha1.AccessCountryRule{
-								Codes: countryCodes,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-	return policy
-}
-
-// createCloudflareAccessPolicyWithEmailRule creates an AccessPolicy with email allow rule (requires IdP).
-// Uses SDK-aligned AccessEmailRule type with Addresses field.
-func createCloudflareAccessPolicyWithEmailRule(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname string, emails []string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-emails",
-					Decision: "allow",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							Email: &cfgatev1alpha1.AccessEmailRule{
-								Addresses: emails,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-	return policy
-}
-
-// createCloudflareAccessPolicyWithEmailDomainRule creates an AccessPolicy with email domain allow rule (requires IdP).
-// Uses SDK-aligned AccessEmailDomainRule type.
-func createCloudflareAccessPolicyWithEmailDomainRule(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname, emailDomain string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-email-domain",
-					Decision: "allow",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							EmailDomain: &cfgatev1alpha1.AccessEmailDomainRule{
-								Domain: emailDomain,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-	return policy
-}
-
-// createCloudflareAccessPolicyWithOIDCClaimRule creates an AccessPolicy with OIDC claim rule (requires IdP).
-// Uses SDK-aligned AccessOIDCClaimRule type.
-func createCloudflareAccessPolicyWithOIDCClaimRule(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname, idpID, claimName, claimValue string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-oidc-claim",
-					Decision: "allow",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							OIDCClaim: &cfgatev1alpha1.AccessOIDCClaimRule{
-								IdentityProviderID: idpID,
-								ClaimName:          claimName,
-								ClaimValue:         claimValue,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-	return policy
-}
-
-// createCloudflareAccessPolicyWithGSuiteGroupRule creates an AccessPolicy with GSuite group rule (requires GSuite IdP).
-// Uses SDK-aligned AccessGSuiteGroupRule type.
-func createCloudflareAccessPolicyWithGSuiteGroupRule(ctx context.Context, k8sClient client.Client, name, namespace, targetRouteName, hostname, idpID, groupEmail string) *cfgatev1alpha1.CloudflareAccessPolicy {
-	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
-			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
-				Group: "gateway.networking.k8s.io",
-				Kind:  "HTTPRoute",
-				Name:  targetRouteName,
-			},
-			CloudflareRef: &cfgatev1alpha1.CloudflareSecretRef{
-				Name:      "cloudflare-credentials",
-				AccountID: testEnv.CloudflareAccountID,
-			},
-			Application: cfgatev1alpha1.AccessApplication{
-				Name:   name,
-				Domain: hostname,
-			},
-			Policies: []cfgatev1alpha1.AccessPolicyRule{
-				{
-					Name:     "allow-gsuite-group",
-					Decision: "allow",
-					Include: []cfgatev1alpha1.AccessRule{
-						{
-							GSuiteGroup: &cfgatev1alpha1.AccessGSuiteGroupRule{
-								IdentityProviderID: idpID,
-								Email:              groupEmail,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	Expect(k8sClient.Create(ctx, policy)).To(Succeed())
-	return policy
-}
-
-// Note: skipIfNoIdP and skipIfNoGSuiteGroup are defined in e2e_suite_test.go

@@ -291,7 +291,7 @@ The current invariant suite covers these resource families:
 |---------|-----|-----------------|
 | CloudflareTunnel Ready | INV-T1..T9 | Sub-conditions, TunnelID, TunnelDomain format, finalizer, deployment, config-hash |
 | CloudflareDNS Ready | INV-D1..D8 | Sub-conditions, SyncedRecords, ResolvedTarget, CF API CNAME, OwnershipVerified |
-| CloudflareAccessPolicy Ready | INV-A1..A8 | Sub-conditions, ApplicationID, targets, finalizer, CF API app |
+| CloudflareAccessPolicy/Application Ready | INV-A1..A8 | Reusable policy state, application IDs, targets, finalizers, CF API resources |
 | Service token invariants | INV-ST1..ST4 | Service token Secret shape, status IDs, Cloudflare token presence |
 | Gateway status | INV-GW1..GW4 | Accepted, Programmed, addresses, supportedKinds |
 | HTTPRoute parent status | INV-HR1..HR3 | parents[] controllerName, Accepted, ResolvedRefs |

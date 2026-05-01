@@ -175,6 +175,7 @@ If you are migrating from an Ingress-based Cloudflare operator:
 - [CloudflareTunnel Reference](cloudflare-tunnel.md)
 - [CloudflareDNS Reference](cloudflare-dns.md)
 - [CloudflareAccessPolicy Reference](cloudflare-access-policy.md)
+- [CloudflareAccessApplication Reference](cloudflare-access-application.md)
 - [Annotations Reference](annotations.md)
 - [Troubleshooting](troubleshooting.md)
 - [Service Mesh Integration](service-mesh.md)
