@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -419,9 +420,6 @@ func validateAccessApplicationPath(path string) error {
 	if strings.ContainsAny(path, "?#") {
 		return fmt.Errorf("access application path %q must not contain query strings or fragments", path)
 	}
-	if strings.Contains(path, "://") || strings.Contains(path, ":") {
-		return fmt.Errorf("access application path %q must not contain ports", path)
-	}
 	return nil
 }
 
@@ -801,9 +799,16 @@ func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx c
 }
 
 func (r *CloudflareAccessApplicationReconciler) blockApplicationDeletion(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, detail string) (ctrl.Result, error) {
+	retryElapsed := time.Since(app.DeletionTimestamp.Time)
 	suffix := " Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer."
+	reason := "CleanupFailed"
+	message := detail + "." + suffix
+	if retryElapsed >= accessDeletionRetryBudget {
+		reason = "CleanupBlocked"
+		message = fmt.Sprintf("%s (blocked after %s of retries).%s", detail, retryElapsed.Round(time.Second), suffix)
+	}
 	if r.Recorder != nil {
-		r.Recorder.Eventf(app, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete", "%s.%s", detail, suffix)
+		r.Recorder.Eventf(app, nil, corev1.EventTypeWarning, reason, "Delete", "%s", message)
 	}
 	return ctrl.Result{RequeueAfter: accessDeletionRequeueInterval}, nil
 }

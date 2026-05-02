@@ -29,7 +29,7 @@ const (
 	accessPolicyFinalizer                = "cfgate.io/access-policy-cleanup"
 	accessPolicyRequeueAfterError        = 30 * time.Second
 	accessPolicyRequeueAfterSuccess      = 5 * time.Minute
-	AccessPolicyControllerName           = "cfgate.io/cloudflare-tunnel-controller"
+	AccessPolicyControllerName           = "cfgate.io/cloudflare-access-controller"
 	accessDeletionRetryBudget            = 1 * time.Minute
 	accessDeletionRequeueInterval        = 15 * time.Second
 	accessPolicyTargetIndex              = ".spec.targetRefs"

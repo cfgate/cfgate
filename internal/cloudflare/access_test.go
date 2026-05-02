@@ -16,6 +16,7 @@ func makeMatchingAppPair() (*AccessApplication, *ApplicationParams) {
 	return &AccessApplication{
 			Name:                        "Test App",
 			Domain:                      "app.example.com",
+			Destinations:                []string{"app.example.com"},
 			Type:                        "self_hosted",
 			SessionDuration:             "24h",
 			AllowedIdps:                 []string{"idp-1", "idp-2"},
@@ -98,7 +99,7 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 			want:   false,
 		},
 
-		// Per-field drift detection (20 fields)
+		// Per-field drift detection
 
 		{
 			name:   "Name drift",
@@ -109,6 +110,39 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 			name:   "Domain drift",
 			modify: func(_ *AccessApplication, p *ApplicationParams) { p.Domain = "other.example.com" },
 			want:   true,
+		},
+		{
+			name: "existing missing destinations updates to desired domain destination",
+			modify: func(a *AccessApplication, _ *ApplicationParams) {
+				a.Destinations = nil
+			},
+			want: true,
+		},
+		{
+			name: "existing missing tags updates to desired cfgate tags",
+			modify: func(a *AccessApplication, p *ApplicationParams) {
+				a.Tags = nil
+				p.Tags = []string{"cfgate", "cfgate:default:app"}
+			},
+			want: true,
+		},
+		{
+			name: "existing missing policies updates to desired policy links",
+			modify: func(a *AccessApplication, p *ApplicationParams) {
+				a.Policies = nil
+				p.Policies = []ApplicationPolicyLink{{ID: "policy-1", Precedence: 1}}
+			},
+			want: true,
+		},
+		{
+			name: "empty tags and policies match",
+			modify: func(a *AccessApplication, p *ApplicationParams) {
+				a.Tags = nil
+				p.Tags = nil
+				a.Policies = nil
+				p.Policies = nil
+			},
+			want: false,
 		},
 		{
 			name:   "Type drift explicit",
