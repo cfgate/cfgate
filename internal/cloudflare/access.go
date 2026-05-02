@@ -731,8 +731,23 @@ func policyLinksEqual(a, b []ApplicationPolicyLink) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	if len(a) == 0 {
+		return true
+	}
+
+	sa := make([]ApplicationPolicyLink, len(a))
+	copy(sa, a)
+	sb := make([]ApplicationPolicyLink, len(b))
+	copy(sb, b)
+	slices.SortFunc(sa, func(x, y ApplicationPolicyLink) int {
+		return cmp.Compare(x.Precedence, y.Precedence)
+	})
+	slices.SortFunc(sb, func(x, y ApplicationPolicyLink) int {
+		return cmp.Compare(x.Precedence, y.Precedence)
+	})
+
+	for i := range sa {
+		if sa[i] != sb[i] {
 			return false
 		}
 	}
@@ -1099,20 +1114,6 @@ func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string
 	}
 
 	return &created.ServiceToken, nil
-}
-
-// DeleteApplication deletes an application and all associated resources.
-func (s *AccessService) DeleteApplication(ctx context.Context, accountID, appID string) error {
-	s.log.Info("deleting access application",
-		"applicationId", appID,
-	)
-
-	// Delete the application (policies are deleted automatically)
-	if err := s.client.DeleteAccessApplication(ctx, accountID, appID); err != nil {
-		return fmt.Errorf("failed to delete access application: %w", err)
-	}
-
-	return nil
 }
 
 // Client returns the underlying Cloudflare client.
