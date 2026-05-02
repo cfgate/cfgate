@@ -143,8 +143,8 @@ type AccessApplication struct {
 	// +kubebuilder:validation:XValidation:rule="self == '' || self.split('.').all(s, size(s) <= 63)",message="each DNS label must not exceed 63 octets (RFC 1035 section 2.3.4)"
 	Domain string `json:"domain,omitempty"`
 
-	// Path restricts protection to specific path prefix.
-	// Cloudflare Access paths must not include ports, query strings, or fragments.
+	// Path restricts protection to a specific absolute path prefix.
+	// Cloudflare Access paths must not include query strings or fragments.
 	// +optional
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:Pattern=`^/[^?#]*$`

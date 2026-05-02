@@ -43,7 +43,7 @@ Cross-namespace target references require a `ReferenceGrant` in the target names
 - Supported path matches: omitted path, `PathPrefix`, `Exact`.
 - `RegularExpression` is rejected with `TargetsResolved=False`, reason `UnsupportedPathMatch`.
 - `spec.application.path` overrides any derived route path.
-- Access application paths must not include ports, query strings, or fragments.
+- Access application paths must start with `/` and must not include query strings or fragments. Path segments may contain `:`.
 - Hostname source order for HTTPRoute: `cfgate.io/hostname`, then `spec.hostnames`.
 
 ## Status

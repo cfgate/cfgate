@@ -6,7 +6,7 @@ Single tunnel exposing one service via Cloudflare.
 
 ```bash
 # 1. Install Gateway API + cfgate
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml
 kubectl apply -f https://github.com/cfgate/cfgate/releases/latest/download/install.yaml
 
 # 2. Create credentials

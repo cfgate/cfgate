@@ -415,7 +415,7 @@ description = "Install Gateway API and cfgate CRDs"
 depends = ["codegen"]
 run = """
 set -eu
-gateway_api_version="${GATEWAY_API_VERSION:-v1.4.1}"
+gateway_api_version="${GATEWAY_API_VERSION:-v1.5.1}"
 kubectl apply -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${gateway_api_version}/standard-install.yaml"
 kubectl apply -k config/crd
 """
@@ -447,7 +447,7 @@ run = "kubectl delete -k config/default --ignore-not-found"
 description = "Uninstall CRDs from current cluster"
 run = """
 set -eu
-gateway_api_version="${GATEWAY_API_VERSION:-v1.4.1}"
+gateway_api_version="${GATEWAY_API_VERSION:-v1.5.1}"
 kubectl delete -k config/crd --ignore-not-found
 kubectl delete -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${gateway_api_version}/standard-install.yaml" --ignore-not-found 2>/dev/null || true
 """
