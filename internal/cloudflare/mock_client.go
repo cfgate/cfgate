@@ -51,6 +51,10 @@ type MockClient struct {
 	ListAccessApplicationsFunc     func(ctx context.Context, accountID string) ([]AccessApplication, error)
 	GetAccessApplicationByNameFunc func(ctx context.Context, accountID, name string) (*AccessApplication, error)
 
+	// Access Tag operations
+	CreateAccessTagFunc func(ctx context.Context, accountID, tagName string) (*AccessTag, error)
+	ListAccessTagsFunc  func(ctx context.Context, accountID string) ([]AccessTag, error)
+
 	// Access Policy operations
 	CreateAccessPolicyFunc func(ctx context.Context, accountID string, params PolicyParams) (*AccessPolicy, error)
 	GetAccessPolicyFunc    func(ctx context.Context, accountID, policyID string) (*AccessPolicy, error)
@@ -251,6 +255,22 @@ func (m *MockClient) ListAccessApplications(ctx context.Context, accountID strin
 func (m *MockClient) GetAccessApplicationByName(ctx context.Context, accountID, name string) (*AccessApplication, error) {
 	if m.GetAccessApplicationByNameFunc != nil {
 		return m.GetAccessApplicationByNameFunc(ctx, accountID, name)
+	}
+	return nil, nil
+}
+
+// Access Tag operations
+
+func (m *MockClient) CreateAccessTag(ctx context.Context, accountID, tagName string) (*AccessTag, error) {
+	if m.CreateAccessTagFunc != nil {
+		return m.CreateAccessTagFunc(ctx, accountID, tagName)
+	}
+	return nil, nil
+}
+
+func (m *MockClient) ListAccessTags(ctx context.Context, accountID string) ([]AccessTag, error) {
+	if m.ListAccessTagsFunc != nil {
+		return m.ListAccessTagsFunc(ctx, accountID)
 	}
 	return nil, nil
 }

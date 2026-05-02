@@ -103,6 +103,15 @@ type AccessAppOps interface {
 	GetAccessApplicationByName(ctx context.Context, accountID, name string) (*AccessApplication, error)
 }
 
+// AccessTagOps defines operations for managing Cloudflare Access tags.
+type AccessTagOps interface {
+	// CreateAccessTag creates a new Access tag.
+	CreateAccessTag(ctx context.Context, accountID, tagName string) (*AccessTag, error)
+
+	// ListAccessTags lists all Access tags.
+	ListAccessTags(ctx context.Context, accountID string) ([]AccessTag, error)
+}
+
 // AccessPolicyOps defines operations for managing reusable Cloudflare Access policies
 // at account scope.
 type AccessPolicyOps interface {
@@ -191,6 +200,7 @@ type Client interface {
 	ZoneOps
 	AccountOps
 	AccessAppOps
+	AccessTagOps
 	AccessPolicyOps
 	AccessGroupOps
 	ServiceTokenOps

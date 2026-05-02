@@ -624,9 +624,9 @@ func (c *clientImpl) CreateAccessApplication(ctx context.Context, accountID stri
 		ServiceAuth401Redirect:      cf.F(params.ServiceAuth401Redirect),
 		CustomNonIdentityDenyURL:    cf.F(params.CustomNonIdentityDenyURL),
 		ReadServiceTokensFromHeader: cf.F(params.ReadServiceTokensFromHeader),
-		Destinations:                 cf.F(accessApplicationNewDestinations(params)),
-		Policies:                     cf.F(accessApplicationNewPolicyLinks(params.Policies)),
-		Tags:                         cf.F(params.Tags),
+		Destinations:                cf.F(accessApplicationNewDestinations(params)),
+		Policies:                    cf.F(accessApplicationNewPolicyLinks(params.Policies)),
+		Tags:                        cf.F(params.Tags),
 	}
 	if params.CORSHeaders != nil {
 		body.CORSHeaders = cf.F(corsHeadersToSDK(params.CORSHeaders))
@@ -695,9 +695,9 @@ func (c *clientImpl) UpdateAccessApplication(ctx context.Context, accountID, app
 		ServiceAuth401Redirect:      cf.F(params.ServiceAuth401Redirect),
 		CustomNonIdentityDenyURL:    cf.F(params.CustomNonIdentityDenyURL),
 		ReadServiceTokensFromHeader: cf.F(params.ReadServiceTokensFromHeader),
-		Destinations:                 cf.F(accessApplicationUpdateDestinations(params)),
-		Policies:                     cf.F(accessApplicationUpdatePolicyLinks(params.Policies)),
-		Tags:                         cf.F(params.Tags),
+		Destinations:                cf.F(accessApplicationUpdateDestinations(params)),
+		Policies:                    cf.F(accessApplicationUpdatePolicyLinks(params.Policies)),
+		Tags:                        cf.F(params.Tags),
 	}
 	if params.CORSHeaders != nil {
 		body.CORSHeaders = cf.F(corsHeadersToSDK(params.CORSHeaders))
@@ -819,6 +819,35 @@ func (c *clientImpl) GetAccessApplicationByName(ctx context.Context, accountID, 
 	}
 
 	return nil, nil // Not found
+}
+
+// CreateAccessTag creates a new Access tag.
+func (c *clientImpl) CreateAccessTag(ctx context.Context, accountID, tagName string) (*AccessTag, error) {
+	result, err := c.api.ZeroTrust.Access.Tags.New(ctx, zero_trust.AccessTagNewParams{
+		AccountID: cf.F(accountID),
+		Name:      cf.F(tagName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create access tag: %w", err)
+	}
+	return &AccessTag{Name: result.Name}, nil
+}
+
+// ListAccessTags lists all Access tags.
+func (c *clientImpl) ListAccessTags(ctx context.Context, accountID string) ([]AccessTag, error) {
+	var tags []AccessTag
+
+	page := c.api.ZeroTrust.Access.Tags.ListAutoPaging(ctx, zero_trust.AccessTagListParams{
+		AccountID: cf.F(accountID),
+	})
+	for page.Next() {
+		tag := page.Current()
+		tags = append(tags, AccessTag{Name: tag.Name})
+	}
+	if err := page.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list access tags: %w", err)
+	}
+	return tags, nil
 }
 
 // =============================================================================

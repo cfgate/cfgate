@@ -112,7 +112,7 @@ var _ = Describe("CEL Validation E2E", func() {
 			app.Spec.TargetRef.Kind = "Deployment"
 			err := k8sClient.Create(ctx, app)
 			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("gateway.networking.k8s.io"))
+			Expect(err.Error()).To(Or(ContainSubstring("gateway.networking.k8s.io"), ContainSubstring("Unsupported value")))
 		})
 
 		It("rejects Access app paths with query string", func() {

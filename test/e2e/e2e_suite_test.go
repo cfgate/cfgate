@@ -435,8 +435,9 @@ func cleanOrphanedE2EResources() {
 		cleanOrphanedDNSRecords(cleanupCtx, cfClient)
 	}
 
-	// Clean Access applications (alpha.3).
+	// Clean Access applications and reusable policies (alpha.3+).
 	cleanOrphanedAccessApplications(cleanupCtx, cfClient)
+	cleanOrphanedAccessPolicies(cleanupCtx, cfClient)
 
 	// Clean service tokens (alpha.3).
 	cleanOrphanedServiceTokens(cleanupCtx, cfClient)
@@ -536,8 +537,9 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 	var orphaned []struct{ ID, Name string }
 	for iter.Next() {
 		app := iter.Current()
-		// Match e2e-* application names.
-		if strings.HasPrefix(app.Name, "e2e-") {
+		// Match e2e-* application names and domains. Some focused Access tests use
+		// stable app names such as admin-app but e2e-* hostnames.
+		if strings.HasPrefix(app.Name, "e2e-") || strings.Contains(app.Domain, "e2e-") {
 			orphaned = append(orphaned, struct{ ID, Name string }{app.ID, app.Name})
 		}
 	}
@@ -559,6 +561,41 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 		})
 		if err != nil && !strings.Contains(err.Error(), "not found") {
 			GinkgoWriter.Printf("  Warning: %s: %v\n", app.Name, err)
+		}
+	}
+}
+
+// cleanOrphanedAccessPolicies deletes e2e-* reusable Access policies.
+func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Client) {
+	iter := cfClient.ZeroTrust.Access.Policies.ListAutoPaging(ctx, zero_trust.AccessPolicyListParams{
+		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	})
+
+	var orphaned []struct{ ID, Name string }
+	for iter.Next() {
+		policy := iter.Current()
+		if strings.HasPrefix(policy.Name, "e2e-") {
+			orphaned = append(orphaned, struct{ ID, Name string }{policy.ID, policy.Name})
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		GinkgoWriter.Printf("Warning: failed to list Access policies: %v\n", err)
+		return
+	}
+
+	if len(orphaned) == 0 {
+		GinkgoWriter.Printf("No orphaned Access policies found\n")
+		return
+	}
+
+	GinkgoWriter.Printf("Deleting %d orphaned Access policies\n", len(orphaned))
+	for _, policy := range orphaned {
+		_, err := cfClient.ZeroTrust.Access.Policies.Delete(ctx, policy.ID, zero_trust.AccessPolicyDeleteParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		})
+		if err != nil && !strings.Contains(err.Error(), "not found") {
+			GinkgoWriter.Printf("  Warning: %s: %v\n", policy.Name, err)
 		}
 	}
 }

@@ -199,7 +199,6 @@ spec:
                       removes all CORS header settings. Mutually exclusive with corsHeaders.
                     type: boolean
                   path:
-                    default: /
                     description: |-
                       Path restricts protection to specific path prefix.
                       Cloudflare Access paths must not include ports, query strings, or fragments.
@@ -301,6 +300,7 @@ spec:
                       description: |-
                         Namespace is the CloudflareAccessPolicy namespace. Defaults to application namespace.
                         Cross-namespace references require ReferenceGrant.
+                      maxLength: 253
                       type: string
                     precedence:
                       description: |-
@@ -312,21 +312,26 @@ spec:
                   required:
                   - name
                   type: object
-                maxItems: 50
+                maxItems: 16
                 minItems: 1
                 type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               targetRef:
                 description: TargetRef identifies a single Gateway API target.
                 properties:
                   group:
                     default: gateway.networking.k8s.io
                     description: Group is the API group of the target resource.
+                    maxLength: 253
                     type: string
                   kind:
                     description: Kind is the kind of the target resource.
                     enum:
                     - Gateway
                     - HTTPRoute
+                    maxLength: 63
                     type: string
                   name:
                     description: Name is the name of the target resource.
@@ -337,10 +342,12 @@ spec:
                     description: |-
                       Namespace is the namespace of the target resource.
                       Cross-namespace targeting requires ReferenceGrant.
+                    maxLength: 253
                     type: string
                   sectionName:
                     description: SectionName targets specific listener (Gateway) or
                       rule (Route).
+                    maxLength: 253
                     type: string
                 required:
                 - group
@@ -369,12 +376,14 @@ spec:
                     group:
                       default: gateway.networking.k8s.io
                       description: Group is the API group of the target resource.
+                      maxLength: 253
                       type: string
                     kind:
                       description: Kind is the kind of the target resource.
                       enum:
                       - Gateway
                       - HTTPRoute
+                      maxLength: 63
                       type: string
                     name:
                       description: Name is the name of the target resource.
@@ -385,10 +394,12 @@ spec:
                       description: |-
                         Namespace is the namespace of the target resource.
                         Cross-namespace targeting requires ReferenceGrant.
+                      maxLength: 253
                       type: string
                     sectionName:
                       description: SectionName targets specific listener (Gateway)
                         or rule (Route).
+                      maxLength: 253
                       type: string
                   required:
                   - group
@@ -410,11 +421,6 @@ spec:
               rule: has(self.targetRef) || has(self.targetRefs)
             - message: targetRef and targetRefs are mutually exclusive
               rule: '!(has(self.targetRef) && has(self.targetRefs))'
-            - message: policyRefs must not contain duplicate name/namespace pairs
-              rule: 'self.policyRefs.map(p, (has(p.namespace) ? p.namespace : '''')
-                + ''/'' + p.name).all(k, self.policyRefs.map(p, (has(p.namespace)
-                ? p.namespace : '''') + ''/'' + p.name).filter(x, x == k).size() ==
-                1)'
           status:
             description: CloudflareAccessApplicationStatus defines observed Access
               application state.
@@ -435,12 +441,14 @@ spec:
                         group:
                           default: gateway.networking.k8s.io
                           description: Group is the API group of the target resource.
+                          maxLength: 253
                           type: string
                         kind:
                           description: Kind is the kind of the target resource.
                           enum:
                           - Gateway
                           - HTTPRoute
+                          maxLength: 63
                           type: string
                         name:
                           description: Name is the name of the target resource.
@@ -451,10 +459,12 @@ spec:
                           description: |-
                             Namespace is the namespace of the target resource.
                             Cross-namespace targeting requires ReferenceGrant.
+                          maxLength: 253
                           type: string
                         sectionName:
                           description: SectionName targets specific listener (Gateway)
                             or rule (Route).
+                          maxLength: 253
                           type: string
                       required:
                       - group
@@ -523,15 +533,18 @@ spec:
                         - status
                         - type
                         type: object
+                      maxItems: 8
                       type: array
                     controllerName:
                       description: ControllerName identifies the controller managing
                         this attachment.
+                      maxLength: 253
                       type: string
                   required:
                   - ancestorRef
                   - controllerName
                   type: object
+                maxItems: 64
                 type: array
               applications:
                 description: Applications are Cloudflare Access Applications managed
@@ -542,12 +555,15 @@ spec:
                   properties:
                     aud:
                       description: AUD is the Application Audience Tag.
+                      maxLength: 255
                       type: string
                     domain:
                       description: Domain is the protected hostname/path in Cloudflare.
+                      maxLength: 1024
                       type: string
                     id:
                       description: ID is the Cloudflare Access Application ID.
+                      maxLength: 36
                       type: string
                     targetRef:
                       description: TargetRef identifies the Gateway API target that
@@ -556,12 +572,14 @@ spec:
                         group:
                           default: gateway.networking.k8s.io
                           description: Group is the API group of the target resource.
+                          maxLength: 253
                           type: string
                         kind:
                           description: Kind is the kind of the target resource.
                           enum:
                           - Gateway
                           - HTTPRoute
+                          maxLength: 63
                           type: string
                         name:
                           description: Name is the name of the target resource.
@@ -572,10 +590,12 @@ spec:
                           description: |-
                             Namespace is the namespace of the target resource.
                             Cross-namespace targeting requires ReferenceGrant.
+                          maxLength: 253
                           type: string
                         sectionName:
                           description: SectionName targets specific listener (Gateway)
                             or rule (Route).
+                          maxLength: 253
                           type: string
                       required:
                       - group
@@ -588,6 +608,7 @@ spec:
                       - message: kind must be Gateway or HTTPRoute
                         rule: self.kind in ['Gateway', 'HTTPRoute']
                   type: object
+                maxItems: 64
                 type: array
               attachedTargets:
                 description: AttachedTargets is the count of successfully attached

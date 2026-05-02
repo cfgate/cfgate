@@ -120,6 +120,12 @@ type AccessApplication struct {
 	UpdatedAt time.Time
 }
 
+// AccessTag represents a Cloudflare Access tag.
+type AccessTag struct {
+	// Name is the unique tag name.
+	Name string
+}
+
 // CORSHeadersParam represents CORS configuration for an Access Application.
 type CORSHeadersParam struct {
 	AllowAllHeaders  bool
@@ -462,10 +468,15 @@ type ServiceTokenParams struct {
 // have drifted. Otherwise, a new application is created.
 // Returns the application and whether it was created (vs adopted/updated).
 func (s *AccessService) EnsureApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, bool, error) {
+	params.Tags = uniqueNonEmptyStrings(params.Tags)
 	s.log.Info("ensuring access application exists",
 		"accountID", accountID,
 		"domain", params.Domain,
 	)
+
+	if err := s.ensureApplicationTags(ctx, accountID, params.Tags); err != nil {
+		return nil, false, err
+	}
 
 	existing, err := s.client.GetAccessApplicationByName(ctx, accountID, params.Name)
 	if err != nil {
@@ -523,6 +534,11 @@ func (s *AccessService) EnsureApplication(ctx context.Context, accountID string,
 // It first uses statusID, then adopts only an application with the same domain and
 // all desired tags. This keeps cfgate ownership unambiguous.
 func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, accountID, statusID string, params ApplicationParams) (*AccessApplication, error) {
+	params.Tags = uniqueNonEmptyStrings(params.Tags)
+	if err := s.ensureApplicationTags(ctx, accountID, params.Tags); err != nil {
+		return nil, err
+	}
+
 	var existing *AccessApplication
 	var err error
 	if statusID != "" {
@@ -560,6 +576,48 @@ func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, account
 		return nil, fmt.Errorf("failed to create application: %w", err)
 	}
 	return created, nil
+}
+
+func (s *AccessService) ensureApplicationTags(ctx context.Context, accountID string, tags []string) error {
+	desired := uniqueNonEmptyStrings(tags)
+	if len(desired) == 0 {
+		return nil
+	}
+
+	existingTags, err := s.client.ListAccessTags(ctx, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to list access tags: %w", err)
+	}
+	existing := make(map[string]struct{}, len(existingTags))
+	for _, tag := range existingTags {
+		existing[tag.Name] = struct{}{}
+	}
+	for _, tag := range desired {
+		if _, ok := existing[tag]; ok {
+			continue
+		}
+		if _, err := s.client.CreateAccessTag(ctx, accountID, tag); err != nil {
+			return fmt.Errorf("failed to create access tag %q: %w", tag, err)
+		}
+		existing[tag] = struct{}{}
+	}
+	return nil
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func stringSliceContainsAll(haystack, needles []string) bool {

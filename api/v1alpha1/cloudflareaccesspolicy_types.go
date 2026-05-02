@@ -20,10 +20,12 @@ import (
 type PolicyTargetReference struct {
 	// Group is the API group of the target resource.
 	// +kubebuilder:default="gateway.networking.k8s.io"
+	// +kubebuilder:validation:MaxLength=253
 	Group string `json:"group"`
 
 	// Kind is the kind of the target resource.
 	// +kubebuilder:validation:Enum=Gateway;HTTPRoute
+	// +kubebuilder:validation:MaxLength=63
 	Kind string `json:"kind"`
 
 	// Name is the name of the target resource.
@@ -34,10 +36,12 @@ type PolicyTargetReference struct {
 	// Namespace is the namespace of the target resource.
 	// Cross-namespace targeting requires ReferenceGrant.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	Namespace *string `json:"namespace,omitempty"`
 
 	// SectionName targets specific listener (Gateway) or rule (Route).
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	SectionName *string `json:"sectionName,omitempty"`
 }
 
@@ -142,7 +146,6 @@ type AccessApplication struct {
 	// Path restricts protection to specific path prefix.
 	// Cloudflare Access paths must not include ports, query strings, or fragments.
 	// +optional
-	// +kubebuilder:default="/"
 	// +kubebuilder:validation:MaxLength=1024
 	// +kubebuilder:validation:Pattern=`^/[^?#]*$`
 	Path string `json:"path,omitempty"`
@@ -659,9 +662,11 @@ type PolicyAncestorStatus struct {
 	AncestorRef PolicyTargetReference `json:"ancestorRef"`
 
 	// ControllerName identifies the controller managing this attachment.
+	// +kubebuilder:validation:MaxLength=253
 	ControllerName string `json:"controllerName"`
 
 	// Conditions for this specific target.
+	// +kubebuilder:validation:MaxItems=8
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
@@ -691,7 +696,6 @@ type CloudflareAccessPolicyStatus struct {
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
-
 }
 
 // CloudflareAccessPolicy is the Schema for the cloudflareaccesspolicies API.

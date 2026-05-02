@@ -627,3 +627,66 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 		}
 	})
 }
+
+func TestAccessApplicationOwnerTag(t *testing.T) {
+	app := &cfgatev1alpha1.CloudflareAccessApplication{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "cfgate-invariants-e2e-55gqr",
+			Name:      "e2e-policy-1-293",
+		},
+	}
+
+	tag := accessApplicationOwnerTag(app)
+	if len(tag) > 35 {
+		t.Fatalf("accessApplicationOwnerTag() length = %d, want <= 35", len(tag))
+	}
+	if tag != accessApplicationOwnerTag(app) {
+		t.Fatal("accessApplicationOwnerTag() is not deterministic")
+	}
+	if tag == accessApplicationOwnerTag(&cfgatev1alpha1.CloudflareAccessApplication{
+		ObjectMeta: metav1.ObjectMeta{Namespace: app.Namespace, Name: "other"},
+	}) {
+		t.Fatal("accessApplicationOwnerTag() did not change for a different app")
+	}
+}
+
+func TestHTTPRouteAccessPathsDerivesNamedRulesWithoutOverride(t *testing.T) {
+	admin := gatewayv1.SectionName("admin")
+	repos := gatewayv1.SectionName("repos")
+	prefix := gatewayv1.PathMatchPathPrefix
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "repo-route", Namespace: "default"},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Rules: []gatewayv1.HTTPRouteRule{
+				{
+					Name: &admin,
+					Matches: []gatewayv1.HTTPRouteMatch{{
+						Path: &gatewayv1.HTTPPathMatch{Type: &prefix, Value: ptrTo("/admin")},
+					}},
+				},
+				{
+					Name: &repos,
+					Matches: []gatewayv1.HTTPRouteMatch{{
+						Path: &gatewayv1.HTTPPathMatch{Type: &prefix, Value: ptrTo("/repos")},
+					}},
+				},
+			},
+		},
+	}
+
+	paths, err := httpRouteAccessPaths(route, ptrTo("repos"), "")
+	if err != nil {
+		t.Fatalf("httpRouteAccessPaths() error = %v", err)
+	}
+	if !slices.Equal(paths, []string{"/repos"}) {
+		t.Fatalf("httpRouteAccessPaths() = %#v, want [/repos]", paths)
+	}
+
+	paths, err = httpRouteAccessPaths(route, ptrTo("repos"), "/")
+	if err != nil {
+		t.Fatalf("httpRouteAccessPaths() override error = %v", err)
+	}
+	if !slices.Equal(paths, []string{"/"}) {
+		t.Fatalf("httpRouteAccessPaths() override = %#v, want [/]", paths)
+	}
+}

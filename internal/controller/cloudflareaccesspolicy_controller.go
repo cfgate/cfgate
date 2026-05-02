@@ -15,6 +15,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -456,6 +457,7 @@ func accessPolicyTargetKey(kind, namespace, name string) string {
 
 func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(ctrlcontroller.Options{MaxConcurrentReconciles: 4}).
 		For(&cfgatev1alpha1.CloudflareAccessPolicy{}, builder.WithPredicates(GenerationOrDeletionPredicate)).
 		Owns(&corev1.Secret{}).
 		Complete(r)

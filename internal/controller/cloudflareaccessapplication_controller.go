@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"reflect"
 	"sort"
@@ -16,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrlcontroller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -693,7 +696,8 @@ func sanitizeAccessApplicationName(value string) string {
 }
 
 func accessApplicationOwnerTag(app *cfgatev1alpha1.CloudflareAccessApplication) string {
-	return fmt.Sprintf("cfgate:%s:%s", app.Namespace, app.Name)
+	sum := sha256.Sum256([]byte(app.Namespace + "/" + app.Name))
+	return "cfgate:" + hex.EncodeToString(sum[:])[:28]
 }
 
 func applicationStatusIDs(applications []cfgatev1alpha1.AccessApplicationObserved) map[string]string {
@@ -950,6 +954,7 @@ func (r *CloudflareAccessApplicationReconciler) findAllAccessApplications(ctx co
 
 func (r *CloudflareAccessApplicationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		WithOptions(ctrlcontroller.Options{MaxConcurrentReconciles: 4}).
 		For(&cfgatev1alpha1.CloudflareAccessApplication{}, builder.WithPredicates(GenerationOrDeletionPredicate)).
 		Watches(&gwapiv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.findApplicationsForGatewayTarget), builder.WithPredicates(CfgateAnnotationOrGenerationPredicate)).
 		Watches(&gwapiv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(r.findApplicationsForHTTPRouteTarget), builder.WithPredicates(CfgateAnnotationOrGenerationPredicate)).
