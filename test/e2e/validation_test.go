@@ -122,6 +122,12 @@ var _ = Describe("CEL Validation E2E", func() {
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(Or(ContainSubstring("path"), ContainSubstring("pattern")))
 		})
+
+		It("accepts Access app paths with colon segments", func() {
+			app := validAccessApplication(testID("colon-path"), namespace.Name, "policy")
+			app.Spec.Application.Path = "/api:v1"
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
 	})
 })
 

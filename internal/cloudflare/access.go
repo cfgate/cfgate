@@ -645,13 +645,13 @@ func accessApplicationNeedsUpdate(existing *AccessApplication, desired *Applicat
 	if len(desiredDestinations) == 0 && desired.Domain != "" {
 		desiredDestinations = []string{desired.Domain}
 	}
-	if len(existing.Destinations) > 0 && !stringSlicesEqual(existing.Destinations, desiredDestinations) {
+	if !stringSlicesEqual(existing.Destinations, desiredDestinations) {
 		return true
 	}
-	if len(existing.Tags) > 0 && !stringSlicesEqual(existing.Tags, desired.Tags) {
+	if !stringSlicesEqual(existing.Tags, desired.Tags) {
 		return true
 	}
-	if len(existing.Policies) > 0 && !policyLinksEqual(existing.Policies, desired.Policies) {
+	if !policyLinksEqual(existing.Policies, desired.Policies) {
 		return true
 	}
 	desiredType := desired.Type
