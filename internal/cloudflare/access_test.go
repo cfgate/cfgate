@@ -135,6 +135,20 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "policy links order insensitive by precedence",
+			modify: func(a *AccessApplication, p *ApplicationParams) {
+				a.Policies = []ApplicationPolicyLink{
+					{ID: "policy-b", Precedence: 1},
+					{ID: "policy-a", Precedence: 3},
+				}
+				p.Policies = []ApplicationPolicyLink{
+					{ID: "policy-a", Precedence: 3},
+					{ID: "policy-b", Precedence: 1},
+				}
+			},
+			want: false,
+		},
+		{
 			name: "empty tags and policies match",
 			modify: func(a *AccessApplication, p *ApplicationParams) {
 				a.Tags = nil
