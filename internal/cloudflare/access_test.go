@@ -1,7 +1,11 @@
 package cloudflare
 
 import (
+	"context"
+	"reflect"
 	"testing"
+
+	"github.com/go-logr/logr"
 )
 
 func boolPtr(b bool) *bool    { return &b }
@@ -412,6 +416,56 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 				t.Errorf("accessApplicationNeedsUpdate() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestEnsureApplicationByIDOrTagsEnsuresTagsBeforeCreate(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockClient()
+	createdTags := []string{}
+	createCalled := false
+
+	mock.ListAccessTagsFunc = func(_ context.Context, accountID string) ([]AccessTag, error) {
+		if accountID != "account-1" {
+			t.Fatalf("ListAccessTags accountID = %q, want account-1", accountID)
+		}
+		return []AccessTag{{Name: "cfgate"}}, nil
+	}
+	mock.CreateAccessTagFunc = func(_ context.Context, accountID, tagName string) (*AccessTag, error) {
+		if accountID != "account-1" {
+			t.Fatalf("CreateAccessTag accountID = %q, want account-1", accountID)
+		}
+		createdTags = append(createdTags, tagName)
+		return &AccessTag{Name: tagName}, nil
+	}
+	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]AccessApplication, error) {
+		return nil, nil
+	}
+	mock.CreateAccessApplicationFunc = func(_ context.Context, _ string, params ApplicationParams) (*AccessApplication, error) {
+		createCalled = true
+		if !reflect.DeepEqual(params.Tags, []string{"cfgate", "cfgate:default:app"}) {
+			t.Fatalf("CreateAccessApplication tags = %v, want cfgate tags", params.Tags)
+		}
+		return &AccessApplication{ID: "app-1", Name: params.Name, Domain: params.Domain, Tags: params.Tags}, nil
+	}
+
+	params := ApplicationParams{
+		Name:   "app",
+		Domain: "app.example.com",
+		Tags:   []string{"cfgate", "cfgate:default:app", "cfgate:default:app"},
+	}
+	app, err := NewAccessService(mock, logr.Discard()).EnsureApplicationByIDOrTags(ctx, "account-1", "", params)
+	if err != nil {
+		t.Fatalf("EnsureApplicationByIDOrTags() error = %v", err)
+	}
+	if app == nil || app.ID != "app-1" {
+		t.Fatalf("EnsureApplicationByIDOrTags() app = %+v, want app-1", app)
+	}
+	if !createCalled {
+		t.Fatal("CreateAccessApplication was not called")
+	}
+	if !reflect.DeepEqual(createdTags, []string{"cfgate:default:app"}) {
+		t.Fatalf("created tags = %v, want [cfgate:default:app]", createdTags)
 	}
 }
 

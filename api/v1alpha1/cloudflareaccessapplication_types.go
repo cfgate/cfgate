@@ -12,6 +12,7 @@ type AccessPolicyReference struct {
 	// Namespace is the CloudflareAccessPolicy namespace. Defaults to application namespace.
 	// Cross-namespace references require ReferenceGrant.
 	// +optional
+	// +kubebuilder:validation:MaxLength=253
 	Namespace *string `json:"namespace,omitempty"`
 
 	// Precedence determines policy evaluation order for the application. Lower values run first.
@@ -25,12 +26,15 @@ type AccessPolicyReference struct {
 // AccessApplicationObserved records a Cloudflare Access Application created for one host/path target.
 type AccessApplicationObserved struct {
 	// ID is the Cloudflare Access Application ID.
+	// +kubebuilder:validation:MaxLength=36
 	ID string `json:"id,omitempty"`
 
 	// AUD is the Application Audience Tag.
+	// +kubebuilder:validation:MaxLength=255
 	AUD string `json:"aud,omitempty"`
 
 	// Domain is the protected hostname/path in Cloudflare.
+	// +kubebuilder:validation:MaxLength=1024
 	Domain string `json:"domain,omitempty"`
 
 	// TargetRef identifies the Gateway API target that produced this application.
@@ -41,7 +45,6 @@ type AccessApplicationObserved struct {
 //
 // +kubebuilder:validation:XValidation:rule="has(self.targetRef) || has(self.targetRefs)",message="either targetRef or targetRefs must be specified"
 // +kubebuilder:validation:XValidation:rule="!(has(self.targetRef) && has(self.targetRefs))",message="targetRef and targetRefs are mutually exclusive"
-// +kubebuilder:validation:XValidation:rule="self.policyRefs.map(p, (has(p.namespace) ? p.namespace : '') + '/' + p.name).all(k, self.policyRefs.map(p, (has(p.namespace) ? p.namespace : '') + '/' + p.name).filter(x, x == k).size() == 1)",message="policyRefs must not contain duplicate name/namespace pairs"
 type CloudflareAccessApplicationSpec struct {
 	// TargetRef identifies a single Gateway API target.
 	// +optional
@@ -63,13 +66,16 @@ type CloudflareAccessApplicationSpec struct {
 
 	// PolicyRefs lists reusable CloudflareAccessPolicy resources to attach.
 	// +kubebuilder:validation:MinItems=1
-	// +kubebuilder:validation:MaxItems=50
+	// +kubebuilder:validation:MaxItems=16
+	// +listType=map
+	// +listMapKey=name
 	PolicyRefs []AccessPolicyReference `json:"policyRefs"`
 }
 
 // CloudflareAccessApplicationStatus defines observed Access application state.
 type CloudflareAccessApplicationStatus struct {
 	// Applications are Cloudflare Access Applications managed by this resource.
+	// +kubebuilder:validation:MaxItems=64
 	Applications []AccessApplicationObserved `json:"applications,omitempty"`
 
 	// AttachedTargets is the count of successfully attached Gateway API targets.
@@ -80,6 +86,7 @@ type CloudflareAccessApplicationStatus struct {
 
 	// Ancestors contains status for each targetRef.
 	// +optional
+	// +kubebuilder:validation:MaxItems=64
 	Ancestors []PolicyAncestorStatus `json:"ancestors,omitempty"`
 
 	// Conditions describe current state.

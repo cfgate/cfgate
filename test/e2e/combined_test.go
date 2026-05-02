@@ -263,11 +263,18 @@ var _ = Describe("Multi-Resource E2E", Label("cloudflare"), Ordered, func() {
 				return record == nil
 			}, DefaultTimeout, DefaultInterval).Should(BeTrue(), "DNS record should be deleted when route is removed")
 
-			By("Deleting the AccessPolicy")
-			Expect(k8sClient.Delete(ctx, policy)).To(Succeed())
+			By("Deleting the AccessApplication binding")
+			var app cfgatev1alpha1.CloudflareAccessApplication
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policyName, Namespace: namespace.Name}, &app)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, &app)).To(Succeed())
+			waitForAccessApplicationDeleted(ctx, k8sClient, app.Name, app.Namespace, LongTimeout)
 
-			By("Waiting for Access Application to be cleaned up")
+			By("Waiting for Access Application to be cleaned up in Cloudflare")
 			waitForAccessApplicationDeletedFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, policyName, LongTimeout)
+
+			By("Deleting the reusable AccessPolicy")
+			Expect(k8sClient.Delete(ctx, policy)).To(Succeed())
+			waitForAccessPolicyDeleted(ctx, k8sClient, policy.Name, policy.Namespace, LongTimeout)
 		})
 	})
 
