@@ -1,0 +1,33 @@
+apiVersion: cfgate.io/v1alpha1
+kind: CloudflareAccessApplication
+metadata:
+  name: admin-access
+  namespace: demo
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: web
+    sectionName: admin
+  application:
+    name: web-admin
+  policyRefs:
+    - name: allow-admins
+      namespace: cfgate-system
+---
+apiVersion: cfgate.io/v1alpha1
+kind: CloudflareAccessApplication
+metadata:
+  name: repos-access
+  namespace: demo
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: web
+    sectionName: repos
+  application:
+    name: web-repos
+  policyRefs:
+    - name: allow-repos
+      namespace: cfgate-system

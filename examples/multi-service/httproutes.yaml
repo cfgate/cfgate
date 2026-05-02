@@ -26,24 +26,27 @@ spec:
   hostnames:
     - web.example.com
   rules:
-    - backendRefs:
+    - name: root
+      matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
         - name: web
           port: 80
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: admin
-  namespace: demo
-  annotations:
-    cfgate.io/access-policy: cfgate-system/admin-access
-spec:
-  parentRefs:
-    - name: cloudflare-tunnel
-      namespace: cfgate-system
-  hostnames:
-    - admin.example.com
-  rules:
-    - backendRefs:
+    - name: admin
+      matches:
+        - path:
+            type: PathPrefix
+            value: /admin
+      backendRefs:
         - name: admin
+          port: 80
+    - name: repos
+      matches:
+        - path:
+            type: PathPrefix
+            value: /repos
+      backendRefs:
+        - name: api
           port: 80

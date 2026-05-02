@@ -175,7 +175,7 @@ test/e2e/
   helpers_test.go       # Wait functions, resource creators, CF API verifiers
   tunnel_test.go        # CloudflareTunnel lifecycle and recovery paths (~20 specs)
   dns_test.go           # CloudflareDNS sync, cleanup, ownership, and fallback paths (~27 specs)
-  access_test.go        # CloudflareAccessPolicy targets, rules, and service tokens (~29 specs)
+  access_test.go        # CloudflareAccessPolicy/Application bindings, paths, and service tokens
   annotations_test.go   # HTTPRoute annotation parsing and propagation (16 specs)
   combined_test.go      # Multi-CRD interaction and cross-resource tests (7 specs)
   gateway_route_status_test.go # Gateway / HTTPRoute negative and status coverage (7 specs)
@@ -274,6 +274,7 @@ Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller 
 | `createCloudflareDNSWithGatewayRoutes` | CloudflareDNS with gateway route discovery |
 | `createCloudflareAccessPolicy` | Basic Access policy |
 | `createCloudflareAccessPolicyWith*` | Access policy with specific rule type (IP, country, email, OIDC, GSuite) |
+| `createCloudflareAccessApplication` | Access application binding to reusable policies |
 | `createGatewayClassWithController` | GatewayClass with explicit controllerName |
 | `createGatewayClass` | GatewayClass for cfgate |
 | `createGateway` | Gateway with tunnel reference |

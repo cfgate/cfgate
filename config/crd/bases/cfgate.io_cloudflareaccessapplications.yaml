@@ -200,8 +200,8 @@ spec:
                     type: boolean
                   path:
                     description: |-
-                      Path restricts protection to specific path prefix.
-                      Cloudflare Access paths must not include ports, query strings, or fragments.
+                      Path restricts protection to a specific absolute path prefix.
+                      Cloudflare Access paths must not include query strings or fragments.
                     maxLength: 1024
                     pattern: ^/[^?#]*$
                     type: string

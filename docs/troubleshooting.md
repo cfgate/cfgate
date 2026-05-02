@@ -122,7 +122,7 @@ Route discovery is only available for `tunnelRef`-backed CloudflareDNS resources
    ```
    If this returns `NotFound`, install the Gateway API CRDs:
    ```bash
-   kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.1/standard-install.yaml
+   kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml
    ```
 
 ### Common Causes

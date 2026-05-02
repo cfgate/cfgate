@@ -3,11 +3,10 @@
 Multiple services exposed through a single Cloudflare tunnel.
 
 ```
-api.example.com   ──┐
-                    │
-web.example.com   ──┼──▶ cloudflared ──▶ Cloudflare Edge
-                    │
-admin.example.com ──┘
+api.example.com        -> api service
+web.example.com/       -> web service (public)
+web.example.com/admin  -> admin service (Access protected)
+web.example.com/repos  -> api service (Access protected)
 ```
 
 ## Quick Start
@@ -19,6 +18,7 @@ admin.example.com ──┘
 # - tunnel.yaml: set accountId
 # - dns.yaml: set zones[].name
 # - httproutes.yaml: set hostnames
+# - accesspolicy.yaml: set accountId and identity rules
 
 # 3. Deploy
 kubectl apply -k examples/multi-service
@@ -30,11 +30,12 @@ kubectl apply -k examples/multi-service
 - One `Gateway` shared by all routes
 - One `CloudflareDNS` watching all HTTPRoutes
 - Three services: `api`, `web`, and `admin`
-- Three HTTPRoutes with different hostnames
-- One `CloudflareAccessPolicy` protecting the admin route
-- One `ReferenceGrant` allowing cross-namespace access policy targeting
+- Two HTTPRoutes: `api` and `web`
+- Two reusable `CloudflareAccessPolicy` resources in `cfgate-system`
+- Two tenant-local `CloudflareAccessApplication` resources protecting named `web` route rules
+- One `ReferenceGrant` allowing tenant app bindings to reference central policies
 
-> The AccessPolicy lives in `cfgate-system` but targets the admin HTTPRoute in `demo`. This cross-namespace reference requires a [ReferenceGrant](https://gateway-api.sigs.k8s.io/api-types/referencegrant/). See `referencegrant.yaml`.
+> Access policies live in `cfgate-system`. Access applications live in `demo` and attach those policies to the `admin` and `repos` HTTPRoute rules. This cross-namespace policy reference requires a [ReferenceGrant](https://gateway-api.sigs.k8s.io/api-types/referencegrant/) in `cfgate-system`. See `referencegrant.yaml`.
 
 ## Adding Services
 
