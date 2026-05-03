@@ -832,6 +832,20 @@ func (c *clientImpl) ListAccessTags(ctx context.Context, accountID string) ([]Ac
 	return tags, nil
 }
 
+// DeleteAccessTag deletes an Access tag.
+func (c *clientImpl) DeleteAccessTag(ctx context.Context, accountID, tagName string) error {
+	_, err := c.api.ZeroTrust.Access.Tags.Delete(ctx, tagName, zero_trust.AccessTagDeleteParams{
+		AccountID: cf.F(accountID),
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to delete access tag: %w", err)
+	}
+	return nil
+}
+
 // =============================================================================
 // Reusable Access Policy operations
 // =============================================================================

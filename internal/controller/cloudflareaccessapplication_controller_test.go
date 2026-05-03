@@ -551,7 +551,10 @@ func TestResolveApplicationCredentials(t *testing.T) {
 
 	app := appWithFinalizer("app", "app")
 	app.Spec.CloudflareRef = &cfgatev1alpha1.CloudflareSecretRef{Name: "cf", AccountID: "account-1"}
-	creds, err := reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "Gateway", Namespace: "app", Name: "gateway"}})
+	creds, err := reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{
+		{Kind: "Gateway", Namespace: "app", Name: "missing-a"},
+		{Kind: "Gateway", Namespace: "app", Name: "missing-b"},
+	})
 	if err != nil {
 		t.Fatalf("resolveApplicationCredentials() explicit error = %v", err)
 	}
@@ -598,6 +601,61 @@ func TestResolveApplicationCredentials(t *testing.T) {
 		creds.CredentialSecretRef.Name != "cf" ||
 		creds.CredentialSecretRef.Namespace != "secrets" {
 		t.Fatalf("inherited CredentialSecretRef = %+v, want secrets/cf", creds.CredentialSecretRef)
+	}
+
+	routeA := &gwapiv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "route-a", Namespace: "app"},
+		Spec:       gwapiv1.HTTPRouteSpec{CommonRouteSpec: gwapiv1.CommonRouteSpec{ParentRefs: []gwapiv1.ParentReference{{Name: "gateway-a"}}}},
+	}
+	gatewayA := &gwapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway-a", Namespace: "app", Annotations: map[string]string{annotations.AnnotationTunnelRef: "tunnel-a"}},
+	}
+	tunnelA := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "tunnel-a", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareTunnelSpec{Cloudflare: cfgatev1alpha1.CloudflareConfig{
+			SecretRef: cfgatev1alpha1.SecretRef{Name: "cf-a", Namespace: "secrets-a"},
+		}},
+		Status: cfgatev1alpha1.CloudflareTunnelStatus{AccountID: "account-1"},
+	}
+	routeB := &gwapiv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "route-b", Namespace: "app"},
+		Spec:       gwapiv1.HTTPRouteSpec{CommonRouteSpec: gwapiv1.CommonRouteSpec{ParentRefs: []gwapiv1.ParentReference{{Name: "gateway-b"}}}},
+	}
+	gatewayB := &gwapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway-b", Namespace: "app", Annotations: map[string]string{annotations.AnnotationTunnelRef: "tunnel-b"}},
+	}
+	tunnelB := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "tunnel-b", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareTunnelSpec{Cloudflare: cfgatev1alpha1.CloudflareConfig{
+			SecretRef: cfgatev1alpha1.SecretRef{Name: "cf-b", Namespace: "secrets-b"},
+		}},
+		Status: cfgatev1alpha1.CloudflareTunnelStatus{AccountID: "account-1"},
+	}
+	reconciler = newAccessAppReconciler(t, mock, routeA, gatewayA, tunnelA, routeB, gatewayB, tunnelB)
+	creds, err = reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{
+		{Kind: "HTTPRoute", Namespace: "app", Name: "route-a"},
+		{Kind: "HTTPRoute", Namespace: "app", Name: "route-b"},
+	})
+	if err != nil {
+		t.Fatalf("resolveApplicationCredentials() multi-target same account error = %v", err)
+	}
+	if creds.AccountID != "account-1" ||
+		creds.CredentialSecretRef == nil ||
+		creds.CredentialSecretRef.Name != "cf-a" ||
+		creds.CredentialSecretRef.Namespace != "secrets-a" {
+		t.Fatalf("multi-target credentials = %q/%+v, want account-1 secrets-a/cf-a", creds.AccountID, creds.CredentialSecretRef)
+	}
+
+	tunnelBMismatch := tunnelB.DeepCopy()
+	tunnelBMismatch.Status.AccountID = "account-2"
+	reconciler = newAccessAppReconciler(t, mock, routeA.DeepCopy(), gatewayA.DeepCopy(), tunnelA.DeepCopy(), routeB.DeepCopy(), gatewayB.DeepCopy(), tunnelBMismatch)
+	_, err = reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{
+		{Kind: "HTTPRoute", Namespace: "app", Name: "route-a"},
+		{Kind: "HTTPRoute", Namespace: "app", Name: "route-b"},
+	})
+	wantMismatch := "credential inheritance resolved multiple Cloudflare accounts: target app/route-a uses account account-1, target app/route-b uses account account-2; set spec.cloudflareRef to use one account explicitly"
+	if err == nil || err.Error() != wantMismatch {
+		t.Fatalf("resolveApplicationCredentials() mismatch error = %v, want %q", err, wantMismatch)
 	}
 
 	for _, tt := range []struct {
@@ -723,7 +781,16 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 	t.Run("orphan removes finalizer", func(t *testing.T) {
 		app := appWithFinalizer("app", "app")
 		app.Annotations = map[string]string{"cfgate.io/deletion-policy": "orphan"}
-		reconciler := newAccessAppReconciler(t, cloudflare.NewMockClient(), app)
+		mock := cloudflare.NewMockClient()
+		mock.DeleteAccessApplicationFunc = func(context.Context, string, string) error {
+			t.Fatal("DeleteAccessApplication called for orphan")
+			return nil
+		}
+		mock.DeleteAccessTagFunc = func(context.Context, string, string) error {
+			t.Fatal("DeleteAccessTag called for orphan")
+			return nil
+		}
+		reconciler := newAccessAppReconciler(t, mock, app)
 		if _, err := reconciler.reconcileApplicationDelete(ctx, app); err != nil {
 			t.Fatalf("reconcileApplicationDelete() error = %v", err)
 		}
@@ -735,9 +802,20 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 		app.Spec.CloudflareRef = &cfgatev1alpha1.CloudflareSecretRef{Name: "cf", AccountID: "account-1"}
 		app.Status.Applications = []cfgatev1alpha1.AccessApplicationObserved{{ID: "app-1", Domain: "app.example.com"}}
 		deleted := ""
+		deletedTag := ""
 		mock := cloudflare.NewMockClient()
-		mock.DeleteAccessApplicationFunc = func(_ context.Context, _ string, appID string) error {
+		mock.DeleteAccessApplicationFunc = func(_ context.Context, accountID, appID string) error {
+			if accountID != "account-1" {
+				t.Fatalf("DeleteAccessApplication accountID = %q, want account-1", accountID)
+			}
 			deleted = appID
+			return nil
+		}
+		mock.DeleteAccessTagFunc = func(_ context.Context, accountID, tagName string) error {
+			if accountID != "account-1" {
+				t.Fatalf("DeleteAccessTag accountID = %q, want account-1", accountID)
+			}
+			deletedTag = tagName
 			return nil
 		}
 		reconciler := newAccessAppReconciler(t, mock, app)
@@ -746,6 +824,9 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 		}
 		if deleted != "app-1" {
 			t.Fatalf("deleted = %q, want app-1", deleted)
+		}
+		if deletedTag != accessApplicationOwnerTag(app) {
+			t.Fatalf("deletedTag = %q, want %q", deletedTag, accessApplicationOwnerTag(app))
 		}
 		assertAccessApplicationFinalizerRemoved(t, reconciler)
 	})
@@ -763,6 +844,7 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 			},
 		}}
 		deleted := ""
+		deletedTag := ""
 		mock := cloudflare.NewMockClient()
 		mock.DeleteAccessApplicationFunc = func(_ context.Context, accountID, appID string) error {
 			if accountID != "account-1" {
@@ -771,12 +853,49 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 			deleted = appID
 			return nil
 		}
+		mock.DeleteAccessTagFunc = func(_ context.Context, accountID, tagName string) error {
+			if accountID != "account-1" {
+				t.Fatalf("DeleteAccessTag accountID = %q, want account-1", accountID)
+			}
+			deletedTag = tagName
+			return nil
+		}
 		reconciler := newAccessAppReconciler(t, mock, app)
 		if _, err := reconciler.reconcileApplicationDelete(ctx, app); err != nil {
 			t.Fatalf("reconcileApplicationDelete() error = %v", err)
 		}
 		if deleted != "app-1" {
 			t.Fatalf("deleted = %q, want app-1", deleted)
+		}
+		if deletedTag != accessApplicationOwnerTag(app) {
+			t.Fatalf("deletedTag = %q, want %q", deletedTag, accessApplicationOwnerTag(app))
+		}
+		assertAccessApplicationFinalizerRemoved(t, reconciler)
+	})
+
+	t.Run("empty status with cached credentials deletes owner tag and removes finalizer", func(t *testing.T) {
+		app := appWithFinalizer("app", "app")
+		app.Status.AccountID = "account-1"
+		app.Status.CredentialSecretRef = &cfgatev1alpha1.SecretReference{Name: "cf", Namespace: "app"}
+		deletedTag := ""
+		mock := cloudflare.NewMockClient()
+		mock.DeleteAccessApplicationFunc = func(context.Context, string, string) error {
+			t.Fatal("DeleteAccessApplication called with empty status")
+			return nil
+		}
+		mock.DeleteAccessTagFunc = func(_ context.Context, accountID, tagName string) error {
+			if accountID != "account-1" {
+				t.Fatalf("DeleteAccessTag accountID = %q, want account-1", accountID)
+			}
+			deletedTag = tagName
+			return nil
+		}
+		reconciler := newAccessAppReconciler(t, mock, app)
+		if _, err := reconciler.reconcileApplicationDelete(ctx, app); err != nil {
+			t.Fatalf("reconcileApplicationDelete() error = %v", err)
+		}
+		if deletedTag != accessApplicationOwnerTag(app) {
+			t.Fatalf("deletedTag = %q, want %q", deletedTag, accessApplicationOwnerTag(app))
 		}
 		assertAccessApplicationFinalizerRemoved(t, reconciler)
 	})
@@ -797,6 +916,26 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 			t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, accessDeletionRequeueInterval)
 		}
 		assertAccessApplicationEventContains(t, reconciler.Recorder.(*accessApplicationEventRecorder), "Cleanup")
+	})
+
+	t.Run("owner tag delete error requeues and emits cleanup event", func(t *testing.T) {
+		app := appWithFinalizer("app", "app")
+		setDeletionTimestamp(app)
+		app.Spec.CloudflareRef = &cfgatev1alpha1.CloudflareSecretRef{Name: "cf", AccountID: "account-1"}
+		app.Status.Applications = []cfgatev1alpha1.AccessApplicationObserved{{ID: "app-1", Domain: "app.example.com"}}
+		mock := cloudflare.NewMockClient()
+		mock.DeleteAccessApplicationFunc = func(context.Context, string, string) error { return nil }
+		mock.DeleteAccessTagFunc = func(context.Context, string, string) error { return errors.New("tag delete failed") }
+		reconciler := newAccessAppReconciler(t, mock, app)
+		result, err := reconciler.reconcileApplicationDelete(ctx, app)
+		if err != nil {
+			t.Fatalf("reconcileApplicationDelete() error = %v", err)
+		}
+		if result.RequeueAfter != accessDeletionRequeueInterval {
+			t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, accessDeletionRequeueInterval)
+		}
+		assertAccessApplicationEventContains(t, reconciler.Recorder.(*accessApplicationEventRecorder), "Cleanup")
+		assertAccessApplicationEventContains(t, reconciler.Recorder.(*accessApplicationEventRecorder), "delete Access application owner tag")
 	})
 
 	t.Run("credential error requeues", func(t *testing.T) {

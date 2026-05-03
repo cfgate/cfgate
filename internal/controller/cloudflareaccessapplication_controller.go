@@ -456,7 +456,29 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationCredentials(ct
 	if len(targets) == 0 {
 		return nil, fmt.Errorf("no targets available for credential inheritance")
 	}
-	gateway, err := r.gatewayForApplicationTarget(ctx, targets[0])
+
+	var first *accessApplicationCredentials
+	var firstTarget accessApplicationTarget
+	for _, target := range targets {
+		creds, err := r.resolveInheritedApplicationCredentials(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		if first == nil {
+			first = creds
+			firstTarget = target
+			continue
+		}
+		if creds.AccountID != first.AccountID {
+			return nil, fmt.Errorf("credential inheritance resolved multiple Cloudflare accounts: target %s/%s uses account %s, target %s/%s uses account %s; set spec.cloudflareRef to use one account explicitly",
+				firstTarget.Namespace, firstTarget.Name, first.AccountID, target.Namespace, target.Name, creds.AccountID)
+		}
+	}
+	return first, nil
+}
+
+func (r *CloudflareAccessApplicationReconciler) resolveInheritedApplicationCredentials(ctx context.Context, target accessApplicationTarget) (*accessApplicationCredentials, error) {
+	gateway, err := r.gatewayForApplicationTarget(ctx, target)
 	if err != nil {
 		return nil, err
 	}
@@ -844,7 +866,7 @@ func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx c
 	if app.Annotations["cfgate.io/deletion-policy"] == "orphan" {
 		return r.removeApplicationFinalizer(ctx, app)
 	}
-	if len(app.Status.Applications) == 0 {
+	if len(app.Status.Applications) == 0 && !accessApplicationHasDeletionCredentialSource(app) {
 		return r.removeApplicationFinalizer(ctx, app)
 	}
 	targets := make([]accessApplicationTarget, 0, len(app.Status.Applications))
@@ -867,7 +889,33 @@ func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx c
 			return r.blockApplicationDeletion(ctx, app, fmt.Sprintf("Failed to delete Access application %s: %s", observed.ID, err.Error()))
 		}
 	}
+	if err := deleteAccessApplicationOwnerTag(ctx, creds.Service, creds.AccountID, app); err != nil {
+		return r.blockApplicationDeletion(ctx, app, err.Error())
+	}
 	return r.removeApplicationFinalizer(ctx, app)
+}
+
+func accessApplicationHasDeletionCredentialSource(app *cfgatev1alpha1.CloudflareAccessApplication) bool {
+	return app.Spec.CloudflareRef != nil ||
+		(app.Status.AccountID != "" &&
+			app.Status.CredentialSecretRef != nil &&
+			app.Status.CredentialSecretRef.Name != "")
+}
+
+func deleteAccessApplicationOwnerTag(
+	ctx context.Context,
+	accessService *cloudflare.AccessService,
+	accountID string,
+	app *cfgatev1alpha1.CloudflareAccessApplication,
+) error {
+	tag := accessApplicationOwnerTag(app)
+	if tag == accessApplicationTag {
+		return nil
+	}
+	if err := accessService.Client().DeleteAccessTag(ctx, accountID, tag); err != nil {
+		return fmt.Errorf("delete Access application owner tag %s: %w", tag, err)
+	}
+	return nil
 }
 
 func (r *CloudflareAccessApplicationReconciler) resolveApplicationDeletionCredentials(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, targets []accessApplicationTarget) (*accessApplicationCredentials, error) {

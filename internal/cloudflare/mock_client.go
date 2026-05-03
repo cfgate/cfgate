@@ -53,6 +53,7 @@ type MockClient struct {
 	// Access Tag operations
 	CreateAccessTagFunc func(ctx context.Context, accountID, tagName string) (*AccessTag, error)
 	ListAccessTagsFunc  func(ctx context.Context, accountID string) ([]AccessTag, error)
+	DeleteAccessTagFunc func(ctx context.Context, accountID, tagName string) error
 
 	// Access Policy operations
 	CreateAccessPolicyFunc func(ctx context.Context, accountID string, params PolicyParams) (*AccessPolicy, error)
@@ -265,6 +266,13 @@ func (m *MockClient) ListAccessTags(ctx context.Context, accountID string) ([]Ac
 		return m.ListAccessTagsFunc(ctx, accountID)
 	}
 	return nil, nil
+}
+
+func (m *MockClient) DeleteAccessTag(ctx context.Context, accountID, tagName string) error {
+	if m.DeleteAccessTagFunc != nil {
+		return m.DeleteAccessTagFunc(ctx, accountID, tagName)
+	}
+	return nil
 }
 
 // Access Policy operations

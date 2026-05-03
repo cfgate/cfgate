@@ -163,6 +163,9 @@ func TestMockClientUnstubbedAccessMethods(t *testing.T) {
 	if tags, err := mock.ListAccessTags(ctx, "account"); tags != nil || err != nil {
 		t.Fatalf("ListAccessTags() = (%+v, %v), want nil nil", tags, err)
 	}
+	if err := mock.DeleteAccessTag(ctx, "account", "tag"); err != nil {
+		t.Fatalf("DeleteAccessTag() error = %v", err)
+	}
 	if token, err := mock.CreateServiceToken(ctx, "account", ServiceTokenParams{}); token != nil || err != nil {
 		t.Fatalf("CreateServiceToken() = (%+v, %v), want nil nil", token, err)
 	}

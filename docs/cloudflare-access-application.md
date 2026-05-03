@@ -30,7 +30,7 @@ Key fields:
 | Field | Description |
 |---|---|
 | `targetRef` / `targetRefs` | Gateway API `Gateway` or `HTTPRoute` targets. Exactly one of these fields is allowed. |
-| `cloudflareRef` | Optional credentials. If omitted, credentials are inherited from target route -> Gateway -> CloudflareTunnel. |
+| `cloudflareRef` | Optional credentials. If omitted, credentials are inherited from target route -> Gateway -> CloudflareTunnel. With multiple targets, all targets must inherit the same Cloudflare account. Use explicit `spec.cloudflareRef` when binding targets that should share one account regardless of their Gateway/Tunnel chain. |
 | `application` | Access Application settings shared by generated apps. `path` overrides derived target paths. |
 | `policyRefs` | Required reusable policies to attach. Omit `precedence` on every ref to use list order starting at `1`, or set `precedence` on every ref for custom ordering. Do not mix modes; explicit precedence values must be unique. Duplicate namespace/name pairs in one list are invalid. |
 
