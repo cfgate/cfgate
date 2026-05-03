@@ -59,6 +59,7 @@ func TestAccessPolicyReconcileSuccess(t *testing.T) {
 		return &cloudflare.AccessPolicy{ID: "policy-id", Name: params.Name, Reusable: true, AppCount: 0}, nil
 	}
 	reconciler := newAccessPolicyReconciler(t, mock, policy)
+	reconciler.Recorder = nil
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "policy", Namespace: "app"}})
 	if err != nil {
@@ -224,6 +225,65 @@ func TestK8sSecretWriterWriteSecret(t *testing.T) {
 		t.Fatalf("secret data = %#v, want updated", secret.Data)
 	}
 
+	unmanagedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "manual-secret", Namespace: "app"},
+		Data:       map[string][]byte{"a": []byte("manual")},
+	}
+	if err := k8sClient.Create(ctx, unmanagedSecret); err != nil {
+		t.Fatalf("Create(unmanaged secret) error = %v", err)
+	}
+	unmanagedWriter := &k8sSecretWriter{
+		client:    k8sClient,
+		namespace: "app",
+		secretRef: cfgatev1alpha1.ServiceTokenSecretRef{Name: "manual-secret"},
+		owner:     owner,
+		scheme:    scheme,
+	}
+	if err := unmanagedWriter.WriteSecret(ctx, "svc", map[string][]byte{"a": []byte("owned")}); err != nil {
+		t.Fatalf("WriteSecret(unmanaged update) error = %v", err)
+	}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "manual-secret", Namespace: "app"}, &secret); err != nil {
+		t.Fatalf("Get(unmanaged secret) error = %v", err)
+	}
+	if string(secret.Data["a"]) != "owned" || len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != owner.Name {
+		t.Fatalf("unmanaged secret = %#v, want data and owner reference", secret)
+	}
+
+	otherController := true
+	otherOwnedSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "other-owned-secret",
+			Namespace: "app",
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: cfgatev1alpha1.GroupVersion.String(),
+				Kind:       "CloudflareAccessPolicy",
+				Name:       "other",
+				UID:        types.UID("other-uid"),
+				Controller: &otherController,
+			}},
+		},
+		Data: map[string][]byte{"a": []byte("other")},
+	}
+	if err := k8sClient.Create(ctx, otherOwnedSecret); err != nil {
+		t.Fatalf("Create(other-owned secret) error = %v", err)
+	}
+	otherOwnedWriter := &k8sSecretWriter{
+		client:    k8sClient,
+		namespace: "app",
+		secretRef: cfgatev1alpha1.ServiceTokenSecretRef{Name: "other-owned-secret"},
+		owner:     owner,
+		scheme:    scheme,
+	}
+	if err := otherOwnedWriter.WriteSecret(ctx, "svc", map[string][]byte{"a": []byte("kept")}); err != nil {
+		t.Fatalf("WriteSecret(other-owned update) error = %v", err)
+	}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "other-owned-secret", Namespace: "app"}, &secret); err != nil {
+		t.Fatalf("Get(other-owned secret) error = %v", err)
+	}
+	if string(secret.Data["a"]) != "kept" || len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != "other" {
+		t.Fatalf("other-owned secret = %#v, want data update and preserved owner", secret)
+	}
+
 	badWriter := &k8sSecretWriter{
 		client:    k8sClient,
 		namespace: "app",
@@ -310,6 +370,19 @@ func TestAccessPolicyDeletePaths(t *testing.T) {
 			t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, accessDeletionRequeueInterval)
 		}
 		assertAccessApplicationEventContains(t, reconciler.Recorder.(*accessApplicationEventRecorder), "Cleanup")
+	})
+
+	t.Run("block deletion tolerates nil recorder", func(t *testing.T) {
+		policy := policyWithDeleteStatus()
+		reconciler := newAccessPolicyReconciler(t, cloudflare.NewMockClient(), policy)
+		reconciler.Recorder = nil
+		result, err := reconciler.blockAccessDeletion(ctx, policy, "blocked")
+		if err != nil {
+			t.Fatalf("blockAccessDeletion() error = %v", err)
+		}
+		if result.RequeueAfter != accessDeletionRequeueInterval {
+			t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, accessDeletionRequeueInterval)
+		}
 	})
 
 	t.Run("deletes policy and service tokens", func(t *testing.T) {

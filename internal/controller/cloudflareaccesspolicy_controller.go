@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -148,7 +149,9 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 	if err := r.updateStatus(ctx, &policy); err != nil {
 		return ctrl.Result{}, err
 	}
-	r.Recorder.Eventf(&policy, nil, corev1.EventTypeNormal, "Reconciled", "Reconcile", "Access policy reconciled successfully")
+	if r.Recorder != nil {
+		r.Recorder.Eventf(&policy, nil, corev1.EventTypeNormal, "Reconciled", "Reconcile", "Access policy reconciled successfully")
+	}
 	return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterSuccess}, nil
 }
 
@@ -340,6 +343,12 @@ func (w *k8sSecretWriter) WriteSecret(ctx context.Context, name string, data map
 		return err
 	}
 	existing.Data = data
+	if err := controllerutil.SetControllerReference(w.owner, existing, w.scheme); err != nil {
+		var ownedErr *controllerutil.AlreadyOwnedError
+		if !errors.As(err, &ownedErr) {
+			return fmt.Errorf("setting owner reference: %w", err)
+		}
+	}
 	return w.client.Update(ctx, existing)
 }
 
@@ -383,7 +392,9 @@ func (r *CloudflareAccessPolicyReconciler) blockAccessDeletion(ctx context.Conte
 		reason = "CleanupBlocked"
 		message = fmt.Sprintf("%s (blocked after %s of retries).%s", detail, retryElapsed.Round(time.Second), suffix)
 	}
-	r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, reason, "Delete", "%s", message)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(policy, nil, corev1.EventTypeWarning, reason, "Delete", "%s", message)
+	}
 	return ctrl.Result{RequeueAfter: accessDeletionRequeueInterval}, nil
 }
 

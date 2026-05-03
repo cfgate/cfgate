@@ -23,7 +23,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
@@ -1057,7 +1056,7 @@ func (r *CloudflareAccessApplicationReconciler) SetupWithManager(mgr ctrl.Manage
 		For(&cfgatev1alpha1.CloudflareAccessApplication{}, builder.WithPredicates(GenerationOrDeletionPredicate)).
 		Watches(&gwapiv1.Gateway{}, handler.EnqueueRequestsFromMapFunc(r.findApplicationsForGatewayTarget), builder.WithPredicates(CfgateAnnotationOrGenerationPredicate)).
 		Watches(&gwapiv1.HTTPRoute{}, handler.EnqueueRequestsFromMapFunc(r.findApplicationsForHTTPRouteTarget), builder.WithPredicates(CfgateAnnotationOrGenerationPredicate)).
-		Watches(&cfgatev1alpha1.CloudflareAccessPolicy{}, handler.EnqueueRequestsFromMapFunc(r.findApplicationsForPolicy), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&cfgatev1alpha1.CloudflareAccessPolicy{}, handler.EnqueueRequestsFromMapFunc(r.findApplicationsForPolicy), builder.WithPredicates(AccessPolicyReferenceChangedPredicate)).
 		Watches(&cfgatev1alpha1.CloudflareTunnel{}, handler.EnqueueRequestsFromMapFunc(r.findAllAccessApplications), builder.WithPredicates(TunnelIDChangedPredicate)).
 		Watches(&gwapiv1b1.ReferenceGrant{}, handler.EnqueueRequestsFromMapFunc(r.findAllAccessApplications)).
 		Complete(r)
