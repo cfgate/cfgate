@@ -66,7 +66,6 @@ func makeMatchingPolicyPair() (*AccessPolicy, *PolicyParams) {
 	return &AccessPolicy{
 			Name:                         "allow-engineering",
 			Decision:                     "allow",
-			Precedence:                   1,
 			Include:                      []AccessRuleParam{{Everyone: boolPtr(true)}},
 			Exclude:                      nil,
 			Require:                      nil,
@@ -78,7 +77,6 @@ func makeMatchingPolicyPair() (*AccessPolicy, *PolicyParams) {
 		}, &PolicyParams{
 			Name:                         "allow-engineering",
 			Decision:                     "allow",
-			Precedence:                   1,
 			Include:                      []AccessRuleParam{{Everyone: boolPtr(true)}},
 			Exclude:                      nil,
 			Require:                      nil,
@@ -146,6 +144,20 @@ func TestAccessApplicationNeedsUpdate(t *testing.T) {
 				}
 				p.Policies = []ApplicationPolicyLink{
 					{ID: "policy-a", Precedence: 3},
+					{ID: "policy-b", Precedence: 1},
+				}
+			},
+			want: false,
+		},
+		{
+			name: "policy links order insensitive with duplicate precedence",
+			modify: func(a *AccessApplication, p *ApplicationParams) {
+				a.Policies = []ApplicationPolicyLink{
+					{ID: "policy-b", Precedence: 1},
+					{ID: "policy-a", Precedence: 1},
+				}
+				p.Policies = []ApplicationPolicyLink{
+					{ID: "policy-a", Precedence: 1},
 					{ID: "policy-b", Precedence: 1},
 				}
 			},
@@ -557,6 +569,48 @@ func TestEnsureApplicationByIDOrTagsSkipsOptionalTagWhenCloudflareTagLimitReache
 	}
 }
 
+func TestEnsureApplicationTagsSkipsOnlyOwnerTagWhenLimitReached(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("owner tag limit is optional regardless of order", func(t *testing.T) {
+		mock := NewMockClient()
+		var created []string
+		mock.ListAccessTagsFunc = func(context.Context, string) ([]AccessTag, error) {
+			return nil, nil
+		}
+		mock.CreateAccessTagFunc = func(_ context.Context, _ string, tagName string) (*AccessTag, error) {
+			if strings.HasPrefix(tagName, "cfgate:") {
+				return nil, cfError(400, accessTagLimitErrorCode)
+			}
+			created = append(created, tagName)
+			return &AccessTag{Name: tagName}, nil
+		}
+
+		got, err := NewAccessService(mock, logr.Discard()).ensureApplicationTags(ctx, "account-1", []string{"cfgate:default:app", "cfgate"})
+		if err != nil {
+			t.Fatalf("ensureApplicationTags() error = %v", err)
+		}
+		if !reflect.DeepEqual(got, []string{"cfgate"}) || !reflect.DeepEqual(created, []string{"cfgate"}) {
+			t.Fatalf("tags = %v created = %v, want [cfgate]", got, created)
+		}
+	})
+
+	t.Run("base tag limit is required", func(t *testing.T) {
+		mock := NewMockClient()
+		mock.ListAccessTagsFunc = func(context.Context, string) ([]AccessTag, error) {
+			return nil, nil
+		}
+		mock.CreateAccessTagFunc = func(context.Context, string, string) (*AccessTag, error) {
+			return nil, cfError(400, accessTagLimitErrorCode)
+		}
+
+		_, err := NewAccessService(mock, logr.Discard()).ensureApplicationTags(ctx, "account-1", []string{"cfgate"})
+		if err == nil || !strings.Contains(err.Error(), `failed to create access tag "cfgate"`) {
+			t.Fatalf("ensureApplicationTags() error = %v, want cfgate create failure", err)
+		}
+	})
+}
+
 func TestEnsureReusablePolicy(t *testing.T) {
 	baseExisting, baseDesired := makeMatchingPolicyPair()
 	baseExisting.ID = "policy-1"
@@ -585,7 +639,6 @@ func TestEnsureReusablePolicy(t *testing.T) {
 				ID:                           "policy-1",
 				Name:                         baseExisting.Name,
 				Decision:                     baseExisting.Decision,
-				Precedence:                   baseExisting.Precedence,
 				Include:                      baseExisting.Include,
 				SessionDuration:              baseExisting.SessionDuration,
 				PurposeJustificationRequired: baseExisting.PurposeJustificationRequired,
@@ -627,7 +680,6 @@ func TestEnsureReusablePolicy(t *testing.T) {
 				ID:              "policy-2",
 				Name:            baseExisting.Name,
 				Decision:        baseExisting.Decision,
-				Precedence:      baseExisting.Precedence,
 				Include:         baseExisting.Include,
 				SessionDuration: baseExisting.SessionDuration,
 			}},
@@ -702,7 +754,6 @@ func TestEnsureReusablePolicy(t *testing.T) {
 				if !accessPolicyEqual(&AccessPolicy{
 					Name:                         params.Name,
 					Decision:                     params.Decision,
-					Precedence:                   params.Precedence,
 					Include:                      params.Include,
 					Exclude:                      params.Exclude,
 					Require:                      params.Require,
@@ -963,11 +1014,6 @@ func TestAccessPolicyEqual(t *testing.T) {
 		{
 			name:   "Decision drift",
 			modify: func(_ *AccessPolicy, d *PolicyParams) { d.Decision = "deny" },
-			want:   false,
-		},
-		{
-			name:   "Precedence drift",
-			modify: func(_ *AccessPolicy, d *PolicyParams) { d.Precedence = 2 },
 			want:   false,
 		},
 		{

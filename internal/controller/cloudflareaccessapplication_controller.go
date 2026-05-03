@@ -580,8 +580,8 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationPolicyRefs(ctx
 	links := make([]cloudflare.ApplicationPolicyLink, 0, len(app.Spec.PolicyRefs))
 	for i, ref := range app.Spec.PolicyRefs {
 		namespace := app.Namespace
-		if ref.Namespace != nil && *ref.Namespace != "" {
-			namespace = *ref.Namespace
+		if ref.Namespace != "" {
+			namespace = ref.Namespace
 		}
 		key := namespace + "/" + ref.Name
 		if _, ok := seen[key]; ok {
@@ -937,8 +937,8 @@ func (r *CloudflareAccessApplicationReconciler) findApplicationsForPolicy(ctx co
 	for _, app := range apps.Items {
 		for _, ref := range app.Spec.PolicyRefs {
 			namespace := app.Namespace
-			if ref.Namespace != nil && *ref.Namespace != "" {
-				namespace = *ref.Namespace
+			if ref.Namespace != "" {
+				namespace = ref.Namespace
 			}
 			if ref.Name == policy.Name && namespace == policy.Namespace {
 				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})

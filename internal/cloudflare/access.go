@@ -530,13 +530,13 @@ func (s *AccessService) ensureApplicationTags(ctx context.Context, accountID str
 	}
 
 	ensured := make([]string, 0, len(desired))
-	for i, tag := range desired {
+	for _, tag := range desired {
 		if _, ok := existing[tag]; ok {
 			ensured = append(ensured, tag)
 			continue
 		}
 		if _, err := s.client.CreateAccessTag(ctx, accountID, tag); err != nil {
-			if i > 0 && hasErrorCode(err, accessTagLimitErrorCode) {
+			if strings.HasPrefix(tag, "cfgate:") && hasErrorCode(err, accessTagLimitErrorCode) {
 				s.log.Info("skipping optional access application tag because Cloudflare account tag limit was reached", "tag", tag)
 				continue
 			}
@@ -683,12 +683,8 @@ func policyLinksEqual(a, b []ApplicationPolicyLink) bool {
 	copy(sa, a)
 	sb := make([]ApplicationPolicyLink, len(b))
 	copy(sb, b)
-	slices.SortFunc(sa, func(x, y ApplicationPolicyLink) int {
-		return cmp.Compare(x.Precedence, y.Precedence)
-	})
-	slices.SortFunc(sb, func(x, y ApplicationPolicyLink) int {
-		return cmp.Compare(x.Precedence, y.Precedence)
-	})
+	slices.SortFunc(sa, comparePolicyLinks)
+	slices.SortFunc(sb, comparePolicyLinks)
 
 	for i := range sa {
 		if sa[i] != sb[i] {
@@ -696,6 +692,13 @@ func policyLinksEqual(a, b []ApplicationPolicyLink) bool {
 		}
 	}
 	return true
+}
+
+func comparePolicyLinks(x, y ApplicationPolicyLink) int {
+	if c := cmp.Compare(x.Precedence, y.Precedence); c != 0 {
+		return c
+	}
+	return cmp.Compare(x.ID, y.ID)
 }
 
 // EnsureReusablePolicy ensures an account-level reusable Access policy exists.
@@ -758,9 +761,6 @@ func accessPolicyEqual(existing *AccessPolicy, desired *PolicyParams) bool {
 		return false
 	}
 	if existing.Decision != desired.Decision {
-		return false
-	}
-	if existing.Precedence != desired.Precedence {
 		return false
 	}
 	if existing.SessionDuration != desired.SessionDuration {
