@@ -317,6 +317,7 @@ spec:
                 type: array
                 x-kubernetes-list-map-keys:
                 - name
+                - namespace
                 x-kubernetes-list-type: map
               targetRef:
                 description: TargetRef identifies a single Gateway API target.

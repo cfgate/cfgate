@@ -154,13 +154,23 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 
 func (r *CloudflareAccessPolicyReconciler) resolveCredentials(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (*cloudflare.AccessService, string, error) {
 	secretRef := &policy.Spec.CloudflareRef
-	accountID := secretRef.AccountID
-	if accountID == "" {
-		return nil, "", fmt.Errorf("account ID not specified")
+	if secretRef.AccountID == "" && secretRef.AccountName == "" {
+		return nil, "", fmt.Errorf("account ID or account name not specified")
 	}
 	cfClient, err := r.getCloudflareClient(ctx, policy.Namespace, secretRef)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create Cloudflare client: %w", err)
+	}
+	accountID := secretRef.AccountID
+	if accountID == "" {
+		account, err := cfClient.GetAccountByName(ctx, secretRef.AccountName)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to resolve account name %q: %w", secretRef.AccountName, err)
+		}
+		if account == nil {
+			return nil, "", fmt.Errorf("account %q not found", secretRef.AccountName)
+		}
+		accountID = account.ID
 	}
 	return cloudflare.NewAccessService(cfClient, log.FromContext(ctx)), accountID, nil
 }

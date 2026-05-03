@@ -979,6 +979,34 @@ func TestNewAccessPolicyReadyCondition(t *testing.T) {
 	}
 }
 
+func TestNewAccessApplicationReadyCondition(t *testing.T) {
+	readyConditions := []metav1.Condition{
+		NewCondition(ConditionTypeCredentialsValid, metav1.ConditionTrue, ReasonCredentialsValid, "ok", 1),
+		NewCondition(ConditionTypeTargetsResolved, metav1.ConditionTrue, ReasonTargetsResolved, "ok", 1),
+		NewCondition(ConditionTypeReferenceGrantValid, metav1.ConditionTrue, ReasonResolved, "ok", 1),
+		NewCondition(ConditionTypePoliciesResolved, metav1.ConditionTrue, ReasonPoliciesResolved, "ok", 1),
+		NewCondition(ConditionTypeApplicationSynced, metav1.ConditionTrue, ReasonApplicationSynced, "ok", 1),
+		NewCondition(ConditionTypePoliciesLinked, metav1.ConditionTrue, ReasonPoliciesLinked, "ok", 1),
+	}
+
+	got := NewAccessApplicationReadyCondition(readyConditions, 2)
+	if got.Status != metav1.ConditionTrue || got.Reason != ReasonReconcileSuccess {
+		t.Fatalf("ready condition = %+v, want Ready=True/ReconcileSuccess", got)
+	}
+
+	failing := append([]metav1.Condition(nil), readyConditions...)
+	failing[1] = NewCondition(ConditionTypeTargetsResolved, metav1.ConditionFalse, ReasonTargetNotFound, "missing route", 1)
+	got = NewAccessApplicationReadyCondition(failing, 2)
+	if got.Status != metav1.ConditionFalse || got.Reason != ReasonTargetNotFound || got.Message != "missing route" {
+		t.Fatalf("failing ready condition = %+v", got)
+	}
+
+	got = NewAccessApplicationReadyCondition(nil, 2)
+	if got.Status != metav1.ConditionUnknown || got.Reason != ReasonReconciling {
+		t.Fatalf("empty ready condition = %+v, want Unknown/Reconcilling", got)
+	}
+}
+
 func TestLogConditionChange(t *testing.T) {
 	// logr.Discard() ensures no panics; we verify the branch logic by calling both paths.
 	t.Run("different status does not panic", func(t *testing.T) {
