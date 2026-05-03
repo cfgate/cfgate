@@ -58,6 +58,12 @@ type accessApplicationTarget struct {
 	Domain    string
 }
 
+type accessApplicationCredentials struct {
+	Service             *cloudflare.AccessService
+	AccountID           string
+	CredentialSecretRef *cfgatev1alpha1.SecretReference
+}
+
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccessapplications,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccessapplications/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccessapplications/finalizers,verbs=update
@@ -113,7 +119,7 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 		status.NewCondition(status.ConditionTypeReferenceGrantValid, metav1.ConditionTrue, status.ReasonResolved, "ReferenceGrants permit referenced resources.", app.Generation),
 	)
 
-	accessService, accountID, err := r.resolveApplicationCredentials(ctx, &app, targets)
+	creds, err := r.resolveApplicationCredentials(ctx, &app, targets)
 	if err != nil {
 		log.Error(err, "failed to resolve access application credentials")
 		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
@@ -125,11 +131,13 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 		_ = r.updateApplicationStatus(ctx, &app)
 		return ctrl.Result{RequeueAfter: accessApplicationRequeueAfterError}, nil
 	}
+	app.Status.AccountID = creds.AccountID
+	app.Status.CredentialSecretRef = creds.CredentialSecretRef
 	app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
 		status.NewCondition(status.ConditionTypeCredentialsValid, metav1.ConditionTrue, status.ReasonCredentialsValid, "Credentials validated successfully.", app.Generation),
 	)
 
-	policyLinks, err := r.resolveApplicationPolicyRefs(ctx, &app, accountID)
+	policyLinks, err := r.resolveApplicationPolicyRefs(ctx, &app, creds.AccountID)
 	if err != nil {
 		log.Error(err, "failed to resolve access application policies")
 		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
@@ -150,7 +158,7 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 	observed := make([]cfgatev1alpha1.AccessApplicationObserved, 0, len(targets))
 	for _, target := range targets {
 		params := buildAccessApplicationParams(&app, target, policyLinks, len(targets) > 1)
-		cfApp, err := accessService.EnsureApplicationByIDOrTags(ctx, accountID, existingIDs[target.Domain], params)
+		cfApp, err := creds.Service.EnsureApplicationByIDOrTags(ctx, creds.AccountID, existingIDs[target.Domain], params)
 		if err != nil {
 			log.Error(err, "failed to sync access application", "domain", target.Domain)
 			app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
@@ -169,7 +177,7 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 			TargetRef: target.Ref,
 		})
 	}
-	if err := deleteStaleAccessApplications(ctx, accessService, accountID, app.Status.Applications, desiredDomains); err != nil {
+	if err := deleteStaleAccessApplications(ctx, creds.Service, creds.AccountID, app.Status.Applications, desiredDomains); err != nil {
 		log.Error(err, "failed to delete stale access applications")
 		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
 			status.NewCondition(status.ConditionTypeApplicationSynced, metav1.ConditionFalse, status.ReasonApplicationError, status.Error2ConditionMsg(err), app.Generation),
@@ -442,35 +450,31 @@ func accessApplicationDomain(host, path string) string {
 	return host + path
 }
 
-func (r *CloudflareAccessApplicationReconciler) resolveApplicationCredentials(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, targets []accessApplicationTarget) (*cloudflare.AccessService, string, error) {
+func (r *CloudflareAccessApplicationReconciler) resolveApplicationCredentials(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, targets []accessApplicationTarget) (*accessApplicationCredentials, error) {
 	if app.Spec.CloudflareRef != nil {
-		cfClient, accountID, err := r.getAccessApplicationCloudflareClient(ctx, app.Namespace, app.Spec.CloudflareRef)
-		if err != nil {
-			return nil, "", err
-		}
-		return cloudflare.NewAccessService(cfClient, log.FromContext(ctx)), accountID, nil
+		return r.resolveCloudflareRefCredentials(ctx, app.Namespace, app.Spec.CloudflareRef)
 	}
 	if len(targets) == 0 {
-		return nil, "", fmt.Errorf("no targets available for credential inheritance")
+		return nil, fmt.Errorf("no targets available for credential inheritance")
 	}
 	gateway, err := r.gatewayForApplicationTarget(ctx, targets[0])
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	tunnelRef := annotations.GetAnnotation(gateway, annotations.AnnotationTunnelRef)
 	if tunnelRef == "" {
-		return nil, "", fmt.Errorf("gateway %s/%s missing %s annotation", gateway.Namespace, gateway.Name, annotations.AnnotationTunnelRef)
+		return nil, fmt.Errorf("gateway %s/%s missing %s annotation", gateway.Namespace, gateway.Name, annotations.AnnotationTunnelRef)
 	}
 	tunnelNS, tunnelName, err := annotations.ParseNamespacedName(tunnelRef, gateway.Namespace)
 	if err != nil {
-		return nil, "", fmt.Errorf("invalid tunnel reference %q: %w", tunnelRef, err)
+		return nil, fmt.Errorf("invalid tunnel reference %q: %w", tunnelRef, err)
 	}
 	var tunnel cfgatev1alpha1.CloudflareTunnel
 	if err := r.Get(ctx, types.NamespacedName{Name: tunnelName, Namespace: tunnelNS}, &tunnel); err != nil {
 		if apierrors.IsNotFound(err) {
-			return nil, "", fmt.Errorf("CloudflareTunnel %s/%s not found", tunnelNS, tunnelName)
+			return nil, fmt.Errorf("CloudflareTunnel %s/%s not found", tunnelNS, tunnelName)
 		}
-		return nil, "", err
+		return nil, err
 	}
 	secretRef := cfgatev1alpha1.CloudflareSecretRef{
 		Name:        tunnel.Spec.Cloudflare.SecretRef.Name,
@@ -483,11 +487,26 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationCredentials(ct
 	if secretRef.AccountID == "" {
 		secretRef.AccountID = tunnel.Status.AccountID
 	}
-	cfClient, accountID, err := r.getAccessApplicationCloudflareClient(ctx, tunnel.Namespace, &secretRef)
+	return r.resolveCloudflareRefCredentials(ctx, tunnel.Namespace, &secretRef)
+}
+
+func (r *CloudflareAccessApplicationReconciler) resolveCloudflareRefCredentials(ctx context.Context, defaultNamespace string, ref *cfgatev1alpha1.CloudflareSecretRef) (*accessApplicationCredentials, error) {
+	cfClient, accountID, err := r.getAccessApplicationCloudflareClient(ctx, defaultNamespace, ref)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return cloudflare.NewAccessService(cfClient, log.FromContext(ctx)), accountID, nil
+	secretNamespace := defaultNamespace
+	if ref.Namespace != nil && *ref.Namespace != "" {
+		secretNamespace = *ref.Namespace
+	}
+	return &accessApplicationCredentials{
+		Service:   cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
+		AccountID: accountID,
+		CredentialSecretRef: &cfgatev1alpha1.SecretReference{
+			Name:      ref.Name,
+			Namespace: secretNamespace,
+		},
+	}, nil
 }
 
 func (r *CloudflareAccessApplicationReconciler) gatewayForApplicationTarget(ctx context.Context, target accessApplicationTarget) (*gwapiv1.Gateway, error) {
@@ -576,6 +595,9 @@ func (r *CloudflareAccessApplicationReconciler) createClientFromSecret(secret *c
 }
 
 func (r *CloudflareAccessApplicationReconciler) resolveApplicationPolicyRefs(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, accountID string) ([]cloudflare.ApplicationPolicyLink, error) {
+	if err := validateApplicationPolicyRefPrecedence(app.Spec.PolicyRefs); err != nil {
+		return nil, err
+	}
 	seen := map[string]struct{}{}
 	links := make([]cloudflare.ApplicationPolicyLink, 0, len(app.Spec.PolicyRefs))
 	for i, ref := range app.Spec.PolicyRefs {
@@ -622,6 +644,33 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationPolicyRefs(ctx
 		links = append(links, cloudflare.ApplicationPolicyLink{ID: policy.Status.PolicyID, Precedence: precedence})
 	}
 	return links, nil
+}
+
+func validateApplicationPolicyRefPrecedence(refs []cfgatev1alpha1.AccessPolicyReference) error {
+	if len(refs) == 0 {
+		return nil
+	}
+	explicit := 0
+	for _, ref := range refs {
+		if ref.Precedence != nil {
+			explicit++
+		}
+	}
+	if explicit == 0 {
+		return nil
+	}
+	if explicit != len(refs) {
+		return fmt.Errorf("policyRefs must either all specify precedence or all omit precedence")
+	}
+	seen := map[int]struct{}{}
+	for _, ref := range refs {
+		precedence := *ref.Precedence
+		if _, ok := seen[precedence]; ok {
+			return fmt.Errorf("duplicate policyRef precedence %d", precedence)
+		}
+		seen[precedence] = struct{}{}
+	}
+	return nil
 }
 
 func buildAccessApplicationParams(app *cfgatev1alpha1.CloudflareAccessApplication, target accessApplicationTarget, policies []cloudflare.ApplicationPolicyLink, multipleTargets bool) cloudflare.ApplicationParams {
@@ -807,7 +856,7 @@ func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx c
 		}
 		targets = append(targets, accessApplicationTarget{Ref: observed.TargetRef, Kind: observed.TargetRef.Kind, Namespace: namespace, Name: observed.TargetRef.Name, Domain: observed.Domain})
 	}
-	accessService, accountID, err := r.resolveApplicationCredentials(ctx, app, targets)
+	creds, err := r.resolveApplicationDeletionCredentials(ctx, app, targets)
 	if err != nil {
 		return r.blockApplicationDeletion(ctx, app, fmt.Sprintf("Failed to resolve credentials: %s", err.Error()))
 	}
@@ -815,11 +864,27 @@ func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx c
 		if observed.ID == "" {
 			continue
 		}
-		if err := accessService.Client().DeleteAccessApplication(ctx, accountID, observed.ID); err != nil {
+		if err := creds.Service.Client().DeleteAccessApplication(ctx, creds.AccountID, observed.ID); err != nil {
 			return r.blockApplicationDeletion(ctx, app, fmt.Sprintf("Failed to delete Access application %s: %s", observed.ID, err.Error()))
 		}
 	}
 	return r.removeApplicationFinalizer(ctx, app)
+}
+
+func (r *CloudflareAccessApplicationReconciler) resolveApplicationDeletionCredentials(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, targets []accessApplicationTarget) (*accessApplicationCredentials, error) {
+	if app.Spec.CloudflareRef != nil {
+		return r.resolveCloudflareRefCredentials(ctx, app.Namespace, app.Spec.CloudflareRef)
+	}
+	if app.Status.AccountID != "" && app.Status.CredentialSecretRef != nil && app.Status.CredentialSecretRef.Name != "" {
+		secretNamespace := app.Status.CredentialSecretRef.Namespace
+		secretRef := cfgatev1alpha1.CloudflareSecretRef{
+			Name:      app.Status.CredentialSecretRef.Name,
+			Namespace: &secretNamespace,
+			AccountID: app.Status.AccountID,
+		}
+		return r.resolveCloudflareRefCredentials(ctx, app.Namespace, &secretRef)
+	}
+	return r.resolveApplicationCredentials(ctx, app, targets)
 }
 
 func (r *CloudflareAccessApplicationReconciler) blockApplicationDeletion(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, detail string) (ctrl.Result, error) {
@@ -862,10 +927,12 @@ func (r *CloudflareAccessApplicationReconciler) updateApplicationStatus(ctx cont
 }
 
 func accessApplicationStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessApplicationStatus) bool {
-	if a.AttachedTargets != b.AttachedTargets || a.ObservedGeneration != b.ObservedGeneration {
+	if a.AccountID != b.AccountID || a.AttachedTargets != b.AttachedTargets || a.ObservedGeneration != b.ObservedGeneration {
 		return false
 	}
-	if !reflect.DeepEqual(a.Applications, b.Applications) || !reflect.DeepEqual(a.Ancestors, b.Ancestors) {
+	if !reflect.DeepEqual(a.CredentialSecretRef, b.CredentialSecretRef) ||
+		!reflect.DeepEqual(a.Applications, b.Applications) ||
+		!reflect.DeepEqual(a.Ancestors, b.Ancestors) {
 		return false
 	}
 	return conditionsEqual(a.Conditions, b.Conditions)

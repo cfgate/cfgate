@@ -20,8 +20,6 @@ type AccessService struct {
 	log    logr.Logger
 }
 
-const accessTagLimitErrorCode int64 = 12146
-
 // NewAccessService creates a new AccessService with the given client and logger.
 // The logger is named "access-service" for structured logging context.
 func NewAccessService(client Client, log logr.Logger) *AccessService {
@@ -536,10 +534,6 @@ func (s *AccessService) ensureApplicationTags(ctx context.Context, accountID str
 			continue
 		}
 		if _, err := s.client.CreateAccessTag(ctx, accountID, tag); err != nil {
-			if strings.HasPrefix(tag, "cfgate:") && hasErrorCode(err, accessTagLimitErrorCode) {
-				s.log.Info("skipping optional access application tag because Cloudflare account tag limit was reached", "tag", tag)
-				continue
-			}
 			return nil, fmt.Errorf("failed to create access tag %q: %w", tag, err)
 		}
 		existing[tag] = struct{}{}

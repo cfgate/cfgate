@@ -45,6 +45,8 @@ type AccessApplicationObserved struct {
 //
 // +kubebuilder:validation:XValidation:rule="has(self.targetRef) || has(self.targetRefs)",message="either targetRef or targetRefs must be specified"
 // +kubebuilder:validation:XValidation:rule="!(has(self.targetRef) && has(self.targetRefs))",message="targetRef and targetRefs are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="self.policyRefs.all(p, !has(p.precedence)) || self.policyRefs.all(p, has(p.precedence))",message="policyRefs must either all omit precedence or all specify precedence"
+// +kubebuilder:validation:XValidation:rule="self.policyRefs.all(p, !has(p.precedence)) || self.policyRefs.all(p, has(p.precedence) && self.policyRefs.exists_one(q, has(q.precedence) && q.precedence == p.precedence))",message="policyRefs precedence values must be unique"
 type CloudflareAccessApplicationSpec struct {
 	// TargetRef identifies a single Gateway API target.
 	// +optional
@@ -79,6 +81,14 @@ type CloudflareAccessApplicationStatus struct {
 	// Applications are Cloudflare Access Applications managed by this resource.
 	// +kubebuilder:validation:MaxItems=64
 	Applications []AccessApplicationObserved `json:"applications,omitempty"`
+
+	// AccountID is the resolved Cloudflare account ID used for Access application cleanup.
+	// +kubebuilder:validation:MaxLength=32
+	AccountID string `json:"accountId,omitempty"`
+
+	// CredentialSecretRef is the resolved credentials Secret used for cleanup.
+	// The namespace is always stored explicitly.
+	CredentialSecretRef *SecretReference `json:"credentialSecretRef,omitempty"`
 
 	// AttachedTargets is the count of successfully attached Gateway API targets.
 	AttachedTargets int32 `json:"attachedTargets,omitempty"`

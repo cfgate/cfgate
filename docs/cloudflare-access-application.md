@@ -32,7 +32,7 @@ Key fields:
 | `targetRef` / `targetRefs` | Gateway API `Gateway` or `HTTPRoute` targets. Exactly one of these fields is allowed. |
 | `cloudflareRef` | Optional credentials. If omitted, credentials are inherited from target route -> Gateway -> CloudflareTunnel. |
 | `application` | Access Application settings shared by generated apps. `path` overrides derived target paths. |
-| `policyRefs` | Required reusable policies to attach. Default precedence is list order starting at `1`. Duplicate namespace/name pairs in one list are invalid. |
+| `policyRefs` | Required reusable policies to attach. Omit `precedence` on every ref to use list order starting at `1`, or set `precedence` on every ref for custom ordering. Do not mix modes; explicit precedence values must be unique. Duplicate namespace/name pairs in one list are invalid. |
 
 Cross-namespace target references require a `ReferenceGrant` in the target namespace. Cross-namespace policy references require a `ReferenceGrant` in the policy namespace.
 
@@ -51,9 +51,13 @@ Cross-namespace target references require a `ReferenceGrant` in the target names
 | Field | Description |
 |---|---|
 | `applications[]` | Created Cloudflare app IDs, AUDs, domains, and target refs. |
+| `accountId` | Resolved Cloudflare account ID cached for cleanup. |
+| `credentialSecretRef` | Resolved credentials Secret cached for cleanup. Namespace is always stored explicitly. |
 | `attachedTargets` | Count of attached host/path targets. |
 | `ancestors[]` | Target attachment status. |
 | `observedGeneration` | Last reconciled generation. |
+
+Automatic Cloudflare cleanup uses the cached `accountId` and `credentialSecretRef` so target resources do not need to outlive the `CloudflareAccessApplication`. The referenced Secret must still exist for cleanup; restore it or set `cfgate.io/deletion-policy=orphan` if credentials are intentionally removed first.
 
 Conditions:
 

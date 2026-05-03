@@ -425,10 +425,22 @@ spec:
               rule: has(self.targetRef) || has(self.targetRefs)
             - message: targetRef and targetRefs are mutually exclusive
               rule: '!(has(self.targetRef) && has(self.targetRefs))'
+            - message: policyRefs must either all omit precedence or all specify precedence
+              rule: self.policyRefs.all(p, !has(p.precedence)) || self.policyRefs.all(p,
+                has(p.precedence))
+            - message: policyRefs precedence values must be unique
+              rule: self.policyRefs.all(p, !has(p.precedence)) || self.policyRefs.all(p,
+                has(p.precedence) && self.policyRefs.exists_one(q, has(q.precedence)
+                && q.precedence == p.precedence))
           status:
             description: CloudflareAccessApplicationStatus defines observed Access
               application state.
             properties:
+              accountId:
+                description: AccountID is the resolved Cloudflare account ID used
+                  for Access application cleanup.
+                maxLength: 32
+                type: string
               ancestors:
                 description: Ancestors contains status for each targetRef.
                 items:
@@ -679,6 +691,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialSecretRef:
+                description: |-
+                  CredentialSecretRef is the resolved credentials Secret used for cleanup.
+                  The namespace is always stored explicitly.
+                properties:
+                  name:
+                    description: Name of the secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret. Defaults to the resource's
+                      namespace if empty.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the last generation processed.
                 format: int64
