@@ -803,24 +803,6 @@ func (c *clientImpl) ListAccessApplications(ctx context.Context, accountID strin
 	return apps, nil
 }
 
-// GetAccessApplicationByName retrieves an Access application by name.
-// Returns nil if the application does not exist.
-func (c *clientImpl) GetAccessApplicationByName(ctx context.Context, accountID, name string) (*AccessApplication, error) {
-	apps, err := c.ListAccessApplications(ctx, accountID)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, app := range apps {
-		if app.Name == name {
-			appCopy := app
-			return &appCopy, nil
-		}
-	}
-
-	return nil, nil // Not found
-}
-
 // CreateAccessTag creates a new Access tag.
 func (c *clientImpl) CreateAccessTag(ctx context.Context, accountID, tagName string) (*AccessTag, error) {
 	result, err := c.api.ZeroTrust.Access.Tags.New(ctx, zero_trust.AccessTagNewParams{

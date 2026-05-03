@@ -545,16 +545,18 @@ var _ = Describe("Multi-Resource E2E", Label("cloudflare"), Ordered, func() {
 
 			By("Waiting for all resources to be ready")
 			waitForAccessPolicyReady(ctx, k8sClient, policy.Name, cleanupNS.Name, DefaultTimeout)
+			appStatus := waitForAccessApplicationReady(ctx, k8sClient, policy.Name, cleanupNS.Name, DefaultTimeout)
 			Eventually(func() bool {
 				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
 				return err == nil && record != nil
 			}, DefaultTimeout, DefaultInterval).Should(BeTrue(), "DNS record should exist")
 
 			By("Recording CF resource IDs")
-			cfApp, err := getAccessApplicationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, policyName)
+			appID := firstAccessApplicationID(appStatus)
+			Expect(appID).NotTo(BeEmpty(), "AccessApplication should have application ID")
+			cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, appID)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfApp).NotTo(BeNil())
-			appID := cfApp.ID
 
 			By("Deleting the cleanup namespace")
 			deleteTestNamespace(cleanupNS)

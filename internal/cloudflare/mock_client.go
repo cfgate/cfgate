@@ -44,12 +44,11 @@ type MockClient struct {
 	GetAccountByNameFunc func(ctx context.Context, name string) (*Account, error)
 
 	// Access Application operations
-	CreateAccessApplicationFunc    func(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error)
-	GetAccessApplicationFunc       func(ctx context.Context, accountID, appID string) (*AccessApplication, error)
-	UpdateAccessApplicationFunc    func(ctx context.Context, accountID, appID string, params ApplicationParams) (*AccessApplication, error)
-	DeleteAccessApplicationFunc    func(ctx context.Context, accountID, appID string) error
-	ListAccessApplicationsFunc     func(ctx context.Context, accountID string) ([]AccessApplication, error)
-	GetAccessApplicationByNameFunc func(ctx context.Context, accountID, name string) (*AccessApplication, error)
+	CreateAccessApplicationFunc func(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error)
+	GetAccessApplicationFunc    func(ctx context.Context, accountID, appID string) (*AccessApplication, error)
+	UpdateAccessApplicationFunc func(ctx context.Context, accountID, appID string, params ApplicationParams) (*AccessApplication, error)
+	DeleteAccessApplicationFunc func(ctx context.Context, accountID, appID string) error
+	ListAccessApplicationsFunc  func(ctx context.Context, accountID string) ([]AccessApplication, error)
 
 	// Access Tag operations
 	CreateAccessTagFunc func(ctx context.Context, accountID, tagName string) (*AccessTag, error)
@@ -248,13 +247,6 @@ func (m *MockClient) DeleteAccessApplication(ctx context.Context, accountID, app
 func (m *MockClient) ListAccessApplications(ctx context.Context, accountID string) ([]AccessApplication, error) {
 	if m.ListAccessApplicationsFunc != nil {
 		return m.ListAccessApplicationsFunc(ctx, accountID)
-	}
-	return nil, nil
-}
-
-func (m *MockClient) GetAccessApplicationByName(ctx context.Context, accountID, name string) (*AccessApplication, error) {
-	if m.GetAccessApplicationByNameFunc != nil {
-		return m.GetAccessApplicationByNameFunc(ctx, accountID, name)
 	}
 	return nil, nil
 }

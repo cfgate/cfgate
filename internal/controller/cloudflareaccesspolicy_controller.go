@@ -32,7 +32,6 @@ const (
 	AccessPolicyControllerName           = "cfgate.io/cloudflare-access-controller"
 	accessDeletionRetryBudget            = 1 * time.Minute
 	accessDeletionRequeueInterval        = 15 * time.Second
-	accessPolicyTargetIndex              = ".spec.targetRefs"
 	accessApplicationFinalizer           = "cfgate.io/access-application-cleanup"
 	accessApplicationRequeueAfterError   = 30 * time.Second
 	accessApplicationRequeueAfterSuccess = 5 * time.Minute
@@ -382,6 +381,9 @@ func (r *CloudflareAccessPolicyReconciler) removeFinalizer(ctx context.Context, 
 	patch := client.MergeFrom(policy.DeepCopy())
 	controllerutil.RemoveFinalizer(policy, accessPolicyFinalizer)
 	if err := r.Patch(ctx, policy, patch); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil
@@ -449,10 +451,6 @@ func (r *CloudflareAccessPolicyReconciler) createClientFromSecret(secret *corev1
 		return nil, fmt.Errorf("API token key %q not found in secret", "CLOUDFLARE_API_TOKEN")
 	}
 	return cloudflare.NewClient(string(token))
-}
-
-func accessPolicyTargetKey(kind, namespace, name string) string {
-	return kind + "/" + namespace + "/" + name
 }
 
 func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {

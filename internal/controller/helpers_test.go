@@ -8,7 +8,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
@@ -509,39 +508,11 @@ func TestGatewayAndAccessPolicyHelpers(t *testing.T) {
 		}
 
 		refs := accessApplicationTargetRefs(app)
-		keys := []string{
-			accessPolicyTargetKey(refs[0].Kind, app.Namespace, refs[0].Name),
-			accessPolicyTargetKey(refs[1].Kind, *refs[1].Namespace, refs[1].Name),
+		if refs[0].Kind != "Gateway" || refs[0].Name != "public" {
+			t.Fatalf("first target ref = %#v", refs[0])
 		}
-		if !slices.Equal(keys, []string{"Gateway/app/public", "HTTPRoute/edge/route"}) {
-			t.Fatalf("access application target keys = %#v", keys)
-		}
-		if got := accessPolicyTargetKey("HTTPRoute", "app", "route"); got != "HTTPRoute/app/route" {
-			t.Fatalf("accessPolicyTargetKey() = %q", got)
-		}
-	})
-
-	t.Run("evaluates reference grant access", func(t *testing.T) {
-		grant := gatewayv1beta1.ReferenceGrant{
-			Spec: gatewayv1beta1.ReferenceGrantSpec{
-				From: []gatewayv1beta1.ReferenceGrantFrom{{
-					Group:     "cfgate.io",
-					Kind:      "CloudflareAccessApplication",
-					Namespace: "app",
-				}},
-				To: []gatewayv1beta1.ReferenceGrantTo{{
-					Group: "gateway.networking.k8s.io",
-					Kind:  "HTTPRoute",
-				}},
-			},
-		}
-
-		r := &CloudflareAccessApplicationReconciler{}
-		if !r.grantPermitsAccess(grant, "app", "HTTPRoute") {
-			t.Fatal("grantPermitsAccess() = false, want true")
-		}
-		if r.grantPermitsAccess(grant, "other", "HTTPRoute") {
-			t.Fatal("grantPermitsAccess() = true, want false for wrong namespace")
+		if refs[1].Kind != "HTTPRoute" || refs[1].Name != "route" || refs[1].Namespace == nil || *refs[1].Namespace != "edge" {
+			t.Fatalf("second target ref = %#v", refs[1])
 		}
 	})
 

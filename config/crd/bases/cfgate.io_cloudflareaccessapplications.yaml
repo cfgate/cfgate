@@ -412,6 +412,7 @@ spec:
                   - message: kind must be Gateway or HTTPRoute
                     rule: self.kind in ['Gateway', 'HTTPRoute']
                 maxItems: 16
+                minItems: 1
                 type: array
             required:
             - policyRefs

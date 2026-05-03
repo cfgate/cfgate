@@ -81,7 +81,7 @@ type AccountOps interface {
 }
 
 // AccessAppOps defines operations for managing Cloudflare Access applications,
-// including creation, retrieval, update, deletion, and name-based lookup.
+// including creation, retrieval, update, deletion, and listing.
 type AccessAppOps interface {
 	// CreateAccessApplication creates a new Access application.
 	CreateAccessApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error)
@@ -97,10 +97,6 @@ type AccessAppOps interface {
 
 	// ListAccessApplications lists all Access applications.
 	ListAccessApplications(ctx context.Context, accountID string) ([]AccessApplication, error)
-
-	// GetAccessApplicationByName retrieves an Access application by name.
-	// Returns nil if the application does not exist.
-	GetAccessApplicationByName(ctx context.Context, accountID, name string) (*AccessApplication, error)
 }
 
 // AccessTagOps defines operations for managing Cloudflare Access tags.

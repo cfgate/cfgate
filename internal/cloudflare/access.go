@@ -20,6 +20,8 @@ type AccessService struct {
 	log    logr.Logger
 }
 
+const accessTagLimitErrorCode int64 = 12146
+
 // NewAccessService creates a new AccessService with the given client and logger.
 // The logger is named "access-service" for structured logging context.
 func NewAccessService(client Client, log logr.Logger) *AccessService {
@@ -463,84 +465,18 @@ type ServiceTokenParams struct {
 	Duration string
 }
 
-// EnsureApplication ensures an application exists with the given configuration.
-// If an application with the name exists, it is adopted and updated if managed fields
-// have drifted. Otherwise, a new application is created.
-// Returns the application and whether it was created (vs adopted/updated).
-func (s *AccessService) EnsureApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, bool, error) {
-	params.Tags = uniqueNonEmptyStrings(params.Tags)
-	s.log.Info("ensuring access application exists",
-		"accountID", accountID,
-		"domain", params.Domain,
-	)
-
-	if err := s.ensureApplicationTags(ctx, accountID, params.Tags); err != nil {
-		return nil, false, err
-	}
-
-	existing, err := s.client.GetAccessApplicationByName(ctx, accountID, params.Name)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to check for existing application: %w", err)
-	}
-
-	if existing != nil {
-		// Warn if application type has drifted (cannot be changed via API)
-		desiredType := params.Type
-		if desiredType == "" {
-			desiredType = "self_hosted"
-		}
-		if existing.Type != desiredType {
-			s.log.Info("application type changed in CR but Cloudflare API does not support type updates; delete and recreate the application to change type",
-				"applicationId", existing.ID,
-				"existingType", existing.Type,
-				"desiredType", desiredType,
-			)
-		}
-
-		if accessApplicationNeedsUpdate(existing, &params) {
-			s.log.Info("access application drift detected, updating",
-				"applicationId", existing.ID,
-				"domain", existing.Domain,
-			)
-			updated, err := s.client.UpdateAccessApplication(ctx, accountID, existing.ID, params)
-			if err != nil {
-				return nil, false, fmt.Errorf("failed to update application: %w", err)
-			}
-			return updated, false, nil
-		}
-
-		s.log.V(1).Info("access application unchanged, adopting",
-			"applicationId", existing.ID,
-			"domain", existing.Domain,
-		)
-		return existing, false, nil
-	}
-
-	s.log.Info("creating new access application",
-		"accountID", accountID,
-		"domain", params.Domain,
-		"name", params.Name,
-	)
-
-	app, err := s.client.CreateAccessApplication(ctx, accountID, params)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to create application: %w", err)
-	}
-
-	return app, true, nil
-}
-
 // EnsureApplicationByIDOrTags ensures an application exists without adopting by name.
 // It first uses statusID, then adopts only an application with the same domain and
 // all desired tags. This keeps cfgate ownership unambiguous.
 func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, accountID, statusID string, params ApplicationParams) (*AccessApplication, error) {
 	params.Tags = uniqueNonEmptyStrings(params.Tags)
-	if err := s.ensureApplicationTags(ctx, accountID, params.Tags); err != nil {
+	tags, err := s.ensureApplicationTags(ctx, accountID, params.Tags)
+	if err != nil {
 		return nil, err
 	}
+	params.Tags = tags
 
 	var existing *AccessApplication
-	var err error
 	if statusID != "" {
 		existing, err = s.client.GetAccessApplication(ctx, accountID, statusID)
 		if err != nil {
@@ -578,30 +514,38 @@ func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, account
 	return created, nil
 }
 
-func (s *AccessService) ensureApplicationTags(ctx context.Context, accountID string, tags []string) error {
+func (s *AccessService) ensureApplicationTags(ctx context.Context, accountID string, tags []string) ([]string, error) {
 	desired := uniqueNonEmptyStrings(tags)
 	if len(desired) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	existingTags, err := s.client.ListAccessTags(ctx, accountID)
 	if err != nil {
-		return fmt.Errorf("failed to list access tags: %w", err)
+		return nil, fmt.Errorf("failed to list access tags: %w", err)
 	}
 	existing := make(map[string]struct{}, len(existingTags))
 	for _, tag := range existingTags {
 		existing[tag.Name] = struct{}{}
 	}
-	for _, tag := range desired {
+
+	ensured := make([]string, 0, len(desired))
+	for i, tag := range desired {
 		if _, ok := existing[tag]; ok {
+			ensured = append(ensured, tag)
 			continue
 		}
 		if _, err := s.client.CreateAccessTag(ctx, accountID, tag); err != nil {
-			return fmt.Errorf("failed to create access tag %q: %w", tag, err)
+			if i > 0 && hasErrorCode(err, accessTagLimitErrorCode) {
+				s.log.Info("skipping optional access application tag because Cloudflare account tag limit was reached", "tag", tag)
+				continue
+			}
+			return nil, fmt.Errorf("failed to create access tag %q: %w", tag, err)
 		}
 		existing[tag] = struct{}{}
+		ensured = append(ensured, tag)
 	}
-	return nil
+	return ensured, nil
 }
 
 func uniqueNonEmptyStrings(values []string) []string {

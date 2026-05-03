@@ -56,8 +56,8 @@
 // AccessService manages Access applications, policies, and service tokens:
 //
 //	svc := cloudflare.NewAccessService(client, log)
-//	app, created, err := svc.EnsureApplication(ctx, accountID, params)
-//	policyIDs, err := svc.SyncPolicies(ctx, accountID, appID, desired)
+//	app, err := svc.EnsureApplicationByIDOrTags(ctx, accountID, statusID, params)
+//	policy, err := svc.EnsureReusablePolicy(ctx, accountID, statusID, desired)
 //	token, err := svc.EnsureServiceToken(ctx, accountID, params, secretWriter)
 //
 // # CredentialCache

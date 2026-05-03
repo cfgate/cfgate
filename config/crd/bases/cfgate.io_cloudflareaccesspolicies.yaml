@@ -104,7 +104,7 @@ spec:
                   x-kubernetes-validations:
                   - message: at least one approver (emails or emailListUuid) must
                       be specified
-                    rule: size(self.emails) > 0 || has(self.emailListUuid)
+                    rule: (has(self.emails) && size(self.emails) > 0) || has(self.emailListUuid)
                 maxItems: 10
                 type: array
               approvalRequired:

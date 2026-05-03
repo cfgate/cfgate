@@ -517,6 +517,43 @@ func TestEnsureApplicationByIDOrTagsEnsuresTagsBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestEnsureApplicationByIDOrTagsSkipsOptionalTagWhenCloudflareTagLimitReached(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockClient()
+
+	mock.ListAccessTagsFunc = func(context.Context, string) ([]AccessTag, error) {
+		return []AccessTag{{Name: "cfgate"}}, nil
+	}
+	mock.CreateAccessTagFunc = func(_ context.Context, _ string, tagName string) (*AccessTag, error) {
+		if tagName != "cfgate:default:app" {
+			t.Fatalf("CreateAccessTag tagName = %q, want cfgate:default:app", tagName)
+		}
+		return nil, cfError(400, accessTagLimitErrorCode)
+	}
+	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]AccessApplication, error) {
+		return nil, nil
+	}
+	mock.CreateAccessApplicationFunc = func(_ context.Context, _ string, params ApplicationParams) (*AccessApplication, error) {
+		if !reflect.DeepEqual(params.Tags, []string{"cfgate"}) {
+			t.Fatalf("CreateAccessApplication tags = %v, want [cfgate]", params.Tags)
+		}
+		return &AccessApplication{ID: "app-1", Name: params.Name, Domain: params.Domain, Tags: params.Tags}, nil
+	}
+
+	params := ApplicationParams{
+		Name:   "app",
+		Domain: "app.example.com",
+		Tags:   []string{"cfgate", "cfgate:default:app"},
+	}
+	app, err := NewAccessService(mock, logr.Discard()).EnsureApplicationByIDOrTags(ctx, "account-1", "", params)
+	if err != nil {
+		t.Fatalf("EnsureApplicationByIDOrTags() error = %v", err)
+	}
+	if app == nil || app.ID != "app-1" {
+		t.Fatalf("EnsureApplicationByIDOrTags() app = %+v, want app-1", app)
+	}
+}
+
 func TestAccessPolicyEqual(t *testing.T) {
 	tests := []struct {
 		name   string
