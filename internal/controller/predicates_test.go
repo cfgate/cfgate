@@ -399,6 +399,44 @@ func TestGenerationOrDeletionPredicate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// AccessPolicyReferenceChangedPredicate
+// ---------------------------------------------------------------------------
+
+func TestAccessPolicyReferenceChangedPredicate(t *testing.T) {
+	t.Run("update: resource version changed", func(t *testing.T) {
+		old := &unstructured.Unstructured{}
+		old.SetGeneration(1)
+		old.SetResourceVersion("1")
+		new := &unstructured.Unstructured{}
+		new.SetGeneration(1)
+		new.SetResourceVersion("2")
+
+		got := AccessPolicyReferenceChangedPredicate.Update(event.UpdateEvent{
+			ObjectOld: old, ObjectNew: new,
+		})
+		if !got {
+			t.Error("expected true when resource version changed")
+		}
+	})
+
+	t.Run("update: resource version unchanged", func(t *testing.T) {
+		old := &unstructured.Unstructured{}
+		old.SetGeneration(1)
+		old.SetResourceVersion("1")
+		new := &unstructured.Unstructured{}
+		new.SetGeneration(1)
+		new.SetResourceVersion("1")
+
+		got := AccessPolicyReferenceChangedPredicate.Update(event.UpdateEvent{
+			ObjectOld: old, ObjectNew: new,
+		})
+		if got {
+			t.Error("expected false when resource version did not change")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // TunnelIDChangedPredicate
 // ---------------------------------------------------------------------------
 

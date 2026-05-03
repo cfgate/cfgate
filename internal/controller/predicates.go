@@ -79,6 +79,10 @@ var GenerationOrDeletionPredicate = predicate.Or(
 	},
 )
 
+// AccessPolicyReferenceChangedPredicate passes policy updates that can affect
+// applications referencing the policy, including status-only readiness changes.
+var AccessPolicyReferenceChangedPredicate = predicate.ResourceVersionChangedPredicate{}
+
 // TunnelIDChangedPredicate filters CloudflareTunnel events to only those where
 // Status.TunnelID has changed. This is used by GatewayReconciler to detect when
 // a tunnel has been created/adopted and the TunnelID becomes available.
