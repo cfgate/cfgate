@@ -579,7 +579,7 @@ func TestResolveApplicationPolicyRefs(t *testing.T) {
 
 	t.Run("same name in different namespaces", func(t *testing.T) {
 		app := appWithFinalizer("app", "app")
-		app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}, {Name: "policy", Namespace: &crossNS}}
+		app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}, {Name: "policy", Namespace: crossNS}}
 		reconciler := newAccessAppReconciler(t, cloudflare.NewMockClient(), basePolicy, crossSameNamePolicy, sameNameGrant)
 		got, err := reconciler.resolveApplicationPolicyRefs(ctx, app, "account-1")
 		if err != nil {
@@ -602,8 +602,8 @@ func TestResolveApplicationPolicyRefs(t *testing.T) {
 		{name: "not ready policy", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}}, objects: []client.Object{notReadyAccessPolicy("app", "policy", "account-1", "policy-1")}, wantErr: "is not ready"},
 		{name: "missing policy ID", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}}, objects: []client.Object{readyAccessPolicy("app", "policy", "account-1", "")}, wantErr: "has no policyId"},
 		{name: "account mismatch", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}}, objects: []client.Object{readyAccessPolicy("app", "policy", "other-account", "policy-1")}, wantErr: status.ReasonAccountMismatch},
-		{name: "cross namespace denied", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "cross", Namespace: &crossNS}}, objects: []client.Object{crossPolicy}, wantErr: "ReferenceGrant"},
-		{name: "cross namespace allowed", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "cross", Namespace: &crossNS}}, objects: []client.Object{crossPolicy, grant}},
+		{name: "cross namespace denied", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "cross", Namespace: crossNS}}, objects: []client.Object{crossPolicy}, wantErr: "ReferenceGrant"},
+		{name: "cross namespace allowed", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "cross", Namespace: crossNS}}, objects: []client.Object{crossPolicy, grant}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			app := appWithFinalizer("app", "app")

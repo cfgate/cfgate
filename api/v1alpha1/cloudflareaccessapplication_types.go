@@ -9,11 +9,11 @@ type AccessPolicyReference struct {
 	// +kubebuilder:validation:MaxLength=253
 	Name string `json:"name"`
 
-	// Namespace is the CloudflareAccessPolicy namespace. Defaults to application namespace.
+	// Namespace is the CloudflareAccessPolicy namespace. Empty defaults to application namespace.
 	// Cross-namespace references require ReferenceGrant.
-	// +optional
+	// +kubebuilder:default=""
 	// +kubebuilder:validation:MaxLength=253
-	Namespace *string `json:"namespace,omitempty"`
+	Namespace string `json:"namespace"`
 
 	// Precedence determines policy evaluation order for the application. Lower values run first.
 	// When omitted, the controller uses list order starting at 1.

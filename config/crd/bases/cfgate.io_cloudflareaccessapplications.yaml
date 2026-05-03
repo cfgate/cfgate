@@ -297,8 +297,9 @@ spec:
                       minLength: 1
                       type: string
                     namespace:
+                      default: ""
                       description: |-
-                        Namespace is the CloudflareAccessPolicy namespace. Defaults to application namespace.
+                        Namespace is the CloudflareAccessPolicy namespace. Empty defaults to application namespace.
                         Cross-namespace references require ReferenceGrant.
                       maxLength: 253
                       type: string
@@ -311,6 +312,7 @@ spec:
                       type: integer
                   required:
                   - name
+                  - namespace
                   type: object
                 maxItems: 16
                 minItems: 1
