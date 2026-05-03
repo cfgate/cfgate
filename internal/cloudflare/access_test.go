@@ -532,6 +532,82 @@ func TestEnsureApplicationByIDOrTagsEnsuresTagsBeforeCreate(t *testing.T) {
 	}
 }
 
+func TestEnsureApplicationByIDOrTagsStatusIDMissingCreatesWithoutList(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockClient()
+	createCalled := 0
+
+	mock.ListAccessTagsFunc = func(context.Context, string) ([]AccessTag, error) {
+		return []AccessTag{{Name: "cfgate"}, {Name: "cfgate:default:app"}}, nil
+	}
+	mock.GetAccessApplicationFunc = func(_ context.Context, _ string, appID string) (*AccessApplication, error) {
+		if appID != "missing-app" {
+			t.Fatalf("GetAccessApplication appID = %q, want missing-app", appID)
+		}
+		return nil, nil
+	}
+	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]AccessApplication, error) {
+		t.Fatal("ListAccessApplications called after status ID miss")
+		return nil, nil
+	}
+	mock.CreateAccessApplicationFunc = func(_ context.Context, _ string, params ApplicationParams) (*AccessApplication, error) {
+		createCalled++
+		return &AccessApplication{ID: "app-new", Name: params.Name, Domain: params.Domain, Tags: params.Tags}, nil
+	}
+
+	params := ApplicationParams{
+		Name:   "app",
+		Domain: "app.example.com",
+		Tags:   []string{"cfgate", "cfgate:default:app"},
+	}
+	app, err := NewAccessService(mock, logr.Discard()).EnsureApplicationByIDOrTags(ctx, "account-1", "missing-app", params)
+	if err != nil {
+		t.Fatalf("EnsureApplicationByIDOrTags() error = %v", err)
+	}
+	if app == nil || app.ID != "app-new" {
+		t.Fatalf("EnsureApplicationByIDOrTags() app = %+v, want app-new", app)
+	}
+	if createCalled != 1 {
+		t.Fatalf("CreateAccessApplication calls = %d, want 1", createCalled)
+	}
+}
+
+func TestEnsureApplicationByIDOrTagsStatusIDFoundMatchingDoesNotListOrUpdate(t *testing.T) {
+	ctx := context.Background()
+	mock := NewMockClient()
+	existing, params := makeMatchingAppPair()
+	existing.ID = "app-1"
+	existing.Tags = []string{"cfgate", "cfgate:default:app"}
+	params.Tags = []string{"cfgate", "cfgate:default:app"}
+
+	mock.ListAccessTagsFunc = func(context.Context, string) ([]AccessTag, error) {
+		return []AccessTag{{Name: "cfgate"}, {Name: "cfgate:default:app"}}, nil
+	}
+	mock.GetAccessApplicationFunc = func(context.Context, string, string) (*AccessApplication, error) {
+		return existing, nil
+	}
+	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]AccessApplication, error) {
+		t.Fatal("ListAccessApplications called for matching status ID")
+		return nil, nil
+	}
+	mock.UpdateAccessApplicationFunc = func(context.Context, string, string, ApplicationParams) (*AccessApplication, error) {
+		t.Fatal("UpdateAccessApplication called for matching app")
+		return nil, nil
+	}
+	mock.CreateAccessApplicationFunc = func(context.Context, string, ApplicationParams) (*AccessApplication, error) {
+		t.Fatal("CreateAccessApplication called for matching app")
+		return nil, nil
+	}
+
+	app, err := NewAccessService(mock, logr.Discard()).EnsureApplicationByIDOrTags(ctx, "account-1", "app-1", *params)
+	if err != nil {
+		t.Fatalf("EnsureApplicationByIDOrTags() error = %v", err)
+	}
+	if app != existing {
+		t.Fatalf("EnsureApplicationByIDOrTags() app = %+v, want existing", app)
+	}
+}
+
 func TestEnsureApplicationByIDOrTagsFailsWhenRequiredTagCannotBeCreated(t *testing.T) {
 	ctx := context.Background()
 	mock := NewMockClient()

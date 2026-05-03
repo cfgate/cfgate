@@ -106,6 +106,9 @@ type AccessTagOps interface {
 
 	// ListAccessTags lists all Access tags.
 	ListAccessTags(ctx context.Context, accountID string) ([]AccessTag, error)
+
+	// DeleteAccessTag deletes an Access tag.
+	DeleteAccessTag(ctx context.Context, accountID, tagName string) error
 }
 
 // AccessPolicyOps defines operations for managing reusable Cloudflare Access policies

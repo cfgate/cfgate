@@ -464,8 +464,8 @@ type ServiceTokenParams struct {
 }
 
 // EnsureApplicationByIDOrTags ensures an application exists without adopting by name.
-// It first uses statusID, then adopts only an application with the same domain and
-// all desired tags. This keeps cfgate ownership unambiguous.
+// A non-empty statusID is authoritative. If it is missing in Cloudflare, cfgate
+// recreates the app directly. Tag adoption is reserved for empty status IDs.
 func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, accountID, statusID string, params ApplicationParams) (*AccessApplication, error) {
 	params.Tags = uniqueNonEmptyStrings(params.Tags)
 	tags, err := s.ensureApplicationTags(ctx, accountID, params.Tags)
@@ -474,25 +474,35 @@ func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, account
 	}
 	params.Tags = tags
 
-	var existing *AccessApplication
 	if statusID != "" {
-		existing, err = s.client.GetAccessApplication(ctx, accountID, statusID)
+		existing, err := s.client.GetAccessApplication(ctx, accountID, statusID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get application by status ID: %w", err)
 		}
-	}
-	if existing == nil {
-		apps, err := s.client.ListAccessApplications(ctx, accountID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list applications for adoption: %w", err)
+		if existing == nil {
+			return s.createAccessApplication(ctx, accountID, params)
 		}
-		for i := range apps {
-			if apps[i].Domain == params.Domain && stringSliceContainsAll(apps[i].Tags, params.Tags) {
-				if existing != nil {
-					return nil, fmt.Errorf("multiple cfgate-tagged applications found for domain %q", params.Domain)
-				}
-				existing = &apps[i]
+		if accessApplicationNeedsUpdate(existing, &params) {
+			updated, err := s.client.UpdateAccessApplication(ctx, accountID, existing.ID, params)
+			if err != nil {
+				return nil, fmt.Errorf("failed to update application: %w", err)
 			}
+			return updated, nil
+		}
+		return existing, nil
+	}
+
+	var existing *AccessApplication
+	apps, err := s.client.ListAccessApplications(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list applications for adoption: %w", err)
+	}
+	for i := range apps {
+		if apps[i].Domain == params.Domain && stringSliceContainsAll(apps[i].Tags, params.Tags) {
+			if existing != nil {
+				return nil, fmt.Errorf("multiple cfgate-tagged applications found for domain %q", params.Domain)
+			}
+			existing = &apps[i]
 		}
 	}
 	if existing != nil {
@@ -505,6 +515,11 @@ func (s *AccessService) EnsureApplicationByIDOrTags(ctx context.Context, account
 		}
 		return existing, nil
 	}
+
+	return s.createAccessApplication(ctx, accountID, params)
+}
+
+func (s *AccessService) createAccessApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error) {
 	created, err := s.client.CreateAccessApplication(ctx, accountID, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create application: %w", err)
