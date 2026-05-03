@@ -70,6 +70,7 @@ type CloudflareAccessApplicationSpec struct {
 	// +kubebuilder:validation:MaxItems=16
 	// +listType=map
 	// +listMapKey=name
+	// +listMapKey=namespace
 	PolicyRefs []AccessPolicyReference `json:"policyRefs"`
 }
 

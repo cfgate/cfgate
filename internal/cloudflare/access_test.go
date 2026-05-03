@@ -2,8 +2,11 @@ package cloudflare
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 )
@@ -551,6 +554,390 @@ func TestEnsureApplicationByIDOrTagsSkipsOptionalTagWhenCloudflareTagLimitReache
 	}
 	if app == nil || app.ID != "app-1" {
 		t.Fatalf("EnsureApplicationByIDOrTags() app = %+v, want app-1", app)
+	}
+}
+
+func TestEnsureReusablePolicy(t *testing.T) {
+	baseExisting, baseDesired := makeMatchingPolicyPair()
+	baseExisting.ID = "policy-1"
+
+	tests := []struct {
+		name        string
+		statusID    string
+		getPolicy   *AccessPolicy
+		getErr      error
+		list        []AccessPolicy
+		listErr     error
+		wantID      string
+		wantErr     string
+		wantGet     int
+		wantList    int
+		wantCreate  int
+		wantUpdate  int
+		updateID    string
+		createID    string
+		listAllowed bool
+	}{
+		{
+			name:     "status ID matches existing policy",
+			statusID: "policy-1",
+			getPolicy: &AccessPolicy{
+				ID:                           "policy-1",
+				Name:                         baseExisting.Name,
+				Decision:                     baseExisting.Decision,
+				Precedence:                   baseExisting.Precedence,
+				Include:                      baseExisting.Include,
+				SessionDuration:              baseExisting.SessionDuration,
+				PurposeJustificationRequired: baseExisting.PurposeJustificationRequired,
+				PurposeJustificationPrompt:   baseExisting.PurposeJustificationPrompt,
+				ApprovalRequired:             baseExisting.ApprovalRequired,
+			},
+			wantID:  "policy-1",
+			wantGet: 1,
+		},
+		{
+			name:     "status ID policy drifts",
+			statusID: "policy-1",
+			getPolicy: &AccessPolicy{
+				ID:              "policy-1",
+				Name:            "old",
+				Decision:        baseExisting.Decision,
+				Include:         baseExisting.Include,
+				SessionDuration: baseExisting.SessionDuration,
+			},
+			wantID:     "policy-1",
+			wantGet:    1,
+			wantUpdate: 1,
+			updateID:   "policy-1",
+		},
+		{
+			name:        "status ID missing creates when no exact name match",
+			statusID:    "policy-1",
+			list:        []AccessPolicy{{ID: "other", Name: "other"}},
+			wantID:      "created",
+			wantGet:     1,
+			wantList:    1,
+			wantCreate:  1,
+			createID:    "created",
+			listAllowed: true,
+		},
+		{
+			name: "adopts exact name match",
+			list: []AccessPolicy{{
+				ID:              "policy-2",
+				Name:            baseExisting.Name,
+				Decision:        baseExisting.Decision,
+				Precedence:      baseExisting.Precedence,
+				Include:         baseExisting.Include,
+				SessionDuration: baseExisting.SessionDuration,
+			}},
+			wantID:      "policy-2",
+			wantList:    1,
+			listAllowed: true,
+		},
+		{
+			name: "updates exact name match with drift",
+			list: []AccessPolicy{{
+				ID:              "policy-2",
+				Name:            baseExisting.Name,
+				Decision:        "deny",
+				Include:         baseExisting.Include,
+				SessionDuration: baseExisting.SessionDuration,
+			}},
+			wantID:      "policy-2",
+			wantList:    1,
+			wantUpdate:  1,
+			updateID:    "policy-2",
+			listAllowed: true,
+		},
+		{
+			name: "duplicate exact name matches fail",
+			list: []AccessPolicy{
+				{ID: "policy-2", Name: baseExisting.Name},
+				{ID: "policy-3", Name: baseExisting.Name},
+			},
+			wantErr:     "ambiguous adoption",
+			wantList:    1,
+			listAllowed: true,
+		},
+		{
+			name:     "get error is wrapped",
+			statusID: "policy-1",
+			getErr:   errors.New("get failed"),
+			wantErr:  "failed to get reusable policy policy-1",
+			wantGet:  1,
+		},
+		{
+			name:        "list error is wrapped",
+			listErr:     errors.New("list failed"),
+			wantErr:     "failed to list reusable policies",
+			wantList:    1,
+			listAllowed: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := NewMockClient()
+			var gotGet, gotList, gotCreate, gotUpdate int
+			mock.GetAccessPolicyFunc = func(_ context.Context, accountID, policyID string) (*AccessPolicy, error) {
+				gotGet++
+				if accountID != "account-1" {
+					t.Fatalf("GetAccessPolicy accountID = %q, want account-1", accountID)
+				}
+				if policyID != tt.statusID {
+					t.Fatalf("GetAccessPolicy policyID = %q, want %q", policyID, tt.statusID)
+				}
+				return tt.getPolicy, tt.getErr
+			}
+			mock.ListAccessPoliciesFunc = func(context.Context, string) ([]AccessPolicy, error) {
+				gotList++
+				if !tt.listAllowed && tt.wantList == 0 {
+					t.Fatal("ListAccessPolicies called unexpectedly")
+				}
+				return tt.list, tt.listErr
+			}
+			mock.CreateAccessPolicyFunc = func(_ context.Context, _ string, params PolicyParams) (*AccessPolicy, error) {
+				gotCreate++
+				if !accessPolicyEqual(&AccessPolicy{
+					Name:                         params.Name,
+					Decision:                     params.Decision,
+					Precedence:                   params.Precedence,
+					Include:                      params.Include,
+					Exclude:                      params.Exclude,
+					Require:                      params.Require,
+					SessionDuration:              params.SessionDuration,
+					PurposeJustificationRequired: params.PurposeJustificationRequired,
+					PurposeJustificationPrompt:   params.PurposeJustificationPrompt,
+					ApprovalRequired:             params.ApprovalRequired,
+					ApprovalGroups:               params.ApprovalGroups,
+				}, baseDesired) {
+					t.Fatalf("CreateAccessPolicy params = %+v, want desired", params)
+				}
+				return &AccessPolicy{ID: tt.createID, Name: params.Name}, nil
+			}
+			mock.UpdateAccessPolicyFunc = func(_ context.Context, _ string, policyID string, params PolicyParams) (*AccessPolicy, error) {
+				gotUpdate++
+				if policyID != tt.updateID {
+					t.Fatalf("UpdateAccessPolicy policyID = %q, want %q", policyID, tt.updateID)
+				}
+				return &AccessPolicy{ID: policyID, Name: params.Name}, nil
+			}
+
+			got, err := NewAccessService(mock, logr.Discard()).EnsureReusablePolicy(context.Background(), "account-1", tt.statusID, *baseDesired)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("EnsureReusablePolicy() error = %v, want %q", err, tt.wantErr)
+				}
+			} else if err != nil {
+				t.Fatalf("EnsureReusablePolicy() error = %v", err)
+			} else if got == nil || got.ID != tt.wantID {
+				t.Fatalf("EnsureReusablePolicy() = %+v, want ID %q", got, tt.wantID)
+			}
+			if gotGet != tt.wantGet || gotList != tt.wantList || gotCreate != tt.wantCreate || gotUpdate != tt.wantUpdate {
+				t.Fatalf("calls get/list/create/update = %d/%d/%d/%d, want %d/%d/%d/%d",
+					gotGet, gotList, gotCreate, gotUpdate, tt.wantGet, tt.wantList, tt.wantCreate, tt.wantUpdate)
+			}
+		})
+	}
+}
+
+func TestEnsureServiceToken(t *testing.T) {
+	ctx := context.Background()
+	params := ServiceTokenParams{Name: "svc", Duration: "8760h"}
+
+	t.Run("existing unexpired token returns without secret write", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &recordingSecretWriter{}
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+			return []ServiceToken{{ID: "token-1", Name: "svc", ExpiresAt: time.Now().Add(time.Hour)}}, nil
+		}
+		got, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err != nil {
+			t.Fatalf("EnsureServiceToken() error = %v", err)
+		}
+		if got.ID != "token-1" {
+			t.Fatalf("token ID = %q, want token-1", got.ID)
+		}
+		if writer.calls != 0 {
+			t.Fatalf("secret writes = %d, want 0", writer.calls)
+		}
+	})
+
+	t.Run("expired token rotates and writes secret", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &recordingSecretWriter{}
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+			return []ServiceToken{{ID: "token-1", Name: "svc", ExpiresAt: time.Now().Add(-time.Hour)}}, nil
+		}
+		mock.RotateServiceTokenFunc = func(_ context.Context, _ string, tokenID string) (*ServiceTokenWithSecret, error) {
+			if tokenID != "token-1" {
+				t.Fatalf("RotateServiceToken tokenID = %q, want token-1", tokenID)
+			}
+			return &ServiceTokenWithSecret{
+				ServiceToken: ServiceToken{ID: "token-2", Name: "svc", ClientID: "client-id", ExpiresAt: time.Now().Add(time.Hour)},
+				ClientSecret: "client-secret",
+			}, nil
+		}
+		got, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err != nil {
+			t.Fatalf("EnsureServiceToken() error = %v", err)
+		}
+		if got.ID != "token-2" {
+			t.Fatalf("token ID = %q, want token-2", got.ID)
+		}
+		assertSecretData(t, writer, "svc", "client-id", "client-secret")
+	})
+
+	t.Run("rotate secret write failure deletes rotated token", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &recordingSecretWriter{err: errors.New("write failed")}
+		deleted := ""
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+			return []ServiceToken{{ID: "token-1", Name: "svc", ExpiresAt: time.Now().Add(-time.Hour)}}, nil
+		}
+		mock.RotateServiceTokenFunc = func(context.Context, string, string) (*ServiceTokenWithSecret, error) {
+			return &ServiceTokenWithSecret{ServiceToken: ServiceToken{ID: "token-2", Name: "svc"}, ClientSecret: "secret"}, nil
+		}
+		mock.DeleteServiceTokenFunc = func(_ context.Context, _ string, tokenID string) error {
+			deleted = tokenID
+			return nil
+		}
+		_, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err == nil || !strings.Contains(err.Error(), "failed to store rotated service token secret") {
+			t.Fatalf("EnsureServiceToken() error = %v, want rotated secret error", err)
+		}
+		if deleted != "token-2" {
+			t.Fatalf("deleted token = %q, want token-2", deleted)
+		}
+	})
+
+	t.Run("no existing token creates and writes secret", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &recordingSecretWriter{}
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) { return nil, nil }
+		mock.CreateServiceTokenFunc = func(_ context.Context, _ string, got ServiceTokenParams) (*ServiceTokenWithSecret, error) {
+			if got != params {
+				t.Fatalf("CreateServiceToken params = %+v, want %+v", got, params)
+			}
+			return &ServiceTokenWithSecret{
+				ServiceToken: ServiceToken{ID: "token-1", Name: "svc", ClientID: "client-id", ExpiresAt: time.Now().Add(time.Hour)},
+				ClientSecret: "client-secret",
+			}, nil
+		}
+		got, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err != nil {
+			t.Fatalf("EnsureServiceToken() error = %v", err)
+		}
+		if got.ID != "token-1" {
+			t.Fatalf("token ID = %q, want token-1", got.ID)
+		}
+		assertSecretData(t, writer, "svc", "client-id", "client-secret")
+	})
+
+	t.Run("create secret write failure deletes created token", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &recordingSecretWriter{err: errors.New("write failed")}
+		deleted := ""
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) { return nil, nil }
+		mock.CreateServiceTokenFunc = func(context.Context, string, ServiceTokenParams) (*ServiceTokenWithSecret, error) {
+			return &ServiceTokenWithSecret{ServiceToken: ServiceToken{ID: "token-1", Name: "svc"}, ClientSecret: "secret"}, nil
+		}
+		mock.DeleteServiceTokenFunc = func(_ context.Context, _ string, tokenID string) error {
+			deleted = tokenID
+			return nil
+		}
+		_, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err == nil || !strings.Contains(err.Error(), "failed to store service token secret") {
+			t.Fatalf("EnsureServiceToken() error = %v, want store secret error", err)
+		}
+		if deleted != "token-1" {
+			t.Fatalf("deleted token = %q, want token-1", deleted)
+		}
+	})
+
+	for _, tt := range []struct {
+		name    string
+		setup   func(*MockClient)
+		wantErr string
+	}{
+		{
+			name: "list error",
+			setup: func(mock *MockClient) {
+				mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+					return nil, errors.New("list failed")
+				}
+			},
+			wantErr: "failed to list service tokens",
+		},
+		{
+			name: "create error",
+			setup: func(mock *MockClient) {
+				mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) { return nil, nil }
+				mock.CreateServiceTokenFunc = func(context.Context, string, ServiceTokenParams) (*ServiceTokenWithSecret, error) {
+					return nil, errors.New("create failed")
+				}
+			},
+			wantErr: "failed to create service token",
+		},
+		{
+			name: "rotate error",
+			setup: func(mock *MockClient) {
+				mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+					return []ServiceToken{{ID: "token-1", Name: "svc", ExpiresAt: time.Now().Add(-time.Hour)}}, nil
+				}
+				mock.RotateServiceTokenFunc = func(context.Context, string, string) (*ServiceTokenWithSecret, error) {
+					return nil, errors.New("rotate failed")
+				}
+			},
+			wantErr: "failed to rotate service token",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := NewMockClient()
+			tt.setup(mock)
+			_, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, &recordingSecretWriter{})
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("EnsureServiceToken() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestAccessServiceClient(t *testing.T) {
+	mock := NewMockClient()
+	if got := NewAccessService(mock, logr.Discard()).Client(); got != mock {
+		t.Fatalf("Client() = %#v, want mock", got)
+	}
+}
+
+type recordingSecretWriter struct {
+	calls int
+	name  string
+	data  map[string][]byte
+	err   error
+}
+
+func (w *recordingSecretWriter) WriteSecret(_ context.Context, name string, data map[string][]byte) error {
+	w.calls++
+	w.name = name
+	w.data = data
+	return w.err
+}
+
+func assertSecretData(t *testing.T, writer *recordingSecretWriter, name, clientID, clientSecret string) {
+	t.Helper()
+	if writer.calls != 1 {
+		t.Fatalf("secret writes = %d, want 1", writer.calls)
+	}
+	if writer.name != name {
+		t.Fatalf("secret name = %q, want %q", writer.name, name)
+	}
+	if string(writer.data["CF_ACCESS_CLIENT_ID"]) != clientID {
+		t.Fatalf("client ID = %q, want %q", writer.data["CF_ACCESS_CLIENT_ID"], clientID)
+	}
+	if string(writer.data["CF_ACCESS_CLIENT_SECRET"]) != clientSecret {
+		t.Fatalf("client secret = %q, want %q", writer.data["CF_ACCESS_CLIENT_SECRET"], clientSecret)
 	}
 }
 

@@ -3,6 +3,7 @@ package context
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -164,6 +165,143 @@ func TestBuildAccessApplicationContext(t *testing.T) {
 	}
 	if !got.AllTargetsResolved() {
 		t.Fatalf("AllTargetsResolved() = false, want true")
+	}
+
+	missing, err := BuildAccessApplicationContext(context.Background(), k8sClient, types.NamespacedName{
+		Namespace: "app",
+		Name:      "missing",
+	})
+	if err != nil {
+		t.Fatalf("BuildAccessApplicationContext() missing error = %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("BuildAccessApplicationContext() missing = %#v, want nil", missing)
+	}
+}
+
+func TestBuildAccessPolicyContext(t *testing.T) {
+	scheme := testScheme(t)
+	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "policy", Namespace: "app"},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build()
+
+	got, err := BuildAccessPolicyContext(context.Background(), k8sClient, types.NamespacedName{
+		Namespace: "app",
+		Name:      "policy",
+	})
+	if err != nil {
+		t.Fatalf("BuildAccessPolicyContext() error = %v", err)
+	}
+	if got == nil || got.CloudflareAccessPolicy == nil || got.CloudflareAccessApplication != nil {
+		t.Fatalf("BuildAccessPolicyContext() = %#v, want policy context", got)
+	}
+	if got.namespace() != "app" {
+		t.Fatalf("namespace() = %q, want app", got.namespace())
+	}
+
+	missing, err := BuildAccessPolicyContext(context.Background(), k8sClient, types.NamespacedName{
+		Namespace: "app",
+		Name:      "missing",
+	})
+	if err != nil {
+		t.Fatalf("BuildAccessPolicyContext() missing error = %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("BuildAccessPolicyContext() missing = %#v, want nil", missing)
+	}
+}
+
+func TestDNSContextAccessors(t *testing.T) {
+	scheme := testScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"},
+		Status:     cfgatev1alpha1.CloudflareTunnelStatus{TunnelDomain: "tunnel.example.com"},
+	}
+	dns := &cfgatev1alpha1.CloudflareDNS{
+		ObjectMeta: metav1.ObjectMeta{Name: "dns", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareDNSSpec{
+			TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: "tunnel"},
+			Zones:     []cfgatev1alpha1.DNSZoneConfig{{Name: "example.com"}},
+		},
+	}
+	dnsService := cloudflare.NewDNSService(cloudflare.NewMockClient(), logr.Discard())
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tunnel).Build()
+
+	got, err := NewDNSContext(context.Background(), dns, k8sClient, dnsService)
+	if err != nil {
+		t.Fatalf("NewDNSContext() error = %v", err)
+	}
+	if got.ResolvedTunnel() == nil || got.ResolvedTunnel().Name != "tunnel" {
+		t.Fatalf("ResolvedTunnel() = %#v, want tunnel", got.ResolvedTunnel())
+	}
+	if got.DNSClient() != dnsService {
+		t.Fatalf("DNSClient() = %#v, want original service", got.DNSClient())
+	}
+
+	external := &cfgatev1alpha1.CloudflareDNS{
+		ObjectMeta: metav1.ObjectMeta{Name: "external", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareDNSSpec{
+			ExternalTarget: &cfgatev1alpha1.ExternalTarget{Value: "external.example.com"},
+		},
+	}
+	got, err = NewDNSContext(context.Background(), external, k8sClient, dnsService)
+	if err != nil {
+		t.Fatalf("NewDNSContext() external error = %v", err)
+	}
+	if got.ResolvedTunnel() != nil {
+		t.Fatalf("ResolvedTunnel() external = %#v, want nil", got.ResolvedTunnel())
+	}
+}
+
+func TestAccessPolicyContextHelpers(t *testing.T) {
+	policyContext := NewAccessPolicyContext(context.Background(), &cfgatev1alpha1.CloudflareAccessPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "policy", Namespace: "policy-ns"},
+	}, nil)
+	if policyContext.CloudflareAccessPolicy == nil || policyContext.CloudflareAccessApplication != nil {
+		t.Fatalf("NewAccessPolicyContext() = %#v, want policy only", policyContext)
+	}
+	if policyContext.namespace() != "policy-ns" {
+		t.Fatalf("policy namespace() = %q, want policy-ns", policyContext.namespace())
+	}
+	if (&AccessPolicyContext{}).namespace() != "" {
+		t.Fatalf("empty namespace() = %q, want empty", (&AccessPolicyContext{}).namespace())
+	}
+	if (&AccessPolicyContext{}).RequiresServiceTokens() {
+		t.Fatal("RequiresServiceTokens() for nil policy = true, want false")
+	}
+}
+
+func TestExtractHostnames(t *testing.T) {
+	scheme := testScheme(t)
+	routeHost := gatewayv1.Hostname("app.example.com")
+	gatewayHost := gatewayv1.Hostname("gw.example.com")
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
+		Spec:       gatewayv1.HTTPRouteSpec{Hostnames: []gatewayv1.Hostname{routeHost, routeHost}},
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "app"},
+		Spec: gatewayv1.GatewaySpec{Listeners: []gatewayv1.Listener{{
+			Name:     "https",
+			Hostname: &gatewayHost,
+		}}},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(route, gateway).Build()
+	apc := &AccessPolicyContext{resolvedTargets: []TargetInfo{
+		{Kind: "Gateway", Namespace: "app", Name: "gateway", Resolved: true},
+		{Kind: "HTTPRoute", Namespace: "app", Name: "route", Resolved: true},
+		{Kind: "Unsupported", Namespace: "app", Name: "bad", Resolved: true},
+		{Kind: "HTTPRoute", Namespace: "app", Name: "failed", Resolved: true, Error: errors.New("skip")},
+	}}
+
+	got, err := apc.ExtractHostnames(context.Background(), k8sClient)
+	if err != nil {
+		t.Fatalf("ExtractHostnames() error = %v", err)
+	}
+	want := []string{"app.example.com", "gw.example.com"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ExtractHostnames() = %#v, want %#v", got, want)
 	}
 }
 

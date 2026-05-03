@@ -278,6 +278,75 @@ func TestRegisterControllers(t *testing.T) {
 			t.Fatalf("registerControllers() error = %v, want wrapped tunnel error", err)
 		}
 	})
+
+	for _, tt := range []struct {
+		name string
+		fail func()
+		want string
+	}{
+		{
+			name: "dns failure",
+			fail: func() {
+				setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache) error { return errors.New("boom") }
+			},
+			want: "unable to create controller CloudflareDNS",
+		},
+		{
+			name: "gateway failure",
+			fail: func() {
+				setupGatewayController = func(manager.Manager) error { return errors.New("boom") }
+			},
+			want: "unable to create controller Gateway",
+		},
+		{
+			name: "gateway class failure",
+			fail: func() {
+				setupGatewayClassController = func(manager.Manager) error { return errors.New("boom") }
+			},
+			want: "unable to create controller GatewayClass",
+		},
+		{
+			name: "httproute failure",
+			fail: func() {
+				setupHTTPRouteController = func(manager.Manager) error { return errors.New("boom") }
+			},
+			want: "unable to create controller HTTPRoute",
+		},
+		{
+			name: "access policy failure",
+			fail: func() {
+				setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+					return errors.New("boom")
+				}
+			},
+			want: "unable to create controller CloudflareAccessPolicy",
+		},
+		{
+			name: "access application failure",
+			fail: func() {
+				setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+					return errors.New("boom")
+				}
+			},
+			want: "unable to create controller CloudflareAccessApplication",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache) error { return nil }
+			setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache) error { return nil }
+			setupGatewayController = func(manager.Manager) error { return nil }
+			setupGatewayClassController = func(manager.Manager) error { return nil }
+			setupHTTPRouteController = func(manager.Manager) error { return nil }
+			setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error { return nil }
+			setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error { return nil }
+			tt.fail()
+
+			err := registerControllers(nil, &features.FeatureGates{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("registerControllers() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
 }
 
 func TestExecuteManager(t *testing.T) {
