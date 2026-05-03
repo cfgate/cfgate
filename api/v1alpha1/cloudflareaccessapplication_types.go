@@ -52,6 +52,7 @@ type CloudflareAccessApplicationSpec struct {
 
 	// TargetRefs identifies multiple Gateway API targets.
 	// +optional
+	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=16
 	TargetRefs []PolicyTargetReference `json:"targetRefs,omitempty"`
 

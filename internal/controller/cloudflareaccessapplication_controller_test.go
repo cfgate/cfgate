@@ -7,10 +7,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	"cfgate.io/cfgate/internal/cloudflare"
 )
 
 func TestApplicationAncestorsUsesAccessControllerName(t *testing.T) {
@@ -65,6 +69,32 @@ func TestValidateAccessApplicationPath(t *testing.T) {
 	}
 }
 
+func TestDeleteStaleAccessApplications(t *testing.T) {
+	deleted := []string{}
+	mock := cloudflare.NewMockClient()
+	mock.DeleteAccessApplicationFunc = func(_ context.Context, accountID, appID string) error {
+		if accountID != "account-1" {
+			t.Fatalf("accountID = %q, want account-1", accountID)
+		}
+		deleted = append(deleted, appID)
+		return nil
+	}
+	accessService := cloudflare.NewAccessService(mock, logr.Discard())
+	existing := []cfgatev1alpha1.AccessApplicationObserved{
+		{ID: "keep", Domain: "app.example.com"},
+		{ID: "drop", Domain: "old.example.com"},
+		{Domain: "missing-id.example.com"},
+	}
+	desired := map[string]struct{}{"app.example.com": {}}
+
+	if err := deleteStaleAccessApplications(context.Background(), accessService, "account-1", existing, desired); err != nil {
+		t.Fatalf("deleteStaleAccessApplications() error = %v", err)
+	}
+	if got := strings.Join(deleted, ","); got != "drop" {
+		t.Fatalf("deleted applications = %q, want drop", got)
+	}
+}
+
 func TestBlockApplicationDeletionEmitsCleanupFailedBeforeBudget(t *testing.T) {
 	reconciler := &CloudflareAccessApplicationReconciler{Recorder: &accessApplicationEventRecorder{}}
 	app := accessApplicationWithDeletionTimestamp(time.Now())
@@ -98,6 +128,36 @@ func TestBlockApplicationDeletionEmitsCleanupBlockedAfterBudget(t *testing.T) {
 	assertAccessApplicationEventContains(t, recorder, "CleanupBlocked")
 	assertAccessApplicationEventContains(t, recorder, "blocked after")
 	assertAccessApplicationEventContains(t, recorder, "Set annotation cfgate.io/deletion-policy=orphan")
+}
+
+func TestReconcileApplicationDeleteRemovesFinalizerWhenNoObservedApplications(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := cfgatev1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme() error = %v", err)
+	}
+	app := &cfgatev1alpha1.CloudflareAccessApplication{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "app",
+			Namespace:  "default",
+			Finalizers: []string{accessApplicationFinalizer},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(app).Build()
+	reconciler := &CloudflareAccessApplicationReconciler{Client: k8sClient}
+
+	if _, err := reconciler.reconcileApplicationDelete(ctx, app); err != nil {
+		t.Fatalf("reconcileApplicationDelete() error = %v", err)
+	}
+
+	var current cfgatev1alpha1.CloudflareAccessApplication
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: app.Name, Namespace: app.Namespace}, &current); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(current.Finalizers) != 0 {
+		t.Fatalf("finalizers = %v, want none", current.Finalizers)
+	}
 }
 
 func accessApplicationWithDeletionTimestamp(ts time.Time) *cfgatev1alpha1.CloudflareAccessApplication {

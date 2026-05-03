@@ -146,6 +146,7 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 	)
 
 	existingIDs := applicationStatusIDs(app.Status.Applications)
+	desiredDomains := accessApplicationTargetDomains(targets)
 	observed := make([]cfgatev1alpha1.AccessApplicationObserved, 0, len(targets))
 	for _, target := range targets {
 		params := buildAccessApplicationParams(&app, target, policyLinks, len(targets) > 1)
@@ -167,6 +168,17 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 			Domain:    cfApp.Domain,
 			TargetRef: target.Ref,
 		})
+	}
+	if err := deleteStaleAccessApplications(ctx, accessService, accountID, app.Status.Applications, desiredDomains); err != nil {
+		log.Error(err, "failed to delete stale access applications")
+		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
+			status.NewCondition(status.ConditionTypeApplicationSynced, metav1.ConditionFalse, status.ReasonApplicationError, status.Error2ConditionMsg(err), app.Generation),
+		)
+		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
+			status.NewAccessApplicationReadyCondition(app.Status.Conditions, app.Generation),
+		)
+		_ = r.updateApplicationStatus(ctx, &app)
+		return ctrl.Result{RequeueAfter: accessApplicationRequeueAfterError}, nil
 	}
 	sort.Slice(observed, func(i, j int) bool { return observed[i].Domain < observed[j].Domain })
 
@@ -706,6 +718,29 @@ func applicationStatusIDs(applications []cfgatev1alpha1.AccessApplicationObserve
 	return ids
 }
 
+func accessApplicationTargetDomains(targets []accessApplicationTarget) map[string]struct{} {
+	domains := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		domains[target.Domain] = struct{}{}
+	}
+	return domains
+}
+
+func deleteStaleAccessApplications(ctx context.Context, accessService *cloudflare.AccessService, accountID string, existing []cfgatev1alpha1.AccessApplicationObserved, desiredDomains map[string]struct{}) error {
+	for _, observed := range existing {
+		if _, ok := desiredDomains[observed.Domain]; ok {
+			continue
+		}
+		if observed.ID == "" {
+			continue
+		}
+		if err := accessService.Client().DeleteAccessApplication(ctx, accountID, observed.ID); err != nil {
+			return fmt.Errorf("delete stale Access application %s for %s: %w", observed.ID, observed.Domain, err)
+		}
+	}
+	return nil
+}
+
 func applicationAncestors(targets []accessApplicationTarget, generation int64) []cfgatev1alpha1.PolicyAncestorStatus {
 	ancestors := make([]cfgatev1alpha1.PolicyAncestorStatus, 0, len(targets))
 	for _, target := range targets {
@@ -754,25 +789,14 @@ func (r *CloudflareAccessApplicationReconciler) referenceGrantPermits(ctx contex
 	return false, nil
 }
 
-func (r *CloudflareAccessApplicationReconciler) grantPermitsAccess(grant gwapiv1b1.ReferenceGrant, fromNamespace, targetKind string) bool {
-	for _, from := range grant.Spec.From {
-		if string(from.Group) != "cfgate.io" || string(from.Kind) != "CloudflareAccessApplication" || string(from.Namespace) != fromNamespace {
-			continue
-		}
-		for _, to := range grant.Spec.To {
-			if string(to.Group) == gwapiv1.GroupName && string(to.Kind) == targetKind {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(app, accessApplicationFinalizer) {
 		return ctrl.Result{}, nil
 	}
 	if app.Annotations["cfgate.io/deletion-policy"] == "orphan" {
+		return r.removeApplicationFinalizer(ctx, app)
+	}
+	if len(app.Status.Applications) == 0 {
 		return r.removeApplicationFinalizer(ctx, app)
 	}
 	targets := make([]accessApplicationTarget, 0, len(app.Status.Applications))
@@ -817,6 +841,9 @@ func (r *CloudflareAccessApplicationReconciler) removeApplicationFinalizer(ctx c
 	patch := client.MergeFrom(app.DeepCopy())
 	controllerutil.RemoveFinalizer(app, accessApplicationFinalizer)
 	if err := r.Patch(ctx, app, patch); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("failed to remove finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil

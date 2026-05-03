@@ -32,7 +32,7 @@ Key fields:
 | `targetRef` / `targetRefs` | Gateway API `Gateway` or `HTTPRoute` targets. Exactly one of these fields is allowed. |
 | `cloudflareRef` | Optional credentials. If omitted, credentials are inherited from target route -> Gateway -> CloudflareTunnel. |
 | `application` | Access Application settings shared by generated apps. `path` overrides derived target paths. |
-| `policyRefs` | Required reusable policies to attach. Default precedence is list order starting at `1`. Duplicate name/namespace pairs are invalid. |
+| `policyRefs` | Required reusable policies to attach. Default precedence is list order starting at `1`. Duplicate names in one list are invalid. |
 
 Cross-namespace target references require a `ReferenceGrant` in the target namespace. Cross-namespace policy references require a `ReferenceGrant` in the policy namespace.
 

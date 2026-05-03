@@ -534,7 +534,7 @@ type AccessGroupRef struct {
 // ApprovalGroup specifies approvers by email address or email list UUID. When a
 // policy requires approval, users matching this group can approve or deny access requests.
 //
-// +kubebuilder:validation:XValidation:rule="size(self.emails) > 0 || has(self.emailListUuid)",message="at least one approver (emails or emailListUuid) must be specified"
+// +kubebuilder:validation:XValidation:rule="(has(self.emails) && size(self.emails) > 0) || has(self.emailListUuid)",message="at least one approver (emails or emailListUuid) must be specified"
 type ApprovalGroup struct {
 	// Emails of approvers.
 	// +optional
