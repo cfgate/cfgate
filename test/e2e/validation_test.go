@@ -106,6 +106,41 @@ var _ = Describe("CEL Validation E2E", func() {
 			Expect(err.Error()).To(ContainSubstring("duplicate"))
 		})
 
+		It("rejects mixed implicit and explicit policyRef precedence", func() {
+			precedence := 2
+			app := validAccessApplication(testID("mixed-precedence"), namespace.Name, "policy")
+			app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{
+				{Name: "policy"},
+				{Name: "other", Precedence: &precedence},
+			}
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("all omit precedence or all specify precedence"))
+		})
+
+		It("rejects duplicate explicit policyRef precedence", func() {
+			precedence := 2
+			app := validAccessApplication(testID("duplicate-precedence"), namespace.Name, "policy")
+			app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{
+				{Name: "policy", Precedence: &precedence},
+				{Name: "other", Precedence: &precedence},
+			}
+			err := k8sClient.Create(ctx, app)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("precedence values must be unique"))
+		})
+
+		It("accepts unique explicit policyRef precedence", func() {
+			first := 10
+			second := 20
+			app := validAccessApplication(testID("explicit-precedence"), namespace.Name, "policy")
+			app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{
+				{Name: "policy", Precedence: &first},
+				{Name: "other", Precedence: &second},
+			}
+			Expect(k8sClient.Create(ctx, app)).To(Succeed())
+		})
+
 		It("rejects invalid target group and kind", func() {
 			app := validAccessApplication(testID("bad-target"), namespace.Name, "policy")
 			app.Spec.TargetRef.Group = "apps"

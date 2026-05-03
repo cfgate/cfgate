@@ -532,9 +532,10 @@ func TestEnsureApplicationByIDOrTagsEnsuresTagsBeforeCreate(t *testing.T) {
 	}
 }
 
-func TestEnsureApplicationByIDOrTagsSkipsOptionalTagWhenCloudflareTagLimitReached(t *testing.T) {
+func TestEnsureApplicationByIDOrTagsFailsWhenRequiredTagCannotBeCreated(t *testing.T) {
 	ctx := context.Background()
 	mock := NewMockClient()
+	createCalled := false
 
 	mock.ListAccessTagsFunc = func(context.Context, string) ([]AccessTag, error) {
 		return []AccessTag{{Name: "cfgate"}}, nil
@@ -543,16 +544,14 @@ func TestEnsureApplicationByIDOrTagsSkipsOptionalTagWhenCloudflareTagLimitReache
 		if tagName != "cfgate:default:app" {
 			t.Fatalf("CreateAccessTag tagName = %q, want cfgate:default:app", tagName)
 		}
-		return nil, cfError(400, accessTagLimitErrorCode)
+		return nil, cfError(400, 12146)
 	}
 	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]AccessApplication, error) {
 		return nil, nil
 	}
 	mock.CreateAccessApplicationFunc = func(_ context.Context, _ string, params ApplicationParams) (*AccessApplication, error) {
-		if !reflect.DeepEqual(params.Tags, []string{"cfgate"}) {
-			t.Fatalf("CreateAccessApplication tags = %v, want [cfgate]", params.Tags)
-		}
-		return &AccessApplication{ID: "app-1", Name: params.Name, Domain: params.Domain, Tags: params.Tags}, nil
+		createCalled = true
+		return nil, nil
 	}
 
 	params := ApplicationParams{
@@ -560,38 +559,33 @@ func TestEnsureApplicationByIDOrTagsSkipsOptionalTagWhenCloudflareTagLimitReache
 		Domain: "app.example.com",
 		Tags:   []string{"cfgate", "cfgate:default:app"},
 	}
-	app, err := NewAccessService(mock, logr.Discard()).EnsureApplicationByIDOrTags(ctx, "account-1", "", params)
-	if err != nil {
-		t.Fatalf("EnsureApplicationByIDOrTags() error = %v", err)
+	_, err := NewAccessService(mock, logr.Discard()).EnsureApplicationByIDOrTags(ctx, "account-1", "", params)
+	if err == nil || !strings.Contains(err.Error(), `failed to create access tag "cfgate:default:app"`) {
+		t.Fatalf("EnsureApplicationByIDOrTags() error = %v, want owner tag failure", err)
 	}
-	if app == nil || app.ID != "app-1" {
-		t.Fatalf("EnsureApplicationByIDOrTags() app = %+v, want app-1", app)
+	if createCalled {
+		t.Fatal("CreateAccessApplication called after tag creation failed")
 	}
 }
 
-func TestEnsureApplicationTagsSkipsOnlyOwnerTagWhenLimitReached(t *testing.T) {
+func TestEnsureApplicationTagsRequiresAllTags(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("owner tag limit is optional regardless of order", func(t *testing.T) {
+	t.Run("owner tag limit returns error", func(t *testing.T) {
 		mock := NewMockClient()
-		var created []string
 		mock.ListAccessTagsFunc = func(context.Context, string) ([]AccessTag, error) {
 			return nil, nil
 		}
 		mock.CreateAccessTagFunc = func(_ context.Context, _ string, tagName string) (*AccessTag, error) {
 			if strings.HasPrefix(tagName, "cfgate:") {
-				return nil, cfError(400, accessTagLimitErrorCode)
+				return nil, cfError(400, 12146)
 			}
-			created = append(created, tagName)
 			return &AccessTag{Name: tagName}, nil
 		}
 
-		got, err := NewAccessService(mock, logr.Discard()).ensureApplicationTags(ctx, "account-1", []string{"cfgate:default:app", "cfgate"})
-		if err != nil {
-			t.Fatalf("ensureApplicationTags() error = %v", err)
-		}
-		if !reflect.DeepEqual(got, []string{"cfgate"}) || !reflect.DeepEqual(created, []string{"cfgate"}) {
-			t.Fatalf("tags = %v created = %v, want [cfgate]", got, created)
+		_, err := NewAccessService(mock, logr.Discard()).ensureApplicationTags(ctx, "account-1", []string{"cfgate:default:app", "cfgate"})
+		if err == nil || !strings.Contains(err.Error(), `failed to create access tag "cfgate:default:app"`) {
+			t.Fatalf("ensureApplicationTags() error = %v, want owner tag failure", err)
 		}
 	})
 
@@ -601,7 +595,7 @@ func TestEnsureApplicationTagsSkipsOnlyOwnerTagWhenLimitReached(t *testing.T) {
 			return nil, nil
 		}
 		mock.CreateAccessTagFunc = func(context.Context, string, string) (*AccessTag, error) {
-			return nil, cfError(400, accessTagLimitErrorCode)
+			return nil, cfError(400, 12146)
 		}
 
 		_, err := NewAccessService(mock, logr.Discard()).ensureApplicationTags(ctx, "account-1", []string{"cfgate"})

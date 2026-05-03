@@ -527,6 +527,11 @@ func (in *CloudflareAccessApplicationStatus) DeepCopyInto(out *CloudflareAccessA
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	if in.CredentialSecretRef != nil {
+		in, out := &in.CredentialSecretRef, &out.CredentialSecretRef
+		*out = new(SecretReference)
+		**out = **in
+	}
 	if in.Ancestors != nil {
 		in, out := &in.Ancestors, &out.Ancestors
 		*out = make([]PolicyAncestorStatus, len(*in))

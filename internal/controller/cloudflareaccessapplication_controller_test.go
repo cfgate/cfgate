@@ -244,6 +244,14 @@ func TestAccessApplicationReconcileHTTPRouteSuccess(t *testing.T) {
 	if current.Status.AttachedTargets != 1 {
 		t.Fatalf("AttachedTargets = %d, want 1", current.Status.AttachedTargets)
 	}
+	if current.Status.AccountID != "account-1" {
+		t.Fatalf("AccountID = %q, want account-1", current.Status.AccountID)
+	}
+	if current.Status.CredentialSecretRef == nil ||
+		current.Status.CredentialSecretRef.Name != "cf" ||
+		current.Status.CredentialSecretRef.Namespace != "app" {
+		t.Fatalf("CredentialSecretRef = %+v, want app/cf", current.Status.CredentialSecretRef)
+	}
 	if !status.ConditionTrue(current.Status.Conditions, status.ConditionTypeReady) {
 		t.Fatalf("Ready condition missing from %#v", current.Status.Conditions)
 	}
@@ -255,6 +263,57 @@ func TestAccessApplicationReconcileHTTPRouteSuccess(t *testing.T) {
 	}
 	if !reflect.DeepEqual(created.Tags, []string{accessApplicationTag, accessApplicationOwnerTag(app)}) {
 		t.Fatalf("Tags = %#v", created.Tags)
+	}
+}
+
+func TestAccessApplicationReconcileInheritedCredentialsStoresCleanupRef(t *testing.T) {
+	ctx := context.Background()
+	route := &gwapiv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
+		Spec: gwapiv1.HTTPRouteSpec{
+			Hostnames:       []gwapiv1.Hostname{"app.example.com"},
+			CommonRouteSpec: gwapiv1.CommonRouteSpec{ParentRefs: []gwapiv1.ParentReference{{Name: "gateway"}}},
+		},
+	}
+	gateway := &gwapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "app", Annotations: map[string]string{annotations.AnnotationTunnelRef: "tunnel"}},
+	}
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareTunnelSpec{Cloudflare: cfgatev1alpha1.CloudflareConfig{
+			SecretRef: cfgatev1alpha1.SecretRef{Name: "cf", Namespace: "secrets"},
+		}},
+		Status: cfgatev1alpha1.CloudflareTunnelStatus{AccountID: "account-1"},
+	}
+	policy := readyAccessPolicy("app", "policy", "account-1", "policy-1")
+	app := appWithFinalizer("app", "app")
+	app.Spec.TargetRef = &cfgatev1alpha1.PolicyTargetReference{Group: gwapiv1.GroupName, Kind: "HTTPRoute", Name: "route"}
+	app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}}
+
+	mock := cloudflare.NewMockClient()
+	mock.ListAccessTagsFunc = func(context.Context, string) ([]cloudflare.AccessTag, error) {
+		return []cloudflare.AccessTag{{Name: accessApplicationTag}, {Name: accessApplicationOwnerTag(app)}}, nil
+	}
+	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]cloudflare.AccessApplication, error) {
+		return nil, nil
+	}
+	mock.CreateAccessApplicationFunc = func(_ context.Context, _ string, params cloudflare.ApplicationParams) (*cloudflare.AccessApplication, error) {
+		return &cloudflare.AccessApplication{ID: "app-id", AUD: "aud", Domain: params.Domain}, nil
+	}
+	reconciler := newAccessAppReconciler(t, mock, route, gateway, tunnel, policy, app)
+
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "app", Namespace: "app"}}); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	var current cfgatev1alpha1.CloudflareAccessApplication
+	if err := reconciler.Get(ctx, types.NamespacedName{Name: "app", Namespace: "app"}, &current); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if current.Status.AccountID != "account-1" ||
+		current.Status.CredentialSecretRef == nil ||
+		current.Status.CredentialSecretRef.Name != "cf" ||
+		current.Status.CredentialSecretRef.Namespace != "secrets" {
+		t.Fatalf("status credentials = %q/%+v, want account-1 secrets/cf", current.Status.AccountID, current.Status.CredentialSecretRef)
 	}
 }
 
@@ -492,21 +551,24 @@ func TestResolveApplicationCredentials(t *testing.T) {
 
 	app := appWithFinalizer("app", "app")
 	app.Spec.CloudflareRef = &cfgatev1alpha1.CloudflareSecretRef{Name: "cf", AccountID: "account-1"}
-	service, accountID, err := reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "Gateway", Namespace: "app", Name: "gateway"}})
+	creds, err := reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "Gateway", Namespace: "app", Name: "gateway"}})
 	if err != nil {
 		t.Fatalf("resolveApplicationCredentials() explicit error = %v", err)
 	}
-	if accountID != "account-1" || service.Client() != mock {
-		t.Fatalf("explicit credentials = (%s, %#v)", accountID, service.Client())
+	if creds.AccountID != "account-1" || creds.Service.Client() != mock {
+		t.Fatalf("explicit credentials = (%s, %#v)", creds.AccountID, creds.Service.Client())
+	}
+	if creds.CredentialSecretRef == nil || creds.CredentialSecretRef.Name != "cf" || creds.CredentialSecretRef.Namespace != "app" {
+		t.Fatalf("explicit CredentialSecretRef = %+v, want app/cf", creds.CredentialSecretRef)
 	}
 
 	app.Spec.CloudflareRef = &cfgatev1alpha1.CloudflareSecretRef{Name: "cf", AccountName: "prod"}
-	_, accountID, err = reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "Gateway", Namespace: "app", Name: "gateway"}})
+	creds, err = reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "Gateway", Namespace: "app", Name: "gateway"}})
 	if err != nil {
 		t.Fatalf("resolveApplicationCredentials() account name error = %v", err)
 	}
-	if accountID != "account-by-name" {
-		t.Fatalf("accountID = %q, want account-by-name", accountID)
+	if creds.AccountID != "account-by-name" {
+		t.Fatalf("accountID = %q, want account-by-name", creds.AccountID)
 	}
 
 	gateway := &gwapiv1.Gateway{
@@ -519,18 +581,23 @@ func TestResolveApplicationCredentials(t *testing.T) {
 	tunnel := &cfgatev1alpha1.CloudflareTunnel{
 		ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"},
 		Spec: cfgatev1alpha1.CloudflareTunnelSpec{Cloudflare: cfgatev1alpha1.CloudflareConfig{
-			SecretRef: cfgatev1alpha1.SecretRef{Name: "cf"},
+			SecretRef: cfgatev1alpha1.SecretRef{Name: "cf", Namespace: "secrets"},
 		}},
 		Status: cfgatev1alpha1.CloudflareTunnelStatus{AccountID: "inherited-account"},
 	}
 	reconciler = newAccessAppReconciler(t, mock, gateway, route, tunnel)
 	app.Spec.CloudflareRef = nil
-	_, accountID, err = reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "HTTPRoute", Namespace: "app", Name: "route"}})
+	creds, err = reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "HTTPRoute", Namespace: "app", Name: "route"}})
 	if err != nil {
 		t.Fatalf("resolveApplicationCredentials() inherited error = %v", err)
 	}
-	if accountID != "inherited-account" {
-		t.Fatalf("inherited accountID = %q, want inherited-account", accountID)
+	if creds.AccountID != "inherited-account" {
+		t.Fatalf("inherited accountID = %q, want inherited-account", creds.AccountID)
+	}
+	if creds.CredentialSecretRef == nil ||
+		creds.CredentialSecretRef.Name != "cf" ||
+		creds.CredentialSecretRef.Namespace != "secrets" {
+		t.Fatalf("inherited CredentialSecretRef = %+v, want secrets/cf", creds.CredentialSecretRef)
 	}
 
 	for _, tt := range []struct {
@@ -544,7 +611,7 @@ func TestResolveApplicationCredentials(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reconciler := newAccessAppReconciler(t, mock, tt.objects...)
-			_, _, err := reconciler.resolveApplicationCredentials(ctx, app, tt.targets)
+			_, err := reconciler.resolveApplicationCredentials(ctx, app, tt.targets)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("resolveApplicationCredentials() error = %v, want %q", err, tt.wantErr)
 			}
@@ -562,16 +629,31 @@ func TestResolveApplicationPolicyRefs(t *testing.T) {
 	grant := referenceGrant("app", crossNS, "CloudflareAccessPolicy", "cross")
 	sameNameGrant := referenceGrant("app", crossNS, "CloudflareAccessPolicy", "policy")
 
-	t.Run("default and explicit precedence", func(t *testing.T) {
+	t.Run("default precedence", func(t *testing.T) {
 		app := appWithFinalizer("app", "app")
-		precedence := 7
-		app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}, {Name: "other", Precedence: &precedence}}
+		app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}, {Name: "other"}}
 		reconciler := newAccessAppReconciler(t, cloudflare.NewMockClient(), basePolicy, otherPolicy)
 		got, err := reconciler.resolveApplicationPolicyRefs(ctx, app, "account-1")
 		if err != nil {
 			t.Fatalf("resolveApplicationPolicyRefs() error = %v", err)
 		}
-		want := []cloudflare.ApplicationPolicyLink{{ID: "policy-1", Precedence: 1}, {ID: "policy-2", Precedence: 7}}
+		want := []cloudflare.ApplicationPolicyLink{{ID: "policy-1", Precedence: 1}, {ID: "policy-2", Precedence: 2}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("links = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("explicit precedence", func(t *testing.T) {
+		app := appWithFinalizer("app", "app")
+		first := 7
+		second := 3
+		app.Spec.PolicyRefs = []cfgatev1alpha1.AccessPolicyReference{{Name: "policy", Precedence: &first}, {Name: "other", Precedence: &second}}
+		reconciler := newAccessAppReconciler(t, cloudflare.NewMockClient(), basePolicy, otherPolicy)
+		got, err := reconciler.resolveApplicationPolicyRefs(ctx, app, "account-1")
+		if err != nil {
+			t.Fatalf("resolveApplicationPolicyRefs() error = %v", err)
+		}
+		want := []cloudflare.ApplicationPolicyLink{{ID: "policy-1", Precedence: 7}, {ID: "policy-2", Precedence: 3}}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("links = %#v, want %#v", got, want)
 		}
@@ -598,6 +680,8 @@ func TestResolveApplicationPolicyRefs(t *testing.T) {
 		wantErr string
 	}{
 		{name: "duplicate ref", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}, {Name: "policy"}}, objects: []client.Object{basePolicy}, wantErr: "duplicate policyRef"},
+		{name: "mixed precedence", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}, {Name: "other", Precedence: intPtr(2)}}, objects: []client.Object{basePolicy, otherPolicy}, wantErr: "all specify precedence"},
+		{name: "duplicate precedence", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy", Precedence: intPtr(2)}, {Name: "other", Precedence: intPtr(2)}}, objects: []client.Object{basePolicy, otherPolicy}, wantErr: "duplicate policyRef precedence 2"},
 		{name: "missing policy", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "missing"}}, wantErr: "not found"},
 		{name: "not ready policy", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}}, objects: []client.Object{notReadyAccessPolicy("app", "policy", "account-1", "policy-1")}, wantErr: "is not ready"},
 		{name: "missing policy ID", refs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}}, objects: []client.Object{readyAccessPolicy("app", "policy", "account-1", "")}, wantErr: "has no policyId"},
@@ -666,6 +750,37 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 		assertAccessApplicationFinalizerRemoved(t, reconciler)
 	})
 
+	t.Run("cached credentials delete when target is missing", func(t *testing.T) {
+		app := appWithFinalizer("app", "app")
+		app.Status.AccountID = "account-1"
+		app.Status.CredentialSecretRef = &cfgatev1alpha1.SecretReference{Name: "cf", Namespace: "app"}
+		app.Status.Applications = []cfgatev1alpha1.AccessApplicationObserved{{
+			ID:     "app-1",
+			Domain: "app.example.com",
+			TargetRef: cfgatev1alpha1.PolicyTargetReference{
+				Kind: "Gateway",
+				Name: "deleted-gateway",
+			},
+		}}
+		deleted := ""
+		mock := cloudflare.NewMockClient()
+		mock.DeleteAccessApplicationFunc = func(_ context.Context, accountID, appID string) error {
+			if accountID != "account-1" {
+				t.Fatalf("DeleteAccessApplication accountID = %q, want account-1", accountID)
+			}
+			deleted = appID
+			return nil
+		}
+		reconciler := newAccessAppReconciler(t, mock, app)
+		if _, err := reconciler.reconcileApplicationDelete(ctx, app); err != nil {
+			t.Fatalf("reconcileApplicationDelete() error = %v", err)
+		}
+		if deleted != "app-1" {
+			t.Fatalf("deleted = %q, want app-1", deleted)
+		}
+		assertAccessApplicationFinalizerRemoved(t, reconciler)
+	})
+
 	t.Run("delete error requeues and emits event", func(t *testing.T) {
 		app := appWithFinalizer("app", "app")
 		setDeletionTimestamp(app)
@@ -702,11 +817,13 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 
 func TestAccessApplicationStatusAndReasonHelpers(t *testing.T) {
 	base := &cfgatev1alpha1.CloudflareAccessApplicationStatus{
-		AttachedTargets:    1,
-		ObservedGeneration: 2,
-		Applications:       []cfgatev1alpha1.AccessApplicationObserved{{ID: "app-1", Domain: "app.example.com"}},
-		Ancestors:          []cfgatev1alpha1.PolicyAncestorStatus{{ControllerName: AccessPolicyControllerName}},
-		Conditions:         []metav1.Condition{status.NewCondition(status.ConditionTypeReady, metav1.ConditionTrue, status.ReasonReady, "ready", 2)},
+		AccountID:           "account-1",
+		CredentialSecretRef: &cfgatev1alpha1.SecretReference{Name: "cf", Namespace: "app"},
+		AttachedTargets:     1,
+		ObservedGeneration:  2,
+		Applications:        []cfgatev1alpha1.AccessApplicationObserved{{ID: "app-1", Domain: "app.example.com"}},
+		Ancestors:           []cfgatev1alpha1.PolicyAncestorStatus{{ControllerName: AccessPolicyControllerName}},
+		Conditions:          []metav1.Condition{status.NewCondition(status.ConditionTypeReady, metav1.ConditionTrue, status.ReasonReady, "ready", 2)},
 	}
 	if !accessApplicationStatusEqual(base, base.DeepCopy()) {
 		t.Fatal("accessApplicationStatusEqual() = false, want true")
@@ -715,6 +832,8 @@ func TestAccessApplicationStatusAndReasonHelpers(t *testing.T) {
 		name   string
 		modify func(*cfgatev1alpha1.CloudflareAccessApplicationStatus)
 	}{
+		{name: "account ID", modify: func(s *cfgatev1alpha1.CloudflareAccessApplicationStatus) { s.AccountID = "other" }},
+		{name: "credential secret ref", modify: func(s *cfgatev1alpha1.CloudflareAccessApplicationStatus) { s.CredentialSecretRef.Name = "other" }},
 		{name: "attached targets", modify: func(s *cfgatev1alpha1.CloudflareAccessApplicationStatus) { s.AttachedTargets = 2 }},
 		{name: "generation", modify: func(s *cfgatev1alpha1.CloudflareAccessApplicationStatus) { s.ObservedGeneration = 3 }},
 		{name: "applications", modify: func(s *cfgatev1alpha1.CloudflareAccessApplicationStatus) { s.Applications[0].ID = "other" }},
@@ -884,6 +1003,10 @@ func sectionName(name string) *gwapiv1.SectionName {
 
 func pathMatchType(matchType gwapiv1.PathMatchType) *gwapiv1.PathMatchType {
 	return &matchType
+}
+
+func intPtr(value int) *int {
+	return &value
 }
 
 func containsString(values []string, want string) bool {
