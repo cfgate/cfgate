@@ -57,7 +57,7 @@ Cross-namespace target references require a `ReferenceGrant` in the target names
 | `ancestors[]` | Target attachment status. |
 | `observedGeneration` | Last reconciled generation. |
 
-Automatic Cloudflare cleanup uses the cached `accountId` and `credentialSecretRef` so target resources do not need to outlive the `CloudflareAccessApplication`. The referenced Secret must still exist for cleanup; restore it or set `cfgate.io/deletion-policy=orphan` if credentials are intentionally removed first.
+Automatic Cloudflare cleanup uses the cached `accountId` and `credentialSecretRef` so target resources do not need to outlive the `CloudflareAccessApplication`. Cleanup deletes managed Access Applications and the per-resource owner tag; the shared `cfgate` tag is retained. The referenced Secret must still exist for cleanup; restore it or set `cfgate.io/deletion-policy=orphan` if credentials are intentionally removed first.
 
 Conditions:
 

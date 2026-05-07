@@ -279,12 +279,12 @@ If pod creation fails with `violates PodSecurity "restricted:latest"` and mentio
 ## Stuck Finalizers
 
 ### Symptoms
-- A CloudflareTunnel, CloudflareDNS, or CloudflareAccessPolicy is stuck in `Terminating` state
+- A CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, or CloudflareAccessApplication is stuck in `Terminating` state
 - `kubectl delete` hangs or the resource does not disappear
 
 ### Background
 
-cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS records, Access applications) are cleaned up before the Kubernetes resource is removed. The finalizer blocks deletion until cleanup completes, which requires working Cloudflare API credentials.
+cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS records, Access policies, service tokens, Access applications, and Access application owner tags) are cleaned up before the Kubernetes resource is removed. The finalizer blocks deletion until cleanup completes, which requires working Cloudflare API credentials.
 
 ### Diagnostic Steps
 
@@ -314,6 +314,7 @@ cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS r
    | CloudflareTunnel | 2 minutes | 10 seconds |
    | CloudflareDNS | 1 minute | 15 seconds |
    | CloudflareAccessPolicy | 1 minute | 15 seconds |
+   | CloudflareAccessApplication | 1 minute | 15 seconds |
 
 ### Resolution Options
 
@@ -326,6 +327,7 @@ kubectl annotate cloudflaretunnel my-tunnel cfgate.io/deletion-policy=orphan
 kubectl annotate cloudflarednses my-dns -n cfgate-system \
   cfgate.io/deletion-policy=orphan
 kubectl annotate cloudflareaccesspolicy my-policy cfgate.io/deletion-policy=orphan
+kubectl annotate cloudflareaccessapplication my-app cfgate.io/deletion-policy=orphan
 ```
 
 The resource should terminate within seconds. The Cloudflare-side resource remains and must be cleaned up manually.
@@ -339,9 +341,9 @@ kubectl patch cloudflaretunnel my-tunnel -n cfgate-system \
   -p '{"metadata":{"finalizers":null}}' --type=merge
 ```
 
-Replace `cloudflaretunnel` with `cloudflaredns` or `cloudflareaccesspolicy` as needed.
+Replace `cloudflaretunnel` with `cloudflaredns`, `cloudflareaccesspolicy`, or `cloudflareaccessapplication` as needed.
 
-**Warning:** Both options leave orphaned resources in Cloudflare (tunnels, DNS records, Access applications) that must be manually deleted in the Cloudflare dashboard.
+**Warning:** Both options leave orphaned resources in Cloudflare (tunnels, DNS records, Access policies, service tokens, Access applications, and Access application owner tags) that must be manually deleted in the Cloudflare dashboard.
 
 ---
 
@@ -351,11 +353,12 @@ Replace `cloudflaretunnel` with `cloudflaredns` or `cloudflareaccesspolicy` as n
 
 1. **Delete custom resources first** (finalizers need the controller running with API access to clean up Cloudflare-side resources):
    ```bash
+   kubectl delete cloudflareaccessapplications --all -A
    kubectl delete cloudflareaccesspolicies --all -A
    kubectl delete cloudflaredns --all -A
    kubectl delete cloudflaretunnels --all -A
    ```
-   Wait for all resources to terminate. Each deletion triggers finalizer cleanup that calls the Cloudflare API to remove tunnels, DNS records, and Access applications.
+   Wait for all resources to terminate. Each deletion triggers finalizer cleanup that calls the Cloudflare API to remove tunnels, DNS records, Access policies, service tokens, Access applications, and Access application owner tags.
 
 2. **Uninstall cfgate:**
    ```bash

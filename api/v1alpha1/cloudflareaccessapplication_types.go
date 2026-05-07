@@ -59,7 +59,8 @@ type CloudflareAccessApplicationSpec struct {
 	TargetRefs []PolicyTargetReference `json:"targetRefs,omitempty"`
 
 	// CloudflareRef references Cloudflare credentials. When omitted, credentials
-	// are inherited from the target Gateway's tunnel binding.
+	// are inherited from each target's route -> Gateway -> CloudflareTunnel chain.
+	// Multiple targets must inherit the same Cloudflare account.
 	// +optional
 	CloudflareRef *CloudflareSecretRef `json:"cloudflareRef,omitempty"`
 
