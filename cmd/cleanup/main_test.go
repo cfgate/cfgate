@@ -14,18 +14,21 @@ type fakeCleanupClient struct {
 	tunnels []resource
 	records []resource
 	apps    []resource
+	tags    []resource
 	tokens  []resource
 	zoneID  string
 
 	tunnelsErr error
 	recordsErr error
 	appsErr    error
+	tagsErr    error
 	tokensErr  error
 	zoneErr    error
 
 	deleteTunnelErr map[string]error
 	deleteRecordErr map[string]error
 	deleteAppErr    map[string]error
+	deleteTagErr    map[string]error
 	deleteTokenErr  map[string]error
 }
 
@@ -106,6 +109,10 @@ func (f *fakeCleanupClient) ListOrphanedAccessApplications(context.Context, stri
 	return f.apps, f.appsErr
 }
 
+func (f *fakeCleanupClient) ListOrphanedAccessTags(context.Context, string) ([]resource, error) {
+	return f.tags, f.tagsErr
+}
+
 func (f *fakeCleanupClient) ListOrphanedServiceTokens(context.Context, string) ([]resource, error) {
 	return f.tokens, f.tokensErr
 }
@@ -133,6 +140,13 @@ func (f *fakeCleanupClient) DeleteDNSRecord(_ context.Context, _, recordID strin
 
 func (f *fakeCleanupClient) DeleteAccessApplication(_ context.Context, _, appID string) error {
 	if err := f.deleteAppErr[appID]; err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *fakeCleanupClient) DeleteAccessTag(_ context.Context, _, tagName string) error {
+	if err := f.deleteTagErr[tagName]; err != nil {
 		return err
 	}
 	return nil
@@ -272,6 +286,45 @@ func TestRunCleanup(t *testing.T) {
 			t.Fatalf("output = %q, want failed tunnel deletion log", buf.String())
 		}
 	})
+
+	t.Run("deletes orphaned Access tags", func(t *testing.T) {
+		client := &fakeCleanupClient{
+			tags: []resource{{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"}},
+		}
+		buf := &bytes.Buffer{}
+
+		summary, err := runCleanup(context.Background(), cfg, client, buf)
+		if err != nil {
+			t.Fatalf("runCleanup() error = %v", err)
+		}
+		if summary.Found != 1 || summary.Deleted != 1 || summary.Failed != 0 {
+			t.Fatalf("summary = %+v, want one deleted Access tag", summary)
+		}
+		if !strings.Contains(buf.String(), "Deleting Access tag: cfgate:0123456789abcdef0123456789ab ... OK") {
+			t.Fatalf("output = %q, want Access tag delete log", buf.String())
+		}
+	})
+
+	t.Run("reports Access tag deletion failures", func(t *testing.T) {
+		client := &fakeCleanupClient{
+			tags: []resource{{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"}},
+			deleteTagErr: map[string]error{
+				"cfgate:0123456789abcdef0123456789ab": errors.New("tag delete failed"),
+			},
+		}
+		buf := &bytes.Buffer{}
+
+		summary, err := runCleanup(context.Background(), cfg, client, buf)
+		if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+			t.Fatalf("runCleanup() error = %v, want cleanup failure", err)
+		}
+		if summary.Failed != 1 || summary.Deleted != 0 {
+			t.Fatalf("summary = %+v, want one failed Access tag deletion", summary)
+		}
+		if len(summary.FailedResources) != 1 || summary.FailedResources[0].Type != "access_tag" {
+			t.Fatalf("FailedResources = %+v, want one access_tag resource", summary.FailedResources)
+		}
+	})
 }
 
 func TestPrintScanSection(t *testing.T) {
@@ -286,25 +339,50 @@ func TestPrintScanSection(t *testing.T) {
 	}
 }
 
+func TestIsCfgateOwnerTag(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{name: "cfgate:0123456789abcdef0123456789ab", want: true},
+		{name: "cfgate", want: false},
+		{name: "cfgate:0123456789abcdef0123456789a", want: false},
+		{name: "cfgate:0123456789abcdef0123456789abc", want: false},
+		{name: "cfgate:0123456789abcdef0123456789az", want: false},
+		{name: "cfgate:0123456789ABCDEF0123456789AB", want: false},
+		{name: "e2e-cfgate:0123456789abcdef0123456789ab", want: false},
+	}
+
+	for _, tt := range tests {
+		if got := isCfgateOwnerTag(tt.name); got != tt.want {
+			t.Fatalf("isCfgateOwnerTag(%q) = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestCloudflareCleanupClientDelegates(t *testing.T) {
 	origListTunnels := listOrphanedTunnelsFn
 	origListRecords := listOrphanedDNSRecordsFn
 	origListApps := listOrphanedAccessApplicationsFn
+	origListTags := listOrphanedAccessTagsFn
 	origListTokens := listOrphanedServiceTokensFn
 	origGetZoneID := getZoneIDFn
 	origDeleteTunnel := deleteTunnelFn
 	origDeleteDNS := deleteDNSRecordFn
 	origDeleteApp := deleteAccessApplicationFn
+	origDeleteTag := deleteAccessTagFn
 	origDeleteToken := deleteServiceTokenFn
 	t.Cleanup(func() {
 		listOrphanedTunnelsFn = origListTunnels
 		listOrphanedDNSRecordsFn = origListRecords
 		listOrphanedAccessApplicationsFn = origListApps
+		listOrphanedAccessTagsFn = origListTags
 		listOrphanedServiceTokensFn = origListTokens
 		getZoneIDFn = origGetZoneID
 		deleteTunnelFn = origDeleteTunnel
 		deleteDNSRecordFn = origDeleteDNS
 		deleteAccessApplicationFn = origDeleteApp
+		deleteAccessTagFn = origDeleteTag
 		deleteServiceTokenFn = origDeleteToken
 	})
 
@@ -342,6 +420,17 @@ func TestCloudflareCleanupClientDelegates(t *testing.T) {
 	gotApps, err := client.ListOrphanedAccessApplications(ctx, "account")
 	if err != nil || len(gotApps) != 1 {
 		t.Fatalf("ListOrphanedAccessApplications() = (%v, %v), want one app and nil error", gotApps, err)
+	}
+
+	listOrphanedAccessTagsFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID string) ([]resource, error) {
+		if gotCtx != ctx || accountID != "account" {
+			t.Fatalf("ListOrphanedAccessTags forwarded (%v, %q), want (%v, %q)", gotCtx, accountID, ctx, "account")
+		}
+		return []resource{{ID: "cfgate:0123456789abcdef0123456789ab"}}, nil
+	}
+	gotTags, err := client.ListOrphanedAccessTags(ctx, "account")
+	if err != nil || len(gotTags) != 1 {
+		t.Fatalf("ListOrphanedAccessTags() = (%v, %v), want one tag and nil error", gotTags, err)
 	}
 
 	listOrphanedServiceTokensFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID string) ([]resource, error) {
@@ -394,6 +483,16 @@ func TestCloudflareCleanupClientDelegates(t *testing.T) {
 	}
 	if err := client.DeleteAccessApplication(ctx, "account", "a1"); err != nil {
 		t.Fatalf("DeleteAccessApplication() error = %v", err)
+	}
+
+	deleteAccessTagFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID, tagName string) error {
+		if gotCtx != ctx || accountID != "account" || tagName != "cfgate:0123456789abcdef0123456789ab" {
+			t.Fatalf("DeleteAccessTag forwarded (%v, %q, %q), want (%v, %q, %q)", gotCtx, accountID, tagName, ctx, "account", "cfgate:0123456789abcdef0123456789ab")
+		}
+		return nil
+	}
+	if err := client.DeleteAccessTag(ctx, "account", "cfgate:0123456789abcdef0123456789ab"); err != nil {
+		t.Fatalf("DeleteAccessTag() error = %v", err)
 	}
 
 	deleteServiceTokenFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID, tokenID string) error {

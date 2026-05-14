@@ -26,7 +26,7 @@ const (
 type resource struct {
 	ID   string // Cloudflare resource ID
 	Name string // Resource name (for display)
-	Type string // Resource type: tunnel, dns, access_app, service_token
+	Type string // Resource type: tunnel, dns, access_app, access_tag, service_token
 }
 
 type cleanupConfig struct {
@@ -46,11 +46,13 @@ type cleanupClient interface {
 	ListOrphanedTunnels(context.Context, string) ([]resource, error)
 	ListOrphanedDNSRecords(context.Context, string) ([]resource, error)
 	ListOrphanedAccessApplications(context.Context, string) ([]resource, error)
+	ListOrphanedAccessTags(context.Context, string) ([]resource, error)
 	ListOrphanedServiceTokens(context.Context, string) ([]resource, error)
 	ResolveZoneID(context.Context, string) (string, error)
 	DeleteTunnel(context.Context, string, string) error
 	DeleteDNSRecord(context.Context, string, string) error
 	DeleteAccessApplication(context.Context, string, string) error
+	DeleteAccessTag(context.Context, string, string) error
 	DeleteServiceToken(context.Context, string, string) error
 }
 
@@ -67,11 +69,13 @@ var (
 	listOrphanedTunnelsFn            = listOrphanedTunnels
 	listOrphanedDNSRecordsFn         = listOrphanedDNSRecords
 	listOrphanedAccessApplicationsFn = listOrphanedAccessApplications
+	listOrphanedAccessTagsFn         = listOrphanedAccessTags
 	listOrphanedServiceTokensFn      = listOrphanedServiceTokens
 	getZoneIDFn                      = getZoneID
 	deleteTunnelFn                   = deleteTunnel
 	deleteDNSRecordFn                = deleteDNSRecord
 	deleteAccessApplicationFn        = deleteAccessApplication
+	deleteAccessTagFn                = deleteAccessTag
 	deleteServiceTokenFn             = deleteServiceToken
 )
 
@@ -144,14 +148,6 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 	printScanSection(out, "Service Tokens", tokens, err)
 	summary.Found += len(tokens)
 
-	if summary.Found == 0 {
-		_, _ = fmt.Fprintln(out, "=== No orphaned E2E resources found ===")
-		return summary, nil
-	}
-
-	_, _ = fmt.Fprintf(out, "=== Found %d orphaned resources ===\n\n", summary.Found)
-	_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
-
 	deleteResources := func(resources []resource, label string, deleteFn func(resource) error) {
 		for _, res := range resources {
 			_, _ = fmt.Fprintf(out, "  Deleting %s: %s ... ", label, res.Name)
@@ -167,28 +163,51 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 		}
 	}
 
-	deleteResources(tunnels, "tunnel", func(res resource) error {
-		return client.DeleteTunnel(ctx, cfg.AccountID, res.ID)
-	})
+	if summary.Found > 0 {
+		_, _ = fmt.Fprintf(out, "=== Found %d orphaned resources ===\n\n", summary.Found)
+		_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
 
-	if cfg.ZoneName != "" && len(records) > 0 {
-		zoneID, err := client.ResolveZoneID(ctx, cfg.ZoneName)
-		if err != nil {
-			_, _ = fmt.Fprintf(out, "Warning: failed to resolve zone ID for %s: %v\n", cfg.ZoneName, err)
-		} else {
-			deleteResources(records, "DNS record", func(res resource) error {
-				return client.DeleteDNSRecord(ctx, zoneID, res.ID)
-			})
+		deleteResources(tunnels, "tunnel", func(res resource) error {
+			return client.DeleteTunnel(ctx, cfg.AccountID, res.ID)
+		})
+
+		if cfg.ZoneName != "" && len(records) > 0 {
+			zoneID, err := client.ResolveZoneID(ctx, cfg.ZoneName)
+			if err != nil {
+				_, _ = fmt.Fprintf(out, "Warning: failed to resolve zone ID for %s: %v\n", cfg.ZoneName, err)
+			} else {
+				deleteResources(records, "DNS record", func(res resource) error {
+					return client.DeleteDNSRecord(ctx, zoneID, res.ID)
+				})
+			}
 		}
+
+		deleteResources(apps, "Access application", func(res resource) error {
+			return client.DeleteAccessApplication(ctx, cfg.AccountID, res.ID)
+		})
+
+		deleteResources(tokens, "service token", func(res resource) error {
+			return client.DeleteServiceToken(ctx, cfg.AccountID, res.ID)
+		})
 	}
 
-	deleteResources(apps, "Access application", func(res resource) error {
-		return client.DeleteAccessApplication(ctx, cfg.AccountID, res.ID)
+	tags, err := client.ListOrphanedAccessTags(ctx, cfg.AccountID)
+	printScanSection(out, "Access Tags", tags, err)
+	summary.Found += len(tags)
+
+	if len(tags) > 0 && summary.Deleted+summary.Failed == 0 {
+		_, _ = fmt.Fprintf(out, "=== Found %d orphaned resources ===\n\n", summary.Found)
+		_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
+	}
+
+	deleteResources(tags, "Access tag", func(res resource) error {
+		return client.DeleteAccessTag(ctx, cfg.AccountID, res.ID)
 	})
 
-	deleteResources(tokens, "service token", func(res resource) error {
-		return client.DeleteServiceToken(ctx, cfg.AccountID, res.ID)
-	})
+	if summary.Found == 0 {
+		_, _ = fmt.Fprintln(out, "=== No orphaned E2E resources found ===")
+		return summary, nil
+	}
 
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "=== Cleanup Summary ===")
@@ -232,6 +251,10 @@ func (c *cloudflareCleanupClient) ListOrphanedAccessApplications(ctx context.Con
 	return listOrphanedAccessApplicationsFn(ctx, c.client, accountID)
 }
 
+func (c *cloudflareCleanupClient) ListOrphanedAccessTags(ctx context.Context, accountID string) ([]resource, error) {
+	return listOrphanedAccessTagsFn(ctx, c.client, accountID)
+}
+
 func (c *cloudflareCleanupClient) ListOrphanedServiceTokens(ctx context.Context, accountID string) ([]resource, error) {
 	return listOrphanedServiceTokensFn(ctx, c.client, accountID)
 }
@@ -250,6 +273,10 @@ func (c *cloudflareCleanupClient) DeleteDNSRecord(ctx context.Context, zoneID, r
 
 func (c *cloudflareCleanupClient) DeleteAccessApplication(ctx context.Context, accountID, appID string) error {
 	return deleteAccessApplicationFn(ctx, c.client, accountID, appID)
+}
+
+func (c *cloudflareCleanupClient) DeleteAccessTag(ctx context.Context, accountID, tagName string) error {
+	return deleteAccessTagFn(ctx, c.client, accountID, tagName)
 }
 
 func (c *cloudflareCleanupClient) DeleteServiceToken(ctx context.Context, accountID, tokenID string) error {
@@ -324,6 +351,74 @@ func listOrphanedAccessApplications(ctx context.Context, client *cloudflare.Clie
 	return results, nil
 }
 
+// listOrphanedAccessTags finds unreferenced cfgate owner tags.
+func listOrphanedAccessTags(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
+	referenced := map[string]struct{}{}
+	appIter := client.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	for appIter.Next() {
+		for _, tag := range accessApplicationTagNames(appIter.Current().Tags) {
+			referenced[tag] = struct{}{}
+		}
+	}
+	if err := appIter.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list Access applications for tag references: %w", err)
+	}
+
+	var results []resource
+	tagIter := client.ZeroTrust.Access.Tags.ListAutoPaging(ctx, zero_trust.AccessTagListParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	for tagIter.Next() {
+		tag := tagIter.Current()
+		if !isCfgateOwnerTag(tag.Name) {
+			continue
+		}
+		if _, ok := referenced[tag.Name]; ok {
+			continue
+		}
+		results = append(results, resource{ID: tag.Name, Name: tag.Name, Type: "access_tag"})
+	}
+	if err := tagIter.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list Access tags: %w", err)
+	}
+
+	return results, nil
+}
+
+func isCfgateOwnerTag(name string) bool {
+	const prefix = "cfgate:"
+	if len(name) != len(prefix)+28 || !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	for _, r := range name[len(prefix):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func accessApplicationTagNames(tags interface{}) []string {
+	switch typed := tags.(type) {
+	case nil:
+		return nil
+	case []string:
+		return typed
+	case []interface{}:
+		names := make([]string, 0, len(typed))
+		for _, tag := range typed {
+			if name, ok := tag.(string); ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	default:
+		return nil
+	}
+}
+
 // listOrphanedServiceTokens finds service tokens with e2e- name prefix.
 func listOrphanedServiceTokens(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
 	var results []resource
@@ -388,6 +483,17 @@ func deleteDNSRecord(ctx context.Context, client *cloudflare.Client, zoneID, rec
 // deleteAccessApplication removes an Access application by ID.
 func deleteAccessApplication(ctx context.Context, client *cloudflare.Client, accountID, appID string) error {
 	_, err := client.ZeroTrust.Access.Applications.Delete(ctx, appID, zero_trust.AccessApplicationDeleteParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		return err
+	}
+	return nil
+}
+
+// deleteAccessTag removes an Access tag by name.
+func deleteAccessTag(ctx context.Context, client *cloudflare.Client, accountID, tagName string) error {
+	_, err := client.ZeroTrust.Access.Tags.Delete(ctx, tagName, zero_trust.AccessTagDeleteParams{
 		AccountID: cloudflare.F(accountID),
 	})
 	if err != nil && !strings.Contains(err.Error(), "not found") {

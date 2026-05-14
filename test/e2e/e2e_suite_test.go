@@ -167,6 +167,10 @@ var _ = SynchronizedBeforeSuite(
 		// Load environment configuration.
 		testEnv = loadTestEnv()
 
+		if testEnv.CloudflareAPIToken != "" && !testEnv.SkipCleanup {
+			cleanOrphanedE2EResources()
+		}
+
 		// Find project root for CRD paths.
 		projectRoot = findProjectRoot()
 		Expect(projectRoot).NotTo(BeEmpty(), "Could not find project root")
@@ -417,9 +421,10 @@ func ensureFallbackCredentialsSecret() {
 }
 
 // cleanOrphanedE2EResources deletes all E2E test resources from Cloudflare.
-// This is the primary cleanup mechanism - runs after all tests complete.
+// This is the primary cleanup mechanism - runs before and after test execution.
 // Cleans: tunnels (e2e-*, recovery-*), DNS records (e2e-*, _cfgate.e2e-*),
-// Access applications (e2e-*), and service tokens (e2e-*).
+// Access applications (e2e-*), unreferenced cfgate owner tags, reusable Access
+// policies (e2e-*), and service tokens (e2e-*).
 func cleanOrphanedE2EResources() {
 	By("Cleaning orphaned E2E resources from Cloudflare")
 
@@ -437,6 +442,7 @@ func cleanOrphanedE2EResources() {
 
 	// Clean Access applications and reusable policies (alpha.3+).
 	cleanOrphanedAccessApplications(cleanupCtx, cfClient)
+	cleanOrphanedAccessTags(cleanupCtx, cfClient)
 	cleanOrphanedAccessPolicies(cleanupCtx, cfClient)
 
 	// Clean service tokens (alpha.3).
@@ -562,6 +568,91 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 		if err != nil && !strings.Contains(err.Error(), "not found") {
 			GinkgoWriter.Printf("  Warning: %s: %v\n", app.Name, err)
 		}
+	}
+}
+
+// cleanOrphanedAccessTags deletes unreferenced cfgate owner tags.
+func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client) {
+	referenced := map[string]struct{}{}
+	appIter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
+		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	})
+	for appIter.Next() {
+		for _, tag := range accessApplicationTagNames(appIter.Current().Tags) {
+			referenced[tag] = struct{}{}
+		}
+	}
+	if err := appIter.Err(); err != nil {
+		GinkgoWriter.Printf("Warning: failed to list Access applications for tag references: %v\n", err)
+		return
+	}
+
+	tagIter := cfClient.ZeroTrust.Access.Tags.ListAutoPaging(ctx, zero_trust.AccessTagListParams{
+		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	})
+
+	var orphaned []string
+	for tagIter.Next() {
+		tagName := tagIter.Current().Name
+		if !isCfgateOwnerTag(tagName) {
+			continue
+		}
+		if _, ok := referenced[tagName]; ok {
+			continue
+		}
+		orphaned = append(orphaned, tagName)
+	}
+
+	if err := tagIter.Err(); err != nil {
+		GinkgoWriter.Printf("Warning: failed to list Access tags: %v\n", err)
+		return
+	}
+
+	if len(orphaned) == 0 {
+		GinkgoWriter.Printf("No orphaned Access tags found\n")
+		return
+	}
+
+	GinkgoWriter.Printf("Deleting %d orphaned Access tags\n", len(orphaned))
+	for _, tagName := range orphaned {
+		_, err := cfClient.ZeroTrust.Access.Tags.Delete(ctx, tagName, zero_trust.AccessTagDeleteParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		})
+		if err != nil && !strings.Contains(err.Error(), "not found") {
+			GinkgoWriter.Printf("  Warning: %s: %v\n", tagName, err)
+		}
+	}
+}
+
+func isCfgateOwnerTag(name string) bool {
+	const prefix = "cfgate:"
+	if len(name) != len(prefix)+28 || !strings.HasPrefix(name, prefix) {
+		return false
+	}
+	for _, r := range name[len(prefix):] {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func accessApplicationTagNames(tags interface{}) []string {
+	switch typed := tags.(type) {
+	case nil:
+		return nil
+	case []string:
+		return typed
+	case []interface{}:
+		names := make([]string, 0, len(typed))
+		for _, tag := range typed {
+			if name, ok := tag.(string); ok {
+				names = append(names, name)
+			}
+		}
+		return names
+	default:
+		return nil
 	}
 }
 
