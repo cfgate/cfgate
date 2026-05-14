@@ -22,7 +22,7 @@ import (
 )
 
 // CloudflareDNS E2E tests.
-// Tests the CloudflareDNS CRD (alpha.3 composable CRD architecture).
+// Tests the CloudflareDNS composable CRD.
 // CloudflareDNS manages DNS records independently from CloudflareTunnel.
 var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 	var (

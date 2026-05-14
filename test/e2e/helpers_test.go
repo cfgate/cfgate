@@ -832,8 +832,7 @@ func e2eFallbackCredentialsRef() *cfgatev1alpha1.SecretReference {
 }
 
 // createCloudflareTunnelInContext creates a CloudflareTunnel for context-level sharing.
-// Note: In alpha.3, DNS is a separate CRD (CloudflareDNS). To configure DNS records,
-// create a separate CloudflareDNS resource using createCloudflareDNS.
+// DNS records are managed by separate CloudflareDNS resources.
 func createCloudflareTunnelInContext(ctx context.Context, k8sClient client.Client, name, namespace, tunnelName string) *cfgatev1alpha1.CloudflareTunnel {
 	return createCloudflareTunnel(ctx, k8sClient, name, namespace, tunnelName)
 }
@@ -886,7 +885,7 @@ func getTunnelConfigurationFromCloudflare(ctx context.Context, cfClient *cloudfl
 }
 
 // ============================================================
-// CloudflareDNS Creation Helpers (alpha.3: separate CRD)
+// CloudflareDNS Creation Helpers
 // ============================================================
 //
 // NOTE: dns_test.go defines its own DNS helpers (createCloudflareDNSWithTunnelRef,

@@ -9,11 +9,14 @@
 //
 // The tool ONLY deletes resources matching these patterns:
 //   - e2e-* prefix: Standard E2E test resources
+//   - e2e- in Access application domains: E2E Access hostnames
 //   - recovery-* prefix: Test recovery scenarios
 //   - _cfgate.e2e-* prefix: DNS ownership TXT records for E2E tests
+//   - cfgate:<28 lowercase hex>: Unreferenced Access application owner tags
 //
 // Production resources are never touched. The tool will not delete resources
-// that do not match the defined patterns.
+// that do not match the defined patterns, and it preserves Access owner tags
+// still referenced by any remaining Access application.
 //
 // # Resource Types
 //
@@ -21,6 +24,8 @@
 //   - Cloudflare Tunnels
 //   - DNS Records
 //   - Access Applications
+//   - Access Policies
+//   - Access Tags
 //   - Access Service Tokens
 //
 // # Required Environment Variables
@@ -35,6 +40,7 @@
 //   - Account > Cloudflare Tunnel > Edit (for tunnel cleanup)
 //   - Zone > DNS > Edit (for DNS record cleanup)
 //   - Account > Access: Apps and Policies > Edit (for Access cleanup)
+//   - Account > Access: Service Tokens > Edit (for service token cleanup)
 //
 // # Usage
 //
@@ -62,6 +68,7 @@
 //	  Deleting tunnel: e2e-tunnel-1234 ... OK
 //
 //	=== Cleanup Summary ===
+//	Found:   1
 //	Deleted: 1
 //	Failed:  0
 package main

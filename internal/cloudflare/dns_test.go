@@ -421,35 +421,35 @@ func TestParseOwnershipRecord(t *testing.T) {
 		wantErr      bool
 	}{
 		{
-			name:         "alpha.3 standard",
+			name:         "structured standard",
 			content:      "heritage=cfgate,cfgate/owner=c1,cfgate/resource=hr/ns/r",
 			wantHeritage: "cfgate",
 			wantOwnerID:  "c1",
 			wantResource: "hr/ns/r",
 		},
 		{
-			name:         "alpha.3 no owner",
+			name:         "structured no owner",
 			content:      "heritage=cfgate,cfgate/resource=hr/ns/r",
 			wantHeritage: "cfgate",
 			wantOwnerID:  "",
 			wantResource: "hr/ns/r",
 		},
 		{
-			name:         "alpha.3 no resource",
+			name:         "structured no resource",
 			content:      "heritage=cfgate,cfgate/owner=c1",
 			wantHeritage: "cfgate",
 			wantOwnerID:  "c1",
 			wantResource: "",
 		},
 		{
-			name:         "alpha.3 heritage only",
+			name:         "structured heritage only",
 			content:      "heritage=cfgate",
 			wantHeritage: "cfgate",
 			wantOwnerID:  "",
 			wantResource: "",
 		},
 		{
-			name:         "alpha.3 extra fields",
+			name:         "structured extra fields",
 			content:      "heritage=cfgate,cfgate/owner=c1,cfgate/resource=r,extra=foo",
 			wantHeritage: "cfgate",
 			wantOwnerID:  "c1",

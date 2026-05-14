@@ -9,7 +9,8 @@
 // The manager registers the following reconcilers:
 //   - CloudflareTunnelReconciler: Manages CloudflareTunnel CRDs and cloudflared deployments
 //   - CloudflareDNSReconciler: Manages CloudflareDNS CRDs and DNS record synchronization
-//   - CloudflareAccessPolicyReconciler: Manages CloudflareAccessPolicy CRDs and Access applications
+//   - CloudflareAccessPolicyReconciler: Manages reusable Access policies and service tokens
+//   - CloudflareAccessApplicationReconciler: Manages Access applications and policy links
 //   - GatewayReconciler: Validates Gateway API resources bound to tunnels
 //   - HTTPRouteReconciler: Processes HTTPRoute resources with cfgate annotations
 //

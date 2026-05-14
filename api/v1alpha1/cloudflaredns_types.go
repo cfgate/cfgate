@@ -243,21 +243,21 @@ type DNSTXTRecordOwnership struct {
 //
 // Deprecated: since v0.1.0-alpha.13. The controller ignores both fields and always
 // writes a hardcoded "managed by cfgate" comment on managed DNS records. These fields
-// will be removed in v0.1.0-alpha.14. No migration is needed — the hardcoded behavior
+// will be removed in a future cleanup release. No migration is needed; the hardcoded behavior
 // is identical to the previous default values. Remove the spec.ownership.comment section
 // from your CloudflareDNS resources to silence future validation warnings.
 type DNSCommentOwnership struct {
 	// Enabled enables comment-based ownership tracking.
 	//
 	// Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-	// writes a "managed by cfgate" comment. Will be removed in v0.1.0-alpha.14.
+	// writes a "managed by cfgate" comment. Will be removed in a future cleanup release.
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Template is the comment template.
 	//
 	// Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-	// uses "managed by cfgate" as the comment. Will be removed in v0.1.0-alpha.14.
+	// uses "managed by cfgate" as the comment. Will be removed in a future cleanup release.
 	// +kubebuilder:default="managed by cfgate"
 	// +kubebuilder:validation:MaxLength=255
 	Template string `json:"template,omitempty"`
@@ -284,7 +284,7 @@ type DNSOwnershipConfig struct {
 
 	// Comment configures comment-based ownership.
 	//
-	// Deprecated: since v0.1.0-alpha.13. All fields are ignored. Will be removed in v0.1.0-alpha.14.
+	// Deprecated: since v0.1.0-alpha.13. All fields are ignored. Will be removed in a future cleanup release.
 	// +optional
 	Comment DNSCommentOwnership `json:"comment,omitempty"`
 }
@@ -443,7 +443,7 @@ type CloudflareDNSStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 }
 
-// CloudflareDNS is the Schema for the cloudflaredns API.
+// CloudflareDNS is the Schema for the cloudflarednses API.
 //
 // CloudflareDNS manages DNS record synchronization independently from CloudflareTunnel resources.
 // It supports two target modes: tunnel references (for tunnel-based CNAME records) and external
