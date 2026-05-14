@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"cfgate.io/cfgate/internal/accesstags"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.uber.org/zap"
@@ -578,7 +580,7 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client) {
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
 	})
 	for appIter.Next() {
-		for _, tag := range accessApplicationTagNames(appIter.Current().Tags) {
+		for _, tag := range accesstags.ApplicationTagNames(appIter.Current().Tags) {
 			referenced[tag] = struct{}{}
 		}
 	}
@@ -594,7 +596,7 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client) {
 	var orphaned []string
 	for tagIter.Next() {
 		tagName := tagIter.Current().Name
-		if !isCfgateOwnerTag(tagName) {
+		if !accesstags.IsOwnerTag(tagName) {
 			continue
 		}
 		if _, ok := referenced[tagName]; ok {
@@ -621,38 +623,6 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client) {
 		if err != nil && !strings.Contains(err.Error(), "not found") {
 			GinkgoWriter.Printf("  Warning: %s: %v\n", tagName, err)
 		}
-	}
-}
-
-func isCfgateOwnerTag(name string) bool {
-	const prefix = "cfgate:"
-	if len(name) != len(prefix)+28 || !strings.HasPrefix(name, prefix) {
-		return false
-	}
-	for _, r := range name[len(prefix):] {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func accessApplicationTagNames(tags interface{}) []string {
-	switch typed := tags.(type) {
-	case nil:
-		return nil
-	case []string:
-		return typed
-	case []interface{}:
-		names := make([]string, 0, len(typed))
-		for _, tag := range typed {
-			if name, ok := tag.(string); ok {
-				names = append(names, name)
-			}
-		}
-		return names
-	default:
-		return nil
 	}
 }
 
