@@ -371,12 +371,12 @@ Replace `cloudflaretunnel` with `cloudflaredns`, `cloudflareaccesspolicy`, or `c
 
 3. **Delete CRDs** (optional; only if you want full removal):
    ```bash
-   kubectl delete crd cloudflaretunnels.cfgate.io cloudflaredns.cfgate.io cloudflareaccesspolicies.cfgate.io
+   kubectl delete crd cloudflaretunnels.cfgate.io cloudflaredns.cfgate.io cloudflareaccesspolicies.cfgate.io cloudflareaccessapplications.cfgate.io
    ```
 
 ### Why Helm Does Not Delete CRDs by Default
 
-CRD deletion in Kubernetes cascades: deleting the CRD deletes ALL custom resources of that type across all namespaces. For cfgate, this would simultaneously delete all tunnels, DNS records, and Access policies. These resources have finalizers that need Cloudflare API access for cleanup. If CRDs are deleted before resources, finalizers cannot run, leaving orphaned Cloudflare resources with no automated cleanup path. This is a Helm-wide convention for safety.
+CRD deletion in Kubernetes cascades: deleting the CRD deletes ALL custom resources of that type across all namespaces. For cfgate, this would simultaneously delete all tunnels, DNS records, Access policies, and Access applications. These resources have finalizers that need Cloudflare API access for cleanup. If CRDs are deleted before resources, finalizers cannot run, leaving orphaned Cloudflare resources with no automated cleanup path. This is a Helm-wide convention for safety.
 
 ### Emergency: Stuck in Terminating
 

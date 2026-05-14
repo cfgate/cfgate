@@ -13,7 +13,7 @@ Gateway API is the Kubernetes successor to Ingress. If you're coming from Ingres
 - **Composable CRDs for tunnels, DNS, and access.** CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, and CloudflareAccessApplication each manage a distinct piece of Cloudflare infrastructure as Kubernetes resources. Tunnels, DNS records, reusable policies, and app bindings all live in version-controlled YAML instead of the Cloudflare dashboard.
 - **Outbound-only tunnel connections.** Cloudflare Tunnels establish outbound-only connections from the cluster to Cloudflare's edge. Services are never exposed via public IP or load balancer.
 - **Built on Gateway API.** Uses the [Gateway API](https://gateway-api.sigs.k8s.io/) standard, not a proprietary abstraction. Existing community operators use the deprecated Ingress API and lack Access policy management.
-- **Independent, composable resources.** Each CRD operates independently. Use all three together or pick the ones you need: a tunnel without DNS sync, DNS without Access, or the full stack.
+- **Independent, composable resources.** Each CRD operates independently. Use the resources together or pick the ones you need: a tunnel without DNS sync, DNS without Access, Access policies without app bindings, or the full stack.
 
 ## How It Works
 

@@ -442,12 +442,12 @@ func cleanOrphanedE2EResources() {
 		cleanOrphanedDNSRecords(cleanupCtx, cfClient)
 	}
 
-	// Clean Access applications and reusable policies (alpha.3+).
+	// Clean Access applications, unreferenced owner tags, and reusable policies.
 	cleanOrphanedAccessApplications(cleanupCtx, cfClient)
 	cleanOrphanedAccessTags(cleanupCtx, cfClient)
 	cleanOrphanedAccessPolicies(cleanupCtx, cfClient)
 
-	// Clean service tokens (alpha.3).
+	// Clean service tokens.
 	cleanOrphanedServiceTokens(cleanupCtx, cfClient)
 }
 
@@ -536,7 +536,7 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client) {
 	}
 }
 
-// cleanOrphanedAccessApplications deletes e2e-* Access applications.
+// cleanOrphanedAccessApplications deletes e2e-* Access applications by name or domain.
 func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.Client) {
 	iter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),

@@ -206,6 +206,7 @@ cfgate/
     manager/                Controller entrypoint
     cleanup/                E2E resource cleanup utility
   internal/
+    accesstags/             Shared Access owner tag helpers
     controller/             Reconcilers (tunnel, dns, access, gateway, httproute)
     controller/annotations/ Annotation parsing and validation
     controller/context/     CRD-to-controller data wrappers

@@ -6,7 +6,7 @@
 //
 // # Controllers
 //
-// The package provides five reconcilers:
+// The package provides six reconcilers:
 //
 //   - [CloudflareTunnelReconciler]: Manages CloudflareTunnel CRD lifecycle including
 //     tunnel creation/adoption, cloudflared deployment, and ingress configuration sync.
@@ -15,7 +15,10 @@
 //     hostname collection from Gateway API routes and DNS record synchronization.
 //
 //   - [CloudflareAccessPolicyReconciler]: Manages CloudflareAccessPolicy CRD lifecycle
-//     including Access Application creation and policy synchronization.
+//     including reusable Access policies and service token synchronization.
+//
+//   - [CloudflareAccessApplicationReconciler]: Manages CloudflareAccessApplication CRD
+//     lifecycle including Gateway API target binding and reusable policy links.
 //
 //   - [GatewayReconciler]: Validates Gateway resources that reference CloudflareTunnel
 //     via the cfgate.io/tunnel-ref annotation.

@@ -4,7 +4,7 @@ cfgate tests across two tiers: unit tests for pure functions and E2E tests again
 
 ## Philosophy
 
-- **Real API for E2E.** Every E2E test creates and verifies actual Cloudflare resources (tunnels, DNS records, Access applications, service tokens). No mocks, no fixtures, no VCR. Controller reconciliation patterns are incompatible with cassette approaches (attempted and removed).
+- **Real API for E2E.** Every E2E test creates and verifies actual Cloudflare resources (tunnels, DNS records, reusable Access policies, Access applications, Access owner tags, service tokens). No mocks, no fixtures, no VCR. Controller reconciliation patterns are incompatible with cassette approaches (attempted and removed).
 - **Pure-function unit tests.** Drift detection, status composition, annotation parsing, context transformation, caching, predicates, feature detection, and cloudflared builders are tested in isolation with table-driven Ginkgo specs.
 - **API state verification.** E2E tests verify that Kubernetes CRD state and Cloudflare API state converge correctly.
 
@@ -162,7 +162,9 @@ mise run e2e:cleanup
 This scans for and deletes:
 - Tunnels with `e2e-` or `recovery-` name prefix
 - DNS records containing `e2e-` or `_cfgate.e2e-` in the name
-- Access applications with `e2e-` name prefix
+- Access applications with `e2e-` name prefix or `e2e-` domain
+- Reusable Access policies with `e2e-` name prefix
+- Unreferenced Access owner tags matching `cfgate:<28 lowercase hex>`
 - Service tokens with `e2e-` name prefix
 
 Run cleanup before E2E tests to ensure a clean slate if previous runs left orphans.

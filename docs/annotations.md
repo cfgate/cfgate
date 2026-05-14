@@ -396,6 +396,12 @@ kubectl annotate cloudflareaccesspolicy my-policy cfgate.io/deletion-policy=orph
 kubectl delete cloudflareaccesspolicy my-policy
 ```
 
+```bash
+# Same for access applications
+kubectl annotate cloudflareaccessapplication my-app cfgate.io/deletion-policy=orphan
+kubectl delete cloudflareaccessapplication my-app
+```
+
 **Warning:** Orphaned resources in Cloudflare must be manually deleted via the Cloudflare dashboard or API. cfgate will not manage them again unless you re-create the Kubernetes resource with matching names.
 
 ---

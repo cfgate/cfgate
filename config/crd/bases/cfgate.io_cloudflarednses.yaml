@@ -37,7 +37,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          CloudflareDNS is the Schema for the cloudflaredns API.
+          CloudflareDNS is the Schema for the cloudflarednses API.
 
           CloudflareDNS manages DNS record synchronization independently from CloudflareTunnel resources.
           It supports two target modes: tunnel references (for tunnel-based CNAME records) and external
@@ -221,7 +221,7 @@ spec:
                     description: |-
                       Comment configures comment-based ownership.
 
-                      Deprecated: since v0.1.0-alpha.13. All fields are ignored. Will be removed in v0.1.0-alpha.14.
+                      Deprecated: since v0.1.0-alpha.13. All fields are ignored. Will be removed in a future cleanup release.
                     properties:
                       enabled:
                         default: false
@@ -229,7 +229,7 @@ spec:
                           Enabled enables comment-based ownership tracking.
 
                           Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-                          writes a "managed by cfgate" comment. Will be removed in v0.1.0-alpha.14.
+                          writes a "managed by cfgate" comment. Will be removed in a future cleanup release.
                         type: boolean
                       template:
                         default: managed by cfgate
@@ -237,7 +237,7 @@ spec:
                           Template is the comment template.
 
                           Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-                          uses "managed by cfgate" as the comment. Will be removed in v0.1.0-alpha.14.
+                          uses "managed by cfgate" as the comment. Will be removed in a future cleanup release.
                         maxLength: 255
                         type: string
                     type: object

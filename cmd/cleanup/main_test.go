@@ -11,23 +11,26 @@ import (
 )
 
 type fakeCleanupClient struct {
-	tunnels []resource
-	records []resource
-	apps    []resource
-	tags    []resource
-	tokens  []resource
-	zoneID  string
+	tunnels  []resource
+	records  []resource
+	apps     []resource
+	policies []resource
+	tags     []resource
+	tokens   []resource
+	zoneID   string
 
-	tunnelsErr error
-	recordsErr error
-	appsErr    error
-	tagsErr    error
-	tokensErr  error
-	zoneErr    error
+	tunnelsErr  error
+	recordsErr  error
+	appsErr     error
+	policiesErr error
+	tagsErr     error
+	tokensErr   error
+	zoneErr     error
 
 	deleteTunnelErr map[string]error
 	deleteRecordErr map[string]error
 	deleteAppErr    map[string]error
+	deletePolicyErr map[string]error
 	deleteTagErr    map[string]error
 	deleteTokenErr  map[string]error
 }
@@ -109,6 +112,10 @@ func (f *fakeCleanupClient) ListOrphanedAccessApplications(context.Context, stri
 	return f.apps, f.appsErr
 }
 
+func (f *fakeCleanupClient) ListOrphanedAccessPolicies(context.Context, string) ([]resource, error) {
+	return f.policies, f.policiesErr
+}
+
 func (f *fakeCleanupClient) ListOrphanedAccessTags(context.Context, string) ([]resource, error) {
 	return f.tags, f.tagsErr
 }
@@ -140,6 +147,13 @@ func (f *fakeCleanupClient) DeleteDNSRecord(_ context.Context, _, recordID strin
 
 func (f *fakeCleanupClient) DeleteAccessApplication(_ context.Context, _, appID string) error {
 	if err := f.deleteAppErr[appID]; err != nil {
+		return err
+	}
+	return nil
+}
+
+func (f *fakeCleanupClient) DeleteAccessPolicy(_ context.Context, _, policyID string) error {
+	if err := f.deletePolicyErr[policyID]; err != nil {
 		return err
 	}
 	return nil
@@ -212,16 +226,18 @@ func TestRunCleanup(t *testing.T) {
 
 	t.Run("deletes resources and reports failures", func(t *testing.T) {
 		client := &fakeCleanupClient{
-			tunnels: []resource{{ID: "t1", Name: "e2e-tunnel", Type: "tunnel"}},
-			records: []resource{{ID: "r1", Name: "e2e.example.com", Type: "dns"}},
-			apps:    []resource{{ID: "a1", Name: "e2e-app", Type: "access_app"}},
-			tokens:  []resource{{ID: "s1", Name: "e2e-token", Type: "service_token"}},
-			zoneID:  "zone-1",
+			tunnels:  []resource{{ID: "t1", Name: "e2e-tunnel", Type: "tunnel"}},
+			records:  []resource{{ID: "r1", Name: "e2e.example.com", Type: "dns"}},
+			apps:     []resource{{ID: "a1", Name: "e2e-app", Type: "access_app"}},
+			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
+			tokens:   []resource{{ID: "s1", Name: "e2e-token", Type: "service_token"}},
+			zoneID:   "zone-1",
 			deleteRecordErr: map[string]error{
 				"r1": errors.New("dns delete failed"),
 			},
-			deleteAppErr:   map[string]error{},
-			deleteTokenErr: map[string]error{},
+			deleteAppErr:    map[string]error{},
+			deletePolicyErr: map[string]error{},
+			deleteTokenErr:  map[string]error{},
 		}
 		buf := &bytes.Buffer{}
 
@@ -229,11 +245,11 @@ func TestRunCleanup(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
 			t.Fatalf("runCleanup() error = %v, want cleanup failure", err)
 		}
-		if summary.Found != 4 {
-			t.Fatalf("Found = %d, want 4", summary.Found)
+		if summary.Found != 5 {
+			t.Fatalf("Found = %d, want 5", summary.Found)
 		}
-		if summary.Deleted != 3 {
-			t.Fatalf("Deleted = %d, want 3", summary.Deleted)
+		if summary.Deleted != 4 {
+			t.Fatalf("Deleted = %d, want 4", summary.Deleted)
 		}
 		if summary.Failed != 1 {
 			t.Fatalf("Failed = %d, want 1", summary.Failed)
@@ -305,9 +321,28 @@ func TestRunCleanup(t *testing.T) {
 		}
 	})
 
+	t.Run("deletes orphaned Access policies", func(t *testing.T) {
+		client := &fakeCleanupClient{
+			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
+		}
+		buf := &bytes.Buffer{}
+
+		summary, err := runCleanup(context.Background(), cfg, client, buf)
+		if err != nil {
+			t.Fatalf("runCleanup() error = %v", err)
+		}
+		if summary.Found != 1 || summary.Deleted != 1 || summary.Failed != 0 {
+			t.Fatalf("summary = %+v, want one deleted Access policy", summary)
+		}
+		if !strings.Contains(buf.String(), "Deleting Access policy: e2e-policy ... OK") {
+			t.Fatalf("output = %q, want Access policy delete log", buf.String())
+		}
+	})
+
 	t.Run("reports total found count after tag scan", func(t *testing.T) {
 		client := &fakeCleanupClient{
-			apps: []resource{{ID: "a1", Name: "e2e-app", Type: "access_app"}},
+			apps:     []resource{{ID: "a1", Name: "e2e-app", Type: "access_app"}},
+			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
 			tags: []resource{
 				{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"},
 				{ID: "cfgate:abcdef0123456789abcdef012345", Name: "cfgate:abcdef0123456789abcdef012345", Type: "access_tag"},
@@ -319,11 +354,11 @@ func TestRunCleanup(t *testing.T) {
 		if err != nil {
 			t.Fatalf("runCleanup() error = %v", err)
 		}
-		if summary.Found != 3 || summary.Deleted != 3 || summary.Failed != 0 {
-			t.Fatalf("summary = %+v, want three found and deleted resources", summary)
+		if summary.Found != 4 || summary.Deleted != 4 || summary.Failed != 0 {
+			t.Fatalf("summary = %+v, want four found and deleted resources", summary)
 		}
 		output := buf.String()
-		if !strings.Contains(output, "Found:   3") {
+		if !strings.Contains(output, "Found:   4") {
 			t.Fatalf("output = %q, want total found count", output)
 		}
 		if strings.Contains(output, "=== Found 1 orphaned resources ===") {
@@ -351,6 +386,27 @@ func TestRunCleanup(t *testing.T) {
 			t.Fatalf("FailedResources = %+v, want one access_tag resource", summary.FailedResources)
 		}
 	})
+
+	t.Run("reports Access policy deletion failures", func(t *testing.T) {
+		client := &fakeCleanupClient{
+			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
+			deletePolicyErr: map[string]error{
+				"p1": errors.New("policy delete failed"),
+			},
+		}
+		buf := &bytes.Buffer{}
+
+		summary, err := runCleanup(context.Background(), cfg, client, buf)
+		if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
+			t.Fatalf("runCleanup() error = %v, want cleanup failure", err)
+		}
+		if summary.Failed != 1 || summary.Deleted != 0 {
+			t.Fatalf("summary = %+v, want one failed Access policy deletion", summary)
+		}
+		if len(summary.FailedResources) != 1 || summary.FailedResources[0].Type != "access_policy" {
+			t.Fatalf("FailedResources = %+v, want one access_policy resource", summary.FailedResources)
+		}
+	})
 }
 
 func TestPrintScanSection(t *testing.T) {
@@ -369,24 +425,28 @@ func TestCloudflareCleanupClientDelegates(t *testing.T) {
 	origListTunnels := listOrphanedTunnelsFn
 	origListRecords := listOrphanedDNSRecordsFn
 	origListApps := listOrphanedAccessApplicationsFn
+	origListPolicies := listOrphanedAccessPoliciesFn
 	origListTags := listOrphanedAccessTagsFn
 	origListTokens := listOrphanedServiceTokensFn
 	origGetZoneID := getZoneIDFn
 	origDeleteTunnel := deleteTunnelFn
 	origDeleteDNS := deleteDNSRecordFn
 	origDeleteApp := deleteAccessApplicationFn
+	origDeletePolicy := deleteAccessPolicyFn
 	origDeleteTag := deleteAccessTagFn
 	origDeleteToken := deleteServiceTokenFn
 	t.Cleanup(func() {
 		listOrphanedTunnelsFn = origListTunnels
 		listOrphanedDNSRecordsFn = origListRecords
 		listOrphanedAccessApplicationsFn = origListApps
+		listOrphanedAccessPoliciesFn = origListPolicies
 		listOrphanedAccessTagsFn = origListTags
 		listOrphanedServiceTokensFn = origListTokens
 		getZoneIDFn = origGetZoneID
 		deleteTunnelFn = origDeleteTunnel
 		deleteDNSRecordFn = origDeleteDNS
 		deleteAccessApplicationFn = origDeleteApp
+		deleteAccessPolicyFn = origDeletePolicy
 		deleteAccessTagFn = origDeleteTag
 		deleteServiceTokenFn = origDeleteToken
 	})
@@ -425,6 +485,17 @@ func TestCloudflareCleanupClientDelegates(t *testing.T) {
 	gotApps, err := client.ListOrphanedAccessApplications(ctx, "account")
 	if err != nil || len(gotApps) != 1 {
 		t.Fatalf("ListOrphanedAccessApplications() = (%v, %v), want one app and nil error", gotApps, err)
+	}
+
+	listOrphanedAccessPoliciesFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID string) ([]resource, error) {
+		if gotCtx != ctx || accountID != "account" {
+			t.Fatalf("ListOrphanedAccessPolicies forwarded (%v, %q), want (%v, %q)", gotCtx, accountID, ctx, "account")
+		}
+		return []resource{{ID: "p1"}}, nil
+	}
+	gotPolicies, err := client.ListOrphanedAccessPolicies(ctx, "account")
+	if err != nil || len(gotPolicies) != 1 {
+		t.Fatalf("ListOrphanedAccessPolicies() = (%v, %v), want one policy and nil error", gotPolicies, err)
 	}
 
 	listOrphanedAccessTagsFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID string) ([]resource, error) {
@@ -490,6 +561,16 @@ func TestCloudflareCleanupClientDelegates(t *testing.T) {
 		t.Fatalf("DeleteAccessApplication() error = %v", err)
 	}
 
+	deleteAccessPolicyFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID, policyID string) error {
+		if gotCtx != ctx || accountID != "account" || policyID != "p1" {
+			t.Fatalf("DeleteAccessPolicy forwarded (%v, %q, %q), want (%v, %q, %q)", gotCtx, accountID, policyID, ctx, "account", "p1")
+		}
+		return nil
+	}
+	if err := client.DeleteAccessPolicy(ctx, "account", "p1"); err != nil {
+		t.Fatalf("DeleteAccessPolicy() error = %v", err)
+	}
+
 	deleteAccessTagFn = func(gotCtx context.Context, _ *cloudflare.Client, accountID, tagName string) error {
 		if gotCtx != ctx || accountID != "account" || tagName != "cfgate:0123456789abcdef0123456789ab" {
 			t.Fatalf("DeleteAccessTag forwarded (%v, %q, %q), want (%v, %q, %q)", gotCtx, accountID, tagName, ctx, "account", "cfgate:0123456789abcdef0123456789ab")
@@ -508,5 +589,28 @@ func TestCloudflareCleanupClientDelegates(t *testing.T) {
 	}
 	if err := client.DeleteServiceToken(ctx, "account", "s1"); err != nil {
 		t.Fatalf("DeleteServiceToken() error = %v", err)
+	}
+}
+
+func TestIsE2EAccessApplication(t *testing.T) {
+	tests := []struct {
+		name    string
+		appName string
+		domain  string
+		want    bool
+	}{
+		{name: "e2e name", appName: "e2e-app", domain: "app.example.com", want: true},
+		{name: "e2e domain", appName: "admin-app", domain: "e2e-admin.example.com", want: true},
+		{name: "nested e2e domain", appName: "admin-app", domain: "admin.e2e-example.com", want: true},
+		{name: "non e2e", appName: "admin-app", domain: "admin.example.com", want: false},
+		{name: "e2e outside prefix in name", appName: "admin-e2e-app", domain: "admin.example.com", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isE2EAccessApplication(tt.appName, tt.domain); got != tt.want {
+				t.Errorf("isE2EAccessApplication(%q, %q) = %t, want %t", tt.appName, tt.domain, got, tt.want)
+			}
+		})
 	}
 }

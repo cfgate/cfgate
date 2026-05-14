@@ -28,7 +28,7 @@ const (
 type resource struct {
 	ID   string // Cloudflare resource ID
 	Name string // Resource name (for display)
-	Type string // Resource type: tunnel, dns, access_app, access_tag, service_token
+	Type string // Resource type: tunnel, dns, access_app, access_policy, access_tag, service_token
 }
 
 type cleanupConfig struct {
@@ -48,12 +48,14 @@ type cleanupClient interface {
 	ListOrphanedTunnels(context.Context, string) ([]resource, error)
 	ListOrphanedDNSRecords(context.Context, string) ([]resource, error)
 	ListOrphanedAccessApplications(context.Context, string) ([]resource, error)
+	ListOrphanedAccessPolicies(context.Context, string) ([]resource, error)
 	ListOrphanedAccessTags(context.Context, string) ([]resource, error)
 	ListOrphanedServiceTokens(context.Context, string) ([]resource, error)
 	ResolveZoneID(context.Context, string) (string, error)
 	DeleteTunnel(context.Context, string, string) error
 	DeleteDNSRecord(context.Context, string, string) error
 	DeleteAccessApplication(context.Context, string, string) error
+	DeleteAccessPolicy(context.Context, string, string) error
 	DeleteAccessTag(context.Context, string, string) error
 	DeleteServiceToken(context.Context, string, string) error
 }
@@ -71,12 +73,14 @@ var (
 	listOrphanedTunnelsFn            = listOrphanedTunnels
 	listOrphanedDNSRecordsFn         = listOrphanedDNSRecords
 	listOrphanedAccessApplicationsFn = listOrphanedAccessApplications
+	listOrphanedAccessPoliciesFn     = listOrphanedAccessPolicies
 	listOrphanedAccessTagsFn         = listOrphanedAccessTags
 	listOrphanedServiceTokensFn      = listOrphanedServiceTokens
 	getZoneIDFn                      = getZoneID
 	deleteTunnelFn                   = deleteTunnel
 	deleteDNSRecordFn                = deleteDNSRecord
 	deleteAccessApplicationFn        = deleteAccessApplication
+	deleteAccessPolicyFn             = deleteAccessPolicy
 	deleteAccessTagFn                = deleteAccessTag
 	deleteServiceTokenFn             = deleteServiceToken
 )
@@ -146,6 +150,10 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 	printScanSection(out, "Access Applications", apps, err)
 	summary.Found += len(apps)
 
+	policies, err := client.ListOrphanedAccessPolicies(ctx, cfg.AccountID)
+	printScanSection(out, "Access Policies", policies, err)
+	summary.Found += len(policies)
+
 	tokens, err := client.ListOrphanedServiceTokens(ctx, cfg.AccountID)
 	printScanSection(out, "Service Tokens", tokens, err)
 	summary.Found += len(tokens)
@@ -193,6 +201,10 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 
 		deleteResources(apps, "Access application", func(res resource) error {
 			return client.DeleteAccessApplication(ctx, cfg.AccountID, res.ID)
+		})
+
+		deleteResources(policies, "Access policy", func(res resource) error {
+			return client.DeleteAccessPolicy(ctx, cfg.AccountID, res.ID)
 		})
 
 		deleteResources(tokens, "service token", func(res resource) error {
@@ -260,6 +272,10 @@ func (c *cloudflareCleanupClient) ListOrphanedAccessApplications(ctx context.Con
 	return listOrphanedAccessApplicationsFn(ctx, c.client, accountID)
 }
 
+func (c *cloudflareCleanupClient) ListOrphanedAccessPolicies(ctx context.Context, accountID string) ([]resource, error) {
+	return listOrphanedAccessPoliciesFn(ctx, c.client, accountID)
+}
+
 func (c *cloudflareCleanupClient) ListOrphanedAccessTags(ctx context.Context, accountID string) ([]resource, error) {
 	return listOrphanedAccessTagsFn(ctx, c.client, accountID)
 }
@@ -282,6 +298,10 @@ func (c *cloudflareCleanupClient) DeleteDNSRecord(ctx context.Context, zoneID, r
 
 func (c *cloudflareCleanupClient) DeleteAccessApplication(ctx context.Context, accountID, appID string) error {
 	return deleteAccessApplicationFn(ctx, c.client, accountID, appID)
+}
+
+func (c *cloudflareCleanupClient) DeleteAccessPolicy(ctx context.Context, accountID, policyID string) error {
+	return deleteAccessPolicyFn(ctx, c.client, accountID, policyID)
 }
 
 func (c *cloudflareCleanupClient) DeleteAccessTag(ctx context.Context, accountID, tagName string) error {
@@ -339,7 +359,7 @@ func listOrphanedDNSRecords(ctx context.Context, client *cloudflare.Client, zone
 	return results, nil
 }
 
-// listOrphanedAccessApplications finds Access applications with e2e- name prefix.
+// listOrphanedAccessApplications finds Access applications with e2e- names or domains.
 func listOrphanedAccessApplications(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
 	var results []resource
 	iter := client.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
@@ -348,13 +368,38 @@ func listOrphanedAccessApplications(ctx context.Context, client *cloudflare.Clie
 
 	for iter.Next() {
 		app := iter.Current()
-		if strings.HasPrefix(app.Name, e2ePrefix) {
+		if isE2EAccessApplication(app.Name, app.Domain) {
 			results = append(results, resource{ID: app.ID, Name: app.Name, Type: "access_app"})
 		}
 	}
 
 	if err := iter.Err(); err != nil {
 		return nil, fmt.Errorf("failed to list Access applications: %w", err)
+	}
+
+	return results, nil
+}
+
+func isE2EAccessApplication(name, domain string) bool {
+	return strings.HasPrefix(name, e2ePrefix) || strings.Contains(domain, e2ePrefix)
+}
+
+// listOrphanedAccessPolicies finds reusable Access policies with e2e- name prefix.
+func listOrphanedAccessPolicies(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
+	var results []resource
+	iter := client.ZeroTrust.Access.Policies.ListAutoPaging(ctx, zero_trust.AccessPolicyListParams{
+		AccountID: cloudflare.F(accountID),
+	})
+
+	for iter.Next() {
+		policy := iter.Current()
+		if strings.HasPrefix(policy.Name, e2ePrefix) {
+			results = append(results, resource{ID: policy.ID, Name: policy.Name, Type: "access_policy"})
+		}
+	}
+
+	if err := iter.Err(); err != nil {
+		return nil, fmt.Errorf("failed to list Access policies: %w", err)
 	}
 
 	return results, nil
@@ -460,6 +505,17 @@ func deleteDNSRecord(ctx context.Context, client *cloudflare.Client, zoneID, rec
 // deleteAccessApplication removes an Access application by ID.
 func deleteAccessApplication(ctx context.Context, client *cloudflare.Client, accountID, appID string) error {
 	_, err := client.ZeroTrust.Access.Applications.Delete(ctx, appID, zero_trust.AccessApplicationDeleteParams{
+		AccountID: cloudflare.F(accountID),
+	})
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		return err
+	}
+	return nil
+}
+
+// deleteAccessPolicy removes an Access policy by ID.
+func deleteAccessPolicy(ctx context.Context, client *cloudflare.Client, accountID, policyID string) error {
+	_, err := client.ZeroTrust.Access.Policies.Delete(ctx, policyID, zero_trust.AccessPolicyDeleteParams{
 		AccountID: cloudflare.F(accountID),
 	})
 	if err != nil && !strings.Contains(err.Error(), "not found") {
