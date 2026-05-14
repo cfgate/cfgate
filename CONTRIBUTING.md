@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- [Go 1.26.2](https://go.dev/dl/)
+- [Go 1.26.3](https://go.dev/dl/)
 - [mise](https://mise.jdx.dev/) (task runner and tool manager)
 - [Docker](https://docs.docker.com/get-docker/) (container builds and kind clusters)
 - [sops](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (secrets management)
