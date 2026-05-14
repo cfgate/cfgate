@@ -305,6 +305,32 @@ func TestRunCleanup(t *testing.T) {
 		}
 	})
 
+	t.Run("reports total found count after tag scan", func(t *testing.T) {
+		client := &fakeCleanupClient{
+			apps: []resource{{ID: "a1", Name: "e2e-app", Type: "access_app"}},
+			tags: []resource{
+				{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"},
+				{ID: "cfgate:abcdef0123456789abcdef012345", Name: "cfgate:abcdef0123456789abcdef012345", Type: "access_tag"},
+			},
+		}
+		buf := &bytes.Buffer{}
+
+		summary, err := runCleanup(context.Background(), cfg, client, buf)
+		if err != nil {
+			t.Fatalf("runCleanup() error = %v", err)
+		}
+		if summary.Found != 3 || summary.Deleted != 3 || summary.Failed != 0 {
+			t.Fatalf("summary = %+v, want three found and deleted resources", summary)
+		}
+		output := buf.String()
+		if !strings.Contains(output, "Found:   3") {
+			t.Fatalf("output = %q, want total found count", output)
+		}
+		if strings.Contains(output, "=== Found 1 orphaned resources ===") {
+			t.Fatalf("output = %q, contains stale pre-tag found banner", output)
+		}
+	})
+
 	t.Run("reports Access tag deletion failures", func(t *testing.T) {
 		client := &fakeCleanupClient{
 			tags: []resource{{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"}},
@@ -336,27 +362,6 @@ func TestPrintScanSection(t *testing.T) {
 	}
 	if !strings.Contains(output, "No orphaned dns records found") {
 		t.Fatalf("output = %q, want empty state", output)
-	}
-}
-
-func TestIsCfgateOwnerTag(t *testing.T) {
-	tests := []struct {
-		name string
-		want bool
-	}{
-		{name: "cfgate:0123456789abcdef0123456789ab", want: true},
-		{name: "cfgate", want: false},
-		{name: "cfgate:0123456789abcdef0123456789a", want: false},
-		{name: "cfgate:0123456789abcdef0123456789abc", want: false},
-		{name: "cfgate:0123456789abcdef0123456789az", want: false},
-		{name: "cfgate:0123456789ABCDEF0123456789AB", want: false},
-		{name: "e2e-cfgate:0123456789abcdef0123456789ab", want: false},
-	}
-
-	for _, tt := range tests {
-		if got := isCfgateOwnerTag(tt.name); got != tt.want {
-			t.Fatalf("isCfgateOwnerTag(%q) = %v, want %v", tt.name, got, tt.want)
-		}
 	}
 }
 

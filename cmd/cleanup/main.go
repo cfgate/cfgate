@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"cfgate.io/cfgate/internal/accesstags"
+
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
 	"github.com/cloudflare/cloudflare-go/v6/option"
@@ -148,6 +150,15 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 	printScanSection(out, "Service Tokens", tokens, err)
 	summary.Found += len(tokens)
 
+	deletionStarted := false
+	startDeleting := func() {
+		if deletionStarted {
+			return
+		}
+		_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
+		deletionStarted = true
+	}
+
 	deleteResources := func(resources []resource, label string, deleteFn func(resource) error) {
 		for _, res := range resources {
 			_, _ = fmt.Fprintf(out, "  Deleting %s: %s ... ", label, res.Name)
@@ -164,9 +175,7 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 	}
 
 	if summary.Found > 0 {
-		_, _ = fmt.Fprintf(out, "=== Found %d orphaned resources ===\n\n", summary.Found)
-		_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
-
+		startDeleting()
 		deleteResources(tunnels, "tunnel", func(res resource) error {
 			return client.DeleteTunnel(ctx, cfg.AccountID, res.ID)
 		})
@@ -195,9 +204,8 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 	printScanSection(out, "Access Tags", tags, err)
 	summary.Found += len(tags)
 
-	if len(tags) > 0 && summary.Deleted+summary.Failed == 0 {
-		_, _ = fmt.Fprintf(out, "=== Found %d orphaned resources ===\n\n", summary.Found)
-		_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
+	if len(tags) > 0 {
+		startDeleting()
 	}
 
 	deleteResources(tags, "Access tag", func(res resource) error {
@@ -211,6 +219,7 @@ func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, ou
 
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "=== Cleanup Summary ===")
+	_, _ = fmt.Fprintf(out, "Found:   %d\n", summary.Found)
 	_, _ = fmt.Fprintf(out, "Deleted: %d\n", summary.Deleted)
 	_, _ = fmt.Fprintf(out, "Failed:  %d\n", summary.Failed)
 
@@ -358,7 +367,7 @@ func listOrphanedAccessTags(ctx context.Context, client *cloudflare.Client, acco
 		AccountID: cloudflare.F(accountID),
 	})
 	for appIter.Next() {
-		for _, tag := range accessApplicationTagNames(appIter.Current().Tags) {
+		for _, tag := range accesstags.ApplicationTagNames(appIter.Current().Tags) {
 			referenced[tag] = struct{}{}
 		}
 	}
@@ -372,7 +381,7 @@ func listOrphanedAccessTags(ctx context.Context, client *cloudflare.Client, acco
 	})
 	for tagIter.Next() {
 		tag := tagIter.Current()
-		if !isCfgateOwnerTag(tag.Name) {
+		if !accesstags.IsOwnerTag(tag.Name) {
 			continue
 		}
 		if _, ok := referenced[tag.Name]; ok {
@@ -385,38 +394,6 @@ func listOrphanedAccessTags(ctx context.Context, client *cloudflare.Client, acco
 	}
 
 	return results, nil
-}
-
-func isCfgateOwnerTag(name string) bool {
-	const prefix = "cfgate:"
-	if len(name) != len(prefix)+28 || !strings.HasPrefix(name, prefix) {
-		return false
-	}
-	for _, r := range name[len(prefix):] {
-		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func accessApplicationTagNames(tags interface{}) []string {
-	switch typed := tags.(type) {
-	case nil:
-		return nil
-	case []string:
-		return typed
-	case []interface{}:
-		names := make([]string, 0, len(typed))
-		for _, tag := range typed {
-			if name, ok := tag.(string); ok {
-				names = append(names, name)
-			}
-		}
-		return names
-	default:
-		return nil
-	}
 }
 
 // listOrphanedServiceTokens finds service tokens with e2e- name prefix.
