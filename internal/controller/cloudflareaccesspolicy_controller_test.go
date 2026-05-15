@@ -86,6 +86,49 @@ func TestAccessPolicyReconcileSuccess(t *testing.T) {
 	}
 }
 
+func TestAccessPolicyReconcileClearsServiceTokensReadyWhenTokensRemoved(t *testing.T) {
+	policy := baseAccessPolicy("app", "policy")
+	policy.Finalizers = []string{accessPolicyFinalizer}
+	policy.Generation = 2
+	policy.Status.ServiceTokenIDs = map[string]string{"old": "old-token-id"}
+	policy.Status.Conditions = []metav1.Condition{
+		status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionTrue, status.ReasonServiceTokensReady, "Service tokens ready.", 1),
+	}
+	deletedTokens := []string{}
+	mock := cloudflare.NewMockClient()
+	mock.DeleteServiceTokenFunc = func(_ context.Context, _ string, tokenID string) error {
+		deletedTokens = append(deletedTokens, tokenID)
+		return nil
+	}
+	mock.ListAccessPoliciesFunc = func(context.Context, string) ([]cloudflare.AccessPolicy, error) { return nil, nil }
+	mock.CreateAccessPolicyFunc = func(context.Context, string, cloudflare.PolicyParams) (*cloudflare.AccessPolicy, error) {
+		return &cloudflare.AccessPolicy{ID: "policy-id", Name: "policy", Reusable: true, AppCount: 0}, nil
+	}
+	reconciler := newAccessPolicyReconciler(t, mock, policy)
+	reconciler.Recorder = nil
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "policy", Namespace: "app"}})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != accessPolicyRequeueAfterSuccess {
+		t.Fatalf("RequeueAfter = %v, want %v", result.RequeueAfter, accessPolicyRequeueAfterSuccess)
+	}
+	var current cfgatev1alpha1.CloudflareAccessPolicy
+	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: "policy", Namespace: "app"}, &current); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(deletedTokens) != 1 || deletedTokens[0] != "old-token-id" {
+		t.Fatalf("deleted tokens = %#v, want old-token-id", deletedTokens)
+	}
+	if len(current.Status.ServiceTokenIDs) != 0 {
+		t.Fatalf("ServiceTokenIDs = %#v, want empty", current.Status.ServiceTokenIDs)
+	}
+	if condition := status.FindCondition(current.Status.Conditions, status.ConditionTypeServiceTokensReady); condition != nil {
+		t.Fatalf("ServiceTokensReady condition = %+v, want removed", condition)
+	}
+}
+
 func TestAccessPolicyReconcileCredentialError(t *testing.T) {
 	policy := baseAccessPolicy("app", "policy")
 	policy.Finalizers = []string{accessPolicyFinalizer}

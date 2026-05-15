@@ -1006,16 +1006,9 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 }
 
 func waitForCleanupPhase(namespace, phase string, done func() bool, describe func(string) string) {
-	deadline := time.Now().Add(120 * time.Second)
-	for {
-		if done() {
-			return
-		}
-		if time.Now().After(deadline) {
-			Fail(fmt.Sprintf("%s in namespace %s did not terminate\n%s", phase, namespace, describe(namespace)))
-		}
-		time.Sleep(1 * time.Second)
-	}
+	Eventually(done, 120*time.Second, 1*time.Second).Should(BeTrue(), func() string {
+		return fmt.Sprintf("%s in namespace %s did not terminate\n%s", phase, namespace, describe(namespace))
+	})
 }
 
 func describeDNSAndAccessApplications(namespace string) string {
