@@ -381,7 +381,7 @@ func listOrphanedAccessApplications(ctx context.Context, client *cloudflare.Clie
 }
 
 func isE2EAccessApplication(name, domain string) bool {
-	return strings.HasPrefix(name, e2ePrefix) || strings.Contains(domain, e2ePrefix)
+	return strings.HasPrefix(name, e2ePrefix) || strings.HasPrefix(domain, e2ePrefix)
 }
 
 // listOrphanedAccessPolicies finds reusable Access policies with e2e- name prefix.

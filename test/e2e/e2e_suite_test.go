@@ -547,7 +547,7 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 		app := iter.Current()
 		// Match e2e-* application names and domains. Some focused Access tests use
 		// stable app names such as admin-app but e2e-* hostnames.
-		if strings.HasPrefix(app.Name, "e2e-") || strings.Contains(app.Domain, "e2e-") {
+		if strings.HasPrefix(app.Name, "e2e-") || strings.HasPrefix(app.Domain, "e2e-") {
 			orphaned = append(orphaned, struct{ ID, Name string }{app.ID, app.Name})
 		}
 	}

@@ -162,7 +162,7 @@ mise run e2e:cleanup
 This scans for and deletes:
 - Tunnels with `e2e-` or `recovery-` name prefix
 - DNS records containing `e2e-` or `_cfgate.e2e-` in the name
-- Access applications with `e2e-` name prefix or `e2e-` domain
+- Access applications with `e2e-` name prefix or domain prefix
 - Reusable Access policies with `e2e-` name prefix
 - Unreferenced Access owner tags matching `cfgate:<28 lowercase hex>`
 - Service tokens with `e2e-` name prefix
