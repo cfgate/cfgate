@@ -601,7 +601,7 @@ func TestIsE2EAccessApplication(t *testing.T) {
 	}{
 		{name: "e2e name", appName: "e2e-app", domain: "app.example.com", want: true},
 		{name: "e2e domain", appName: "admin-app", domain: "e2e-admin.example.com", want: true},
-		{name: "nested e2e domain", appName: "admin-app", domain: "admin.e2e-example.com", want: true},
+		{name: "e2e later in domain", appName: "admin-app", domain: "admin.e2e-example.com", want: false},
 		{name: "non e2e", appName: "admin-app", domain: "admin.example.com", want: false},
 		{name: "e2e outside prefix in name", appName: "admin-e2e-app", domain: "admin.example.com", want: false},
 	}

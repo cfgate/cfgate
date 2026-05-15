@@ -9,7 +9,7 @@
 //
 // The tool ONLY deletes resources matching these patterns:
 //   - e2e-* prefix: Standard E2E test resources
-//   - e2e- in Access application domains: E2E Access hostnames
+//   - e2e-* Access application domains: E2E Access hostnames
 //   - recovery-* prefix: Test recovery scenarios
 //   - _cfgate.e2e-* prefix: DNS ownership TXT records for E2E tests
 //   - cfgate:<28 lowercase hex>: Unreferenced Access application owner tags
