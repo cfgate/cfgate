@@ -60,6 +60,9 @@
 //	policy, err := svc.EnsureReusablePolicy(ctx, accountID, statusID, desired)
 //	token, err := svc.EnsureServiceToken(ctx, accountID, params, secretWriter)
 //
+// Service token secret writers may implement ServiceTokenSecretRefreshChecker to
+// rotate existing unexpired tokens when stored credentials are missing or stale.
+//
 // # CredentialCache
 //
 // CredentialCache provides thread-safe caching of validated clients:

@@ -560,9 +560,12 @@ func (r *CloudflareAccessApplicationReconciler) gatewayForApplicationTarget(ctx 
 		if err := r.Get(ctx, types.NamespacedName{Name: string(parent.Name), Namespace: namespace}, &gateway); err != nil {
 			continue
 		}
+		if annotations.GetAnnotation(&gateway, annotations.AnnotationTunnelRef) == "" {
+			continue
+		}
 		return &gateway, nil
 	}
-	return nil, fmt.Errorf("HTTPRoute %s/%s has no resolvable Gateway parent", route.Namespace, route.Name)
+	return nil, fmt.Errorf("HTTPRoute %s/%s has no resolvable cfgate Gateway parent with %s annotation", route.Namespace, route.Name, annotations.AnnotationTunnelRef)
 }
 
 func (r *CloudflareAccessApplicationReconciler) getAccessApplicationCloudflareClient(ctx context.Context, defaultNamespace string, ref *cfgatev1alpha1.CloudflareSecretRef) (cloudflare.Client, string, error) {

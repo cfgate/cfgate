@@ -49,6 +49,12 @@ type CloudflareAccessPolicyReconciler struct {
 	FeatureGates    *features.FeatureGates
 }
 
+type accessPolicyCredentials struct {
+	Service             *cloudflare.AccessService
+	AccountID           string
+	CredentialSecretRef *cfgatev1alpha1.SecretReference
+}
+
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies/finalizers,verbs=update
@@ -81,7 +87,7 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	accessService, accountID, err := r.resolveCredentials(ctx, &policy)
+	creds, err := r.resolveCredentials(ctx, &policy)
 	if err != nil {
 		log.Error(err, "failed to resolve credentials")
 		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
@@ -91,14 +97,15 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		_ = r.updateStatus(ctx, &policy)
 		return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterError}, nil
 	}
-	policy.Status.AccountID = accountID
+	policy.Status.AccountID = creds.AccountID
+	policy.Status.CredentialSecretRef = creds.CredentialSecretRef
 	policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
 		status.NewCondition(status.ConditionTypeCredentialsValid, metav1.ConditionTrue,
 			status.ReasonCredentialsValid, "Credentials validated successfully.", policy.Generation),
 	)
 
 	if len(policy.Spec.ServiceTokens) > 0 {
-		if err := r.ensureServiceTokens(ctx, accessService, accountID, &policy); err != nil {
+		if err := r.syncServiceTokens(ctx, creds.Service, creds.AccountID, &policy); err != nil {
 			log.Error(err, "failed to ensure service tokens")
 			policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
 				status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionFalse,
@@ -111,6 +118,14 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 			status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionTrue,
 				status.ReasonServiceTokensReady, "Service tokens ready.", policy.Generation),
 		)
+	} else if err := r.syncServiceTokens(ctx, creds.Service, creds.AccountID, &policy); err != nil {
+		log.Error(err, "failed to sync removed service tokens")
+		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
+			status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionFalse,
+				status.ReasonServiceTokenError, status.Error2ConditionMsg(err), policy.Generation),
+		)
+		_ = r.updateStatus(ctx, &policy)
+		return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterError}, nil
 	}
 
 	params, err := buildReusablePolicyParams(&policy)
@@ -123,7 +138,7 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterError}, nil
 	}
 
-	cfPolicy, err := accessService.EnsureReusablePolicy(ctx, accountID, policy.Status.PolicyID, params)
+	cfPolicy, err := creds.Service.EnsureReusablePolicy(ctx, creds.AccountID, policy.Status.PolicyID, params)
 	if err != nil {
 		log.Error(err, "failed to sync reusable policy")
 		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
@@ -155,27 +170,41 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 	return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterSuccess}, nil
 }
 
-func (r *CloudflareAccessPolicyReconciler) resolveCredentials(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (*cloudflare.AccessService, string, error) {
-	secretRef := &policy.Spec.CloudflareRef
+func (r *CloudflareAccessPolicyReconciler) resolveCredentials(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (*accessPolicyCredentials, error) {
+	return r.resolveCloudflareRefCredentials(ctx, policy.Namespace, &policy.Spec.CloudflareRef)
+}
+
+func (r *CloudflareAccessPolicyReconciler) resolveCloudflareRefCredentials(ctx context.Context, defaultNamespace string, secretRef *cfgatev1alpha1.CloudflareSecretRef) (*accessPolicyCredentials, error) {
 	if secretRef.AccountID == "" && secretRef.AccountName == "" {
-		return nil, "", fmt.Errorf("account ID or account name not specified")
+		return nil, fmt.Errorf("account ID or account name not specified")
 	}
-	cfClient, err := r.getCloudflareClient(ctx, policy.Namespace, secretRef)
+	cfClient, err := r.getCloudflareClient(ctx, defaultNamespace, secretRef)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create Cloudflare client: %w", err)
+		return nil, fmt.Errorf("failed to create Cloudflare client: %w", err)
 	}
 	accountID := secretRef.AccountID
 	if accountID == "" {
 		account, err := cfClient.GetAccountByName(ctx, secretRef.AccountName)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to resolve account name %q: %w", secretRef.AccountName, err)
+			return nil, fmt.Errorf("failed to resolve account name %q: %w", secretRef.AccountName, err)
 		}
 		if account == nil {
-			return nil, "", fmt.Errorf("account %q not found", secretRef.AccountName)
+			return nil, fmt.Errorf("account %q not found", secretRef.AccountName)
 		}
 		accountID = account.ID
 	}
-	return cloudflare.NewAccessService(cfClient, log.FromContext(ctx)), accountID, nil
+	secretNamespace := defaultNamespace
+	if secretRef.Namespace != nil && *secretRef.Namespace != "" {
+		secretNamespace = *secretRef.Namespace
+	}
+	return &accessPolicyCredentials{
+		Service:   cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
+		AccountID: accountID,
+		CredentialSecretRef: &cfgatev1alpha1.SecretReference{
+			Name:      secretRef.Name,
+			Namespace: secretNamespace,
+		},
+	}, nil
 }
 
 func buildReusablePolicyParams(policy *cfgatev1alpha1.CloudflareAccessPolicy) (cloudflare.PolicyParams, error) {
@@ -293,9 +322,25 @@ func convertApprovalGroups(groups []cfgatev1alpha1.ApprovalGroup) []cloudflare.A
 	return result
 }
 
-func (r *CloudflareAccessPolicyReconciler) ensureServiceTokens(ctx context.Context, accessService *cloudflare.AccessService, accountID string, policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
+func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context, accessService *cloudflare.AccessService, accountID string, policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
 	if policy.Status.ServiceTokenIDs == nil {
+		if len(policy.Spec.ServiceTokens) == 0 {
+			return nil
+		}
 		policy.Status.ServiceTokenIDs = make(map[string]string)
+	}
+	desired := make(map[string]struct{}, len(policy.Spec.ServiceTokens))
+	for _, tokenConfig := range policy.Spec.ServiceTokens {
+		desired[tokenConfig.Name] = struct{}{}
+	}
+	for name, tokenID := range policy.Status.ServiceTokenIDs {
+		if _, ok := desired[name]; ok {
+			continue
+		}
+		if err := accessService.Client().DeleteServiceToken(ctx, accountID, tokenID); err != nil {
+			return fmt.Errorf("failed to delete removed service token %s (%s): %w", name, tokenID, err)
+		}
+		delete(policy.Status.ServiceTokenIDs, name)
 	}
 	for _, tokenConfig := range policy.Spec.ServiceTokens {
 		secretWriter := &k8sSecretWriter{
@@ -342,14 +387,32 @@ func (w *k8sSecretWriter) WriteSecret(ctx context.Context, name string, data map
 	if err != nil {
 		return err
 	}
-	existing.Data = data
 	if err := controllerutil.SetControllerReference(w.owner, existing, w.scheme); err != nil {
 		var ownedErr *controllerutil.AlreadyOwnedError
-		if !errors.As(err, &ownedErr) {
-			return fmt.Errorf("setting owner reference: %w", err)
+		if errors.As(err, &ownedErr) {
+			return fmt.Errorf("secret %s/%s is already controlled by %s/%s", existing.Namespace, existing.Name, ownedErr.Owner.Kind, ownedErr.Owner.Name)
 		}
+		return fmt.Errorf("setting owner reference: %w", err)
 	}
+	existing.Data = data
 	return w.client.Update(ctx, existing)
+}
+
+func (w *k8sSecretWriter) ServiceTokenSecretNeedsRefresh(ctx context.Context, _ string, clientID string) (bool, error) {
+	var secret corev1.Secret
+	err := w.client.Get(ctx, types.NamespacedName{Name: w.secretRef.Name, Namespace: w.namespace}, &secret)
+	if apierrors.IsNotFound(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	storedClientID := secret.Data["CF_ACCESS_CLIENT_ID"]
+	storedClientSecret := secret.Data["CF_ACCESS_CLIENT_SECRET"]
+	if len(storedClientID) == 0 || len(storedClientSecret) == 0 {
+		return true, nil
+	}
+	return string(storedClientID) != clientID, nil
 }
 
 func (r *CloudflareAccessPolicyReconciler) reconcileDelete(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (ctrl.Result, error) {
@@ -359,28 +422,59 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(ctx context.Context, 
 	if policy.Annotations["cfgate.io/deletion-policy"] == "orphan" {
 		return r.removeFinalizer(ctx, policy)
 	}
-	accessService, accountID, err := r.resolveCredentials(ctx, policy)
+	creds, err := r.resolvePolicyDeletionCredentials(ctx, policy)
 	if err != nil {
 		return r.blockAccessDeletion(ctx, policy, fmt.Sprintf("Failed to resolve credentials: %s", err.Error()))
 	}
 	if policy.Status.PolicyID != "" {
-		cfPolicy, err := accessService.Client().GetAccessPolicy(ctx, accountID, policy.Status.PolicyID)
+		cfPolicy, err := creds.Service.Client().GetAccessPolicy(ctx, creds.AccountID, policy.Status.PolicyID)
 		if err != nil {
 			return r.blockAccessDeletion(ctx, policy, fmt.Sprintf("Failed to get Access policy %s: %s", policy.Status.PolicyID, err.Error()))
 		}
 		if cfPolicy != nil && cfPolicy.AppCount > 0 {
 			return r.blockAccessDeletion(ctx, policy, fmt.Sprintf("Access policy %s is still linked to %d application(s)", policy.Status.PolicyID, cfPolicy.AppCount))
 		}
-		if err := accessService.Client().DeleteAccessPolicy(ctx, accountID, policy.Status.PolicyID); err != nil {
+		if err := creds.Service.Client().DeleteAccessPolicy(ctx, creds.AccountID, policy.Status.PolicyID); err != nil {
 			return r.blockAccessDeletion(ctx, policy, fmt.Sprintf("Failed to delete Access policy %s: %s", policy.Status.PolicyID, err.Error()))
 		}
 	}
 	for name, tokenID := range policy.Status.ServiceTokenIDs {
-		if err := accessService.Client().DeleteServiceToken(ctx, accountID, tokenID); err != nil {
+		if err := creds.Service.Client().DeleteServiceToken(ctx, creds.AccountID, tokenID); err != nil {
 			return r.blockAccessDeletion(ctx, policy, fmt.Sprintf("Failed to revoke service token %s (%s): %s", name, tokenID, err.Error()))
 		}
 	}
 	return r.removeFinalizer(ctx, policy)
+}
+
+func (r *CloudflareAccessPolicyReconciler) resolvePolicyDeletionCredentials(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (*accessPolicyCredentials, error) {
+	var cachedErr error
+	if policy.Status.AccountID != "" && policy.Status.CredentialSecretRef != nil && policy.Status.CredentialSecretRef.Name != "" {
+		secretNamespace := policy.Status.CredentialSecretRef.Namespace
+		secretRef := cfgatev1alpha1.CloudflareSecretRef{
+			Name:      policy.Status.CredentialSecretRef.Name,
+			Namespace: &secretNamespace,
+			AccountID: policy.Status.AccountID,
+		}
+		creds, err := r.resolveCloudflareRefCredentials(ctx, policy.Namespace, &secretRef)
+		if err == nil {
+			return creds, nil
+		}
+		cachedErr = err
+	}
+
+	specRef := policy.Spec.CloudflareRef
+	if policy.Status.AccountID != "" {
+		specRef.AccountID = policy.Status.AccountID
+		specRef.AccountName = ""
+	}
+	creds, err := r.resolveCloudflareRefCredentials(ctx, policy.Namespace, &specRef)
+	if err == nil {
+		return creds, nil
+	}
+	if cachedErr != nil {
+		return nil, fmt.Errorf("cached credentials failed: %v; spec credentials failed: %w", cachedErr, err)
+	}
+	return nil, err
 }
 
 func (r *CloudflareAccessPolicyReconciler) blockAccessDeletion(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy, detail string) (ctrl.Result, error) {
@@ -428,6 +522,9 @@ func accessPolicyStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessPolicyStatus) 
 		return false
 	}
 	if !reflect.DeepEqual(a.ServiceTokenIDs, b.ServiceTokenIDs) {
+		return false
+	}
+	if !reflect.DeepEqual(a.CredentialSecretRef, b.CredentialSecretRef) {
 		return false
 	}
 	return conditionsEqual(a.Conditions, b.Conditions)

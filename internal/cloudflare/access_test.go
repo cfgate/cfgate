@@ -871,7 +871,7 @@ func TestEnsureServiceToken(t *testing.T) {
 		mock := NewMockClient()
 		writer := &recordingSecretWriter{}
 		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
-			return []ServiceToken{{ID: "token-1", Name: "svc", ExpiresAt: time.Now().Add(time.Hour)}}, nil
+			return []ServiceToken{{ID: "token-1", Name: "svc", ClientID: "client-id", ExpiresAt: time.Now().Add(time.Hour)}}, nil
 		}
 		got, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
 		if err != nil {
@@ -882,6 +882,66 @@ func TestEnsureServiceToken(t *testing.T) {
 		}
 		if writer.calls != 0 {
 			t.Fatalf("secret writes = %d, want 0", writer.calls)
+		}
+	})
+
+	t.Run("existing unexpired token with fresh secret returns without rotation", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &refreshCheckingSecretWriter{}
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+			return []ServiceToken{{ID: "token-1", Name: "svc", ClientID: "client-id", ExpiresAt: time.Now().Add(time.Hour)}}, nil
+		}
+		mock.RotateServiceTokenFunc = func(context.Context, string, string) (*ServiceTokenWithSecret, error) {
+			t.Fatal("RotateServiceToken should not be called")
+			return nil, nil
+		}
+		got, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err != nil {
+			t.Fatalf("EnsureServiceToken() error = %v", err)
+		}
+		if got.ID != "token-1" || writer.calls != 0 || writer.checks != 1 {
+			t.Fatalf("got token/checks/writes = %q/%d/%d, want token-1/1/0", got.ID, writer.checks, writer.calls)
+		}
+	})
+
+	t.Run("existing unexpired token with stale secret rotates and writes", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &refreshCheckingSecretWriter{needsRefresh: true}
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+			return []ServiceToken{{ID: "token-1", Name: "svc", ClientID: "old-client", ExpiresAt: time.Now().Add(time.Hour)}}, nil
+		}
+		mock.RotateServiceTokenFunc = func(_ context.Context, _ string, tokenID string) (*ServiceTokenWithSecret, error) {
+			if tokenID != "token-1" {
+				t.Fatalf("RotateServiceToken tokenID = %q, want token-1", tokenID)
+			}
+			return &ServiceTokenWithSecret{
+				ServiceToken: ServiceToken{ID: "token-2", Name: "svc", ClientID: "client-id", ExpiresAt: time.Now().Add(time.Hour)},
+				ClientSecret: "client-secret",
+			}, nil
+		}
+		got, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err != nil {
+			t.Fatalf("EnsureServiceToken() error = %v", err)
+		}
+		if got.ID != "token-2" || writer.checkedClientID != "old-client" {
+			t.Fatalf("got token/checked client ID = %q/%q, want token-2/old-client", got.ID, writer.checkedClientID)
+		}
+		assertSecretData(t, &writer.recordingSecretWriter, "svc", "client-id", "client-secret")
+	})
+
+	t.Run("existing unexpired token secret check error does not rotate", func(t *testing.T) {
+		mock := NewMockClient()
+		writer := &refreshCheckingSecretWriter{checkErr: errors.New("check failed")}
+		mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+			return []ServiceToken{{ID: "token-1", Name: "svc", ClientID: "client-id", ExpiresAt: time.Now().Add(time.Hour)}}, nil
+		}
+		mock.RotateServiceTokenFunc = func(context.Context, string, string) (*ServiceTokenWithSecret, error) {
+			t.Fatal("RotateServiceToken should not be called")
+			return nil, nil
+		}
+		_, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(ctx, "account-1", params, writer)
+		if err == nil || !strings.Contains(err.Error(), "failed to check service token secret") {
+			t.Fatalf("EnsureServiceToken() error = %v, want check error", err)
 		}
 	})
 
@@ -1044,6 +1104,22 @@ func (w *recordingSecretWriter) WriteSecret(_ context.Context, name string, data
 	w.name = name
 	w.data = data
 	return w.err
+}
+
+type refreshCheckingSecretWriter struct {
+	recordingSecretWriter
+	checks          int
+	needsRefresh    bool
+	checkErr        error
+	checkedName     string
+	checkedClientID string
+}
+
+func (w *refreshCheckingSecretWriter) ServiceTokenSecretNeedsRefresh(_ context.Context, name, clientID string) (bool, error) {
+	w.checks++
+	w.checkedName = name
+	w.checkedClientID = clientID
+	return w.needsRefresh, w.checkErr
 }
 
 func assertSecretData(t *testing.T, writer *recordingSecretWriter, name, clientID, clientSecret string) {

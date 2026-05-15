@@ -75,6 +75,11 @@ func TestAccessPolicyReconcileSuccess(t *testing.T) {
 	if current.Status.PolicyID != "policy-id" || current.Status.AccountID != "account-1" || !current.Status.Reusable {
 		t.Fatalf("status = %#v", current.Status)
 	}
+	if current.Status.CredentialSecretRef == nil ||
+		current.Status.CredentialSecretRef.Name != "cf" ||
+		current.Status.CredentialSecretRef.Namespace != "app" {
+		t.Fatalf("CredentialSecretRef = %+v, want app/cf", current.Status.CredentialSecretRef)
+	}
 	if !status.ConditionTrue(current.Status.Conditions, status.ConditionTypeReady) ||
 		!status.ConditionTrue(current.Status.Conditions, status.ConditionTypePolicySynced) {
 		t.Fatalf("conditions = %#v", current.Status.Conditions)
@@ -120,20 +125,57 @@ func TestAccessPolicyResolveCredentialsAccountName(t *testing.T) {
 	}
 	reconciler := newAccessPolicyReconciler(t, mock, policy)
 
-	service, accountID, err := reconciler.resolveCredentials(ctx, policy)
+	creds, err := reconciler.resolveCredentials(ctx, policy)
 	if err != nil {
 		t.Fatalf("resolveCredentials() error = %v", err)
 	}
-	if service == nil || accountID != "account-1" || calls != 1 {
-		t.Fatalf("service = %v accountID = %q calls = %d", service, accountID, calls)
+	if creds.Service == nil || creds.AccountID != "account-1" || calls != 1 {
+		t.Fatalf("service = %v accountID = %q calls = %d", creds.Service, creds.AccountID, calls)
+	}
+	if creds.CredentialSecretRef == nil || creds.CredentialSecretRef.Name != "cf" || creds.CredentialSecretRef.Namespace != "app" {
+		t.Fatalf("CredentialSecretRef = %+v, want app/cf", creds.CredentialSecretRef)
 	}
 
 	policy.Spec.CloudflareRef.AccountName = "missing"
 	mock.GetAccountByNameFunc = func(context.Context, string) (*cloudflare.Account, error) {
 		return nil, nil
 	}
-	if _, _, err := reconciler.resolveCredentials(ctx, policy); err == nil || !strings.Contains(err.Error(), `account "missing" not found`) {
+	if _, err := reconciler.resolveCredentials(ctx, policy); err == nil || !strings.Contains(err.Error(), `account "missing" not found`) {
 		t.Fatalf("resolveCredentials() missing account error = %v", err)
+	}
+}
+
+func TestResolvePolicyDeletionCredentials(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	specSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "spec-cf", Namespace: "app"},
+		Data:       map[string][]byte{"CLOUDFLARE_API_TOKEN": []byte("token")},
+	}
+	policy := baseAccessPolicy("app", "policy")
+	policy.Spec.CloudflareRef = cfgatev1alpha1.CloudflareSecretRef{Name: "spec-cf", AccountID: "spec-account"}
+	policy.Status.AccountID = "cached-account"
+	policy.Status.CredentialSecretRef = &cfgatev1alpha1.SecretReference{Name: "missing-cached-cf", Namespace: "app"}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, specSecret).Build()
+	reconciler := &CloudflareAccessPolicyReconciler{
+		Client: k8sClient,
+		Scheme: scheme,
+	}
+
+	creds, err := reconciler.resolvePolicyDeletionCredentials(ctx, policy)
+	if err != nil {
+		t.Fatalf("resolvePolicyDeletionCredentials() error = %v", err)
+	}
+	if creds.AccountID != "cached-account" || creds.CredentialSecretRef.Name != "spec-cf" {
+		t.Fatalf("credentials = %q/%+v, want cached-account spec-cf", creds.AccountID, creds.CredentialSecretRef)
+	}
+
+	policy.Spec.CloudflareRef.Name = "missing-spec-cf"
+	_, err = reconciler.resolvePolicyDeletionCredentials(ctx, policy)
+	if err == nil ||
+		!strings.Contains(err.Error(), "cached credentials failed") ||
+		!strings.Contains(err.Error(), "spec credentials failed") {
+		t.Fatalf("resolvePolicyDeletionCredentials() error = %v, want cached/spec failure", err)
 	}
 }
 
@@ -274,14 +316,15 @@ func TestK8sSecretWriterWriteSecret(t *testing.T) {
 		owner:     owner,
 		scheme:    scheme,
 	}
-	if err := otherOwnedWriter.WriteSecret(ctx, "svc", map[string][]byte{"a": []byte("kept")}); err != nil {
-		t.Fatalf("WriteSecret(other-owned update) error = %v", err)
+	err := otherOwnedWriter.WriteSecret(ctx, "svc", map[string][]byte{"a": []byte("kept")})
+	if err == nil || !strings.Contains(err.Error(), "secret app/other-owned-secret is already controlled by CloudflareAccessPolicy/other") {
+		t.Fatalf("WriteSecret(other-owned update) error = %v, want ownership error", err)
 	}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "other-owned-secret", Namespace: "app"}, &secret); err != nil {
 		t.Fatalf("Get(other-owned secret) error = %v", err)
 	}
-	if string(secret.Data["a"]) != "kept" || len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != "other" {
-		t.Fatalf("other-owned secret = %#v, want data update and preserved owner", secret)
+	if string(secret.Data["a"]) != "other" || len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != "other" {
+		t.Fatalf("other-owned secret = %#v, want original data and preserved owner", secret)
 	}
 
 	badWriter := &k8sSecretWriter{
@@ -293,6 +336,70 @@ func TestK8sSecretWriterWriteSecret(t *testing.T) {
 	}
 	if err := badWriter.WriteSecret(ctx, "svc", nil); err == nil || !strings.Contains(err.Error(), "setting owner reference") {
 		t.Fatalf("WriteSecret(bad scheme) error = %v, want owner reference error", err)
+	}
+}
+
+func TestK8sSecretWriterServiceTokenSecretNeedsRefresh(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	owner := baseAccessPolicy("app", "policy")
+	validSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "valid", Namespace: "app"},
+		Data: map[string][]byte{
+			"CF_ACCESS_CLIENT_ID":     []byte("client-id"),
+			"CF_ACCESS_CLIENT_SECRET": []byte("client-secret"),
+		},
+	}
+	missingClientID := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "missing-client-id", Namespace: "app"},
+		Data: map[string][]byte{
+			"CF_ACCESS_CLIENT_SECRET": []byte("client-secret"),
+		},
+	}
+	missingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "missing-secret", Namespace: "app"},
+		Data: map[string][]byte{
+			"CF_ACCESS_CLIENT_ID": []byte("client-id"),
+		},
+	}
+	mismatchedClientID := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "mismatched-client-id", Namespace: "app"},
+		Data: map[string][]byte{
+			"CF_ACCESS_CLIENT_ID":     []byte("other-client-id"),
+			"CF_ACCESS_CLIENT_SECRET": []byte("client-secret"),
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner, validSecret, missingClientID, missingSecret, mismatchedClientID).Build()
+
+	for _, tt := range []struct {
+		name       string
+		secretName string
+		want       bool
+	}{
+		{name: "missing secret", secretName: "missing", want: true},
+		{name: "missing client ID", secretName: "missing-client-id", want: true},
+		{name: "missing client secret", secretName: "missing-secret", want: true},
+		{name: "mismatched client ID", secretName: "mismatched-client-id", want: true},
+		{name: "valid secret", secretName: "valid", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			writer := &k8sSecretWriter{
+				client:    k8sClient,
+				namespace: "app",
+				secretRef: cfgatev1alpha1.ServiceTokenSecretRef{
+					Name: tt.secretName,
+				},
+				owner:  owner,
+				scheme: scheme,
+			}
+			got, err := writer.ServiceTokenSecretNeedsRefresh(ctx, "svc", "client-id")
+			if err != nil {
+				t.Fatalf("ServiceTokenSecretNeedsRefresh() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ServiceTokenSecretNeedsRefresh() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -310,8 +417,8 @@ func TestEnsureServiceTokens(t *testing.T) {
 	}
 	reconciler := newAccessPolicyReconciler(t, mock, policy)
 	service := cloudflare.NewAccessService(mock, logr.Discard())
-	if err := reconciler.ensureServiceTokens(ctx, service, "account-1", policy); err != nil {
-		t.Fatalf("ensureServiceTokens() error = %v", err)
+	if err := reconciler.syncServiceTokens(ctx, service, "account-1", policy); err != nil {
+		t.Fatalf("syncServiceTokens() error = %v", err)
 	}
 	if policy.Status.ServiceTokenIDs["svc"] != "token-id" {
 		t.Fatalf("ServiceTokenIDs = %#v", policy.Status.ServiceTokenIDs)
@@ -324,13 +431,67 @@ func TestEnsureServiceTokens(t *testing.T) {
 		t.Fatalf("secret data = %#v", secret.Data)
 	}
 
+	policy = baseAccessPolicy("app", "policy")
+	policy.Spec.ServiceTokens = nil
+	policy.Status.ServiceTokenIDs = map[string]string{"old": "old-token-id"}
+	deletedTokens := []string{}
+	mock = cloudflare.NewMockClient()
+	mock.DeleteServiceTokenFunc = func(_ context.Context, _ string, tokenID string) error {
+		deletedTokens = append(deletedTokens, tokenID)
+		return nil
+	}
+	reconciler = newAccessPolicyReconciler(t, mock, policy)
+	if err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy); err != nil {
+		t.Fatalf("syncServiceTokens(stale) error = %v", err)
+	}
+	if len(deletedTokens) != 1 || deletedTokens[0] != "old-token-id" || len(policy.Status.ServiceTokenIDs) != 0 {
+		t.Fatalf("deleted/status = %#v/%#v, want old-token-id and empty status", deletedTokens, policy.Status.ServiceTokenIDs)
+	}
+
+	policy = baseAccessPolicy("app", "policy")
+	policy.Spec.ServiceTokens = []cfgatev1alpha1.ServiceTokenConfig{{Name: "new", Duration: "8760h", SecretRef: cfgatev1alpha1.ServiceTokenSecretRef{Name: "new-secret"}}}
+	policy.Status.ServiceTokenIDs = map[string]string{"old": "old-token-id"}
+	deletedTokens = nil
+	mock = cloudflare.NewMockClient()
+	mock.DeleteServiceTokenFunc = func(_ context.Context, _ string, tokenID string) error {
+		deletedTokens = append(deletedTokens, tokenID)
+		return nil
+	}
+	mock.ListServiceTokensFunc = func(context.Context, string) ([]cloudflare.ServiceToken, error) { return nil, nil }
+	mock.CreateServiceTokenFunc = func(context.Context, string, cloudflare.ServiceTokenParams) (*cloudflare.ServiceTokenWithSecret, error) {
+		return &cloudflare.ServiceTokenWithSecret{
+			ServiceToken: cloudflare.ServiceToken{ID: "new-token-id", Name: "new", ClientID: "new-client-id", ExpiresAt: time.Now().Add(time.Hour)},
+			ClientSecret: "new-client-secret",
+		}, nil
+	}
+	reconciler = newAccessPolicyReconciler(t, mock, policy)
+	if err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy); err != nil {
+		t.Fatalf("syncServiceTokens(rename) error = %v", err)
+	}
+	if len(deletedTokens) != 1 || deletedTokens[0] != "old-token-id" || len(policy.Status.ServiceTokenIDs) != 1 || policy.Status.ServiceTokenIDs["new"] != "new-token-id" {
+		t.Fatalf("deleted/status = %#v/%#v, want old deleted and new stored", deletedTokens, policy.Status.ServiceTokenIDs)
+	}
+
+	policy = baseAccessPolicy("app", "policy")
+	policy.Status.ServiceTokenIDs = map[string]string{"old": "old-token-id"}
+	mock = cloudflare.NewMockClient()
+	mock.DeleteServiceTokenFunc = func(context.Context, string, string) error { return errors.New("delete failed") }
+	reconciler = newAccessPolicyReconciler(t, mock, policy)
+	err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy)
+	if err == nil || !strings.Contains(err.Error(), "failed to delete removed service token old (old-token-id)") {
+		t.Fatalf("syncServiceTokens(delete failure) error = %v, want wrapped delete error", err)
+	}
+
 	mock = cloudflare.NewMockClient()
 	mock.ListServiceTokensFunc = func(context.Context, string) ([]cloudflare.ServiceToken, error) {
 		return nil, errors.New("list failed")
 	}
-	err := reconciler.ensureServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy)
+	policy = baseAccessPolicy("app", "policy")
+	policy.Spec.ServiceTokens = []cfgatev1alpha1.ServiceTokenConfig{{Name: "svc", Duration: "8760h", SecretRef: cfgatev1alpha1.ServiceTokenSecretRef{Name: "svc-secret"}}}
+	reconciler = newAccessPolicyReconciler(t, mock, policy)
+	err = reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy)
 	if err == nil || !strings.Contains(err.Error(), "failed to ensure service token svc") {
-		t.Fatalf("ensureServiceTokens() error = %v, want token name wrapper", err)
+		t.Fatalf("syncServiceTokens() error = %v, want token name wrapper", err)
 	}
 }
 
@@ -387,10 +548,21 @@ func TestAccessPolicyDeletePaths(t *testing.T) {
 
 	t.Run("deletes policy and service tokens", func(t *testing.T) {
 		policy := policyWithDeleteStatus()
+		policy.Status.AccountID = "account-cached"
+		policy.Status.CredentialSecretRef = &cfgatev1alpha1.SecretReference{Name: "cached-cf", Namespace: "app"}
+		policy.Spec.CloudflareRef.AccountID = ""
+		policy.Spec.CloudflareRef.AccountName = "prod"
 		deletedPolicy := ""
 		deletedTokens := []string{}
 		mock := cloudflare.NewMockClient()
-		mock.GetAccessPolicyFunc = func(context.Context, string, string) (*cloudflare.AccessPolicy, error) {
+		mock.GetAccountByNameFunc = func(context.Context, string) (*cloudflare.Account, error) {
+			t.Fatal("GetAccountByName should not be called when cached account ID is available")
+			return nil, nil
+		}
+		mock.GetAccessPolicyFunc = func(_ context.Context, accountID string, _ string) (*cloudflare.AccessPolicy, error) {
+			if accountID != "account-cached" {
+				t.Fatalf("GetAccessPolicy accountID = %q, want account-cached", accountID)
+			}
 			return &cloudflare.AccessPolicy{ID: "policy-id", AppCount: 0}, nil
 		}
 		mock.DeleteAccessPolicyFunc = func(_ context.Context, _ string, policyID string) error {
@@ -465,13 +637,14 @@ func TestAccessPolicyDeletePaths(t *testing.T) {
 
 func TestAccessPolicyStatusHelpers(t *testing.T) {
 	base := &cfgatev1alpha1.CloudflareAccessPolicyStatus{
-		PolicyID:           "policy-id",
-		AccountID:          "account-1",
-		Reusable:           true,
-		AppCount:           1,
-		ServiceTokenIDs:    map[string]string{"svc": "token-id"},
-		ObservedGeneration: 2,
-		Conditions:         []metav1.Condition{status.NewCondition(status.ConditionTypeReady, metav1.ConditionTrue, status.ReasonReady, "ready", 2)},
+		PolicyID:            "policy-id",
+		AccountID:           "account-1",
+		Reusable:            true,
+		AppCount:            1,
+		ServiceTokenIDs:     map[string]string{"svc": "token-id"},
+		CredentialSecretRef: &cfgatev1alpha1.SecretReference{Name: "cf", Namespace: "app"},
+		ObservedGeneration:  2,
+		Conditions:          []metav1.Condition{status.NewCondition(status.ConditionTypeReady, metav1.ConditionTrue, status.ReasonReady, "ready", 2)},
 	}
 	if !accessPolicyStatusEqual(base, base.DeepCopy()) {
 		t.Fatal("accessPolicyStatusEqual() = false, want true")
@@ -485,6 +658,7 @@ func TestAccessPolicyStatusHelpers(t *testing.T) {
 		{name: "reusable", modify: func(s *cfgatev1alpha1.CloudflareAccessPolicyStatus) { s.Reusable = false }},
 		{name: "app count", modify: func(s *cfgatev1alpha1.CloudflareAccessPolicyStatus) { s.AppCount = 2 }},
 		{name: "service tokens", modify: func(s *cfgatev1alpha1.CloudflareAccessPolicyStatus) { s.ServiceTokenIDs["svc"] = "other" }},
+		{name: "credential secret ref", modify: func(s *cfgatev1alpha1.CloudflareAccessPolicyStatus) { s.CredentialSecretRef.Name = "other" }},
 		{name: "generation", modify: func(s *cfgatev1alpha1.CloudflareAccessPolicyStatus) { s.ObservedGeneration = 3 }},
 		{name: "conditions", modify: func(s *cfgatev1alpha1.CloudflareAccessPolicyStatus) { s.Conditions[0].Reason = "Other" }},
 	} {

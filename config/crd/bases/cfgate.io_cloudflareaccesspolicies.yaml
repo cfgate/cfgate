@@ -903,6 +903,24 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialSecretRef:
+                description: |-
+                  CredentialSecretRef is the resolved credentials Secret used for cleanup.
+                  The namespace is always stored explicitly.
+                properties:
+                  name:
+                    description: Name of the secret.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  namespace:
+                    description: Namespace of the secret. Defaults to the resource's
+                      namespace if empty.
+                    maxLength: 63
+                    type: string
+                required:
+                - name
+                type: object
               observedGeneration:
                 description: ObservedGeneration is the last generation processed.
                 format: int64
