@@ -905,9 +905,10 @@ func createTestNamespace(prefix string) *corev1.Namespace {
 }
 
 // deleteTestNamespace deletes a test namespace and waits for termination.
-// Deletion follows dependency order: DNS and Access CRs first (they need the
-// tunnel's credentials for Cloudflare API cleanup), then Tunnels, then the
-// namespace itself. Each phase waits for completion before proceeding.
+// Deletion follows dependency order: DNS and Access applications first (they
+// need the tunnel's credentials for Cloudflare API cleanup), then Access
+// policies after applications unlink, then Tunnels, then the namespace itself.
+// Each phase waits for completion before proceeding.
 func deleteTestNamespace(ns *corev1.Namespace) {
 	if testEnv.SkipCleanup || ns == nil {
 		return
@@ -917,8 +918,10 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		return
 	}
 
-	// Phase 1: Delete DNS and Access CRs. Both reference the tunnel for
-	// credentials during reconcileDelete; the tunnel must still exist.
+	// Phase 1: Delete DNS and Access applications. Both reference the tunnel for
+	// credentials during reconcileDelete; the tunnel must still exist. Reusable
+	// Access policies intentionally block deletion while linked to applications,
+	// so policy deletion happens after applications terminate.
 	var dnsRecords cfgatev1alpha1.CloudflareDNSList
 	if err := k8sClient.List(ctx, &dnsRecords, client.InNamespace(ns.Name)); err == nil {
 		for i := range dnsRecords.Items {
@@ -933,37 +936,41 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 			_ = k8sClient.Delete(ctx, &apps.Items[i])
 		}
 	}
-	if err := k8sClient.List(ctx, &policies, client.InNamespace(ns.Name)); err == nil {
-		for i := range policies.Items {
-			_ = k8sClient.Delete(ctx, &policies.Items[i])
-		}
-	}
 
-	// Wait for DNS and Access CRs to be fully deleted before touching tunnels.
-	Eventually(func() bool {
+	// Wait for DNS and Access applications to be fully deleted before policies.
+	waitForCleanupPhase(ns.Name, "DNS/AccessApplication CRs", func() bool {
 		var dCheck cfgatev1alpha1.CloudflareDNSList
 		var aCheck cfgatev1alpha1.CloudflareAccessApplicationList
-		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
 		dErr := k8sClient.List(ctx, &dCheck, client.InNamespace(ns.Name))
 		aErr := k8sClient.List(ctx, &aCheck, client.InNamespace(ns.Name))
-		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
 		dDone := dErr == nil && len(dCheck.Items) == 0
 		aDone := aErr == nil && len(aCheck.Items) == 0
-		pDone := pErr == nil && len(pCheck.Items) == 0
 		if apierrors.IsNotFound(dErr) {
 			dDone = true
 		}
 		if apierrors.IsNotFound(aErr) {
 			aDone = true
 		}
-		if apierrors.IsNotFound(pErr) {
-			pDone = true
-		}
-		return dDone && aDone && pDone
-	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
-		"DNS/Access CRs in namespace %s did not terminate", ns.Name)
+		return dDone && aDone
+	}, describeDNSAndAccessApplications)
 
-	// Phase 2: Delete Tunnels. No remaining CRs depend on tunnel credentials.
+	// Phase 2: Delete Access policies after applications have unlinked.
+	if err := k8sClient.List(ctx, &policies, client.InNamespace(ns.Name)); err == nil {
+		for i := range policies.Items {
+			_ = k8sClient.Delete(ctx, &policies.Items[i])
+		}
+	}
+
+	waitForCleanupPhase(ns.Name, "AccessPolicy CRs", func() bool {
+		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
+		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
+		if apierrors.IsNotFound(pErr) {
+			return true
+		}
+		return pErr == nil && len(pCheck.Items) == 0
+	}, describeAccessPolicies)
+
+	// Phase 3: Delete Tunnels. No remaining CRs depend on tunnel credentials.
 	var tunnels cfgatev1alpha1.CloudflareTunnelList
 	if err := k8sClient.List(ctx, &tunnels, client.InNamespace(ns.Name)); err == nil {
 		for i := range tunnels.Items {
@@ -971,17 +978,16 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		}
 	}
 
-	Eventually(func() bool {
+	waitForCleanupPhase(ns.Name, "Tunnel CRs", func() bool {
 		var tCheck cfgatev1alpha1.CloudflareTunnelList
 		tErr := k8sClient.List(ctx, &tCheck, client.InNamespace(ns.Name))
 		if apierrors.IsNotFound(tErr) {
 			return true
 		}
 		return tErr == nil && len(tCheck.Items) == 0
-	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
-		"Tunnel CRs in namespace %s did not terminate", ns.Name)
+	}, describeTunnels)
 
-	// Phase 3: Delete namespace after all CRs are gone.
+	// Phase 4: Delete namespace after all CRs are gone.
 	currentNS, err := k8sClientset.CoreV1().Namespaces().Get(ctx, ns.Name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return
@@ -997,6 +1003,93 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		return apierrors.IsNotFound(err)
 	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
 		"Namespace %s did not terminate", ns.Name)
+}
+
+func waitForCleanupPhase(namespace, phase string, done func() bool, describe func(string) string) {
+	deadline := time.Now().Add(120 * time.Second)
+	for {
+		if done() {
+			return
+		}
+		if time.Now().After(deadline) {
+			Fail(fmt.Sprintf("%s in namespace %s did not terminate\n%s", phase, namespace, describe(namespace)))
+		}
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func describeDNSAndAccessApplications(namespace string) string {
+	var b strings.Builder
+	var dnsRecords cfgatev1alpha1.CloudflareDNSList
+	if err := k8sClient.List(ctx, &dnsRecords, client.InNamespace(namespace)); err != nil && !apierrors.IsNotFound(err) {
+		fmt.Fprintf(&b, "CloudflareDNS list error: %v\n", err)
+	}
+	for i := range dnsRecords.Items {
+		writeCleanupObjectSummary(&b, "CloudflareDNS", &dnsRecords.Items[i], dnsRecords.Items[i].Status.Conditions)
+	}
+
+	var apps cfgatev1alpha1.CloudflareAccessApplicationList
+	if err := k8sClient.List(ctx, &apps, client.InNamespace(namespace)); err != nil && !apierrors.IsNotFound(err) {
+		fmt.Fprintf(&b, "CloudflareAccessApplication list error: %v\n", err)
+	}
+	for i := range apps.Items {
+		writeCleanupObjectSummary(&b, "CloudflareAccessApplication", &apps.Items[i], apps.Items[i].Status.Conditions)
+	}
+	if b.Len() == 0 {
+		return "No remaining CloudflareDNS or CloudflareAccessApplication resources found."
+	}
+	return b.String()
+}
+
+func describeAccessPolicies(namespace string) string {
+	var b strings.Builder
+	var policies cfgatev1alpha1.CloudflareAccessPolicyList
+	if err := k8sClient.List(ctx, &policies, client.InNamespace(namespace)); err != nil && !apierrors.IsNotFound(err) {
+		fmt.Fprintf(&b, "CloudflareAccessPolicy list error: %v\n", err)
+	}
+	for i := range policies.Items {
+		writeCleanupObjectSummary(&b, "CloudflareAccessPolicy", &policies.Items[i], policies.Items[i].Status.Conditions)
+	}
+	if b.Len() == 0 {
+		return "No remaining CloudflareAccessPolicy resources found."
+	}
+	return b.String()
+}
+
+func describeTunnels(namespace string) string {
+	var b strings.Builder
+	var tunnels cfgatev1alpha1.CloudflareTunnelList
+	if err := k8sClient.List(ctx, &tunnels, client.InNamespace(namespace)); err != nil && !apierrors.IsNotFound(err) {
+		fmt.Fprintf(&b, "CloudflareTunnel list error: %v\n", err)
+	}
+	for i := range tunnels.Items {
+		writeCleanupObjectSummary(&b, "CloudflareTunnel", &tunnels.Items[i], tunnels.Items[i].Status.Conditions)
+	}
+	if b.Len() == 0 {
+		return "No remaining CloudflareTunnel resources found."
+	}
+	return b.String()
+}
+
+func writeCleanupObjectSummary(b *strings.Builder, kind string, obj client.Object, conditions []metav1.Condition) {
+	fmt.Fprintf(b, "%s %s/%s deleting=%t finalizers=%v",
+		kind,
+		obj.GetNamespace(),
+		obj.GetName(),
+		obj.GetDeletionTimestamp() != nil,
+		obj.GetFinalizers(),
+	)
+	if len(conditions) > 0 {
+		b.WriteString(" conditions=[")
+		for i, condition := range conditions {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%s=%s/%s", condition.Type, condition.Status, condition.Reason)
+		}
+		b.WriteString("]")
+	}
+	b.WriteByte('\n')
 }
 
 func namespaceGone(name string) bool {

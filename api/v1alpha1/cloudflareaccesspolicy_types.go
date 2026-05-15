@@ -678,6 +678,10 @@ type CloudflareAccessPolicyStatus struct {
 	// AccountID is the Cloudflare account ID used for this policy.
 	AccountID string `json:"accountId,omitempty"`
 
+	// CredentialSecretRef is the resolved credentials Secret used for cleanup.
+	// The namespace is always stored explicitly.
+	CredentialSecretRef *SecretReference `json:"credentialSecretRef,omitempty"`
+
 	// Reusable reports whether Cloudflare returned this policy as reusable.
 	Reusable bool `json:"reusable,omitempty"`
 

@@ -66,6 +66,7 @@ Supported rule types include:
 | `reusable` | Whether Cloudflare reports the policy as reusable. |
 | `appCount` | Number of Cloudflare Access Applications linked to the policy. |
 | `serviceTokenIds` | Created token name to Cloudflare token ID. |
+| `credentialSecretRef` | Resolved credentials Secret cached for cleanup. Namespace is always stored explicitly. |
 | `observedGeneration` | Last reconciled generation. |
 
 Conditions:
@@ -77,7 +78,13 @@ Conditions:
 
 ## Deletion
 
-Deletion removes the reusable policy only when Cloudflare reports `appCount == 0`. If the policy is still linked to any application, finalization blocks and retries. Set `cfgate.io/deletion-policy=orphan` before deletion to leave Cloudflare resources in place and remove the Kubernetes finalizer.
+Deletion removes the reusable policy only when Cloudflare reports `appCount == 0`. If the policy is still linked to any application, finalization blocks and retries. Cleanup uses cached `accountId` and `credentialSecretRef` when available, but the referenced credentials Secret must still exist. Restore the Secret or set `cfgate.io/deletion-policy=orphan` before deletion to leave Cloudflare resources in place and remove the Kubernetes finalizer.
+
+## Service Token Secrets
+
+When `spec.serviceTokens` changes, tokens removed from the spec are revoked in Cloudflare and removed from `status.serviceTokenIds`.
+
+The controller owns service token Secrets it creates. It updates Secrets it already owns and can adopt unmanaged Secrets, but it does not overwrite a Secret controlled by another Kubernetes owner. If an existing unexpired Cloudflare service token has a missing, incomplete, or client-ID-mismatched Kubernetes Secret, the controller rotates the token and writes a fresh Secret. Cloudflare does not return the client secret after creation or rotation, so a Secret with the expected client ID and a non-empty client secret is treated as current.
 
 ## Example With Service Token
 

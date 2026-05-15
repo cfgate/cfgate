@@ -658,6 +658,38 @@ func TestResolveApplicationCredentials(t *testing.T) {
 		t.Fatalf("resolveApplicationCredentials() mismatch error = %v, want %q", err, wantMismatch)
 	}
 
+	multiParentRoute := &gwapiv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "multi-parent-route", Namespace: "app"},
+		Spec: gwapiv1.HTTPRouteSpec{CommonRouteSpec: gwapiv1.CommonRouteSpec{ParentRefs: []gwapiv1.ParentReference{
+			{Name: "plain-gateway"},
+			{Name: "cfgate-gateway"},
+		}}},
+	}
+	plainGateway := &gwapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "plain-gateway", Namespace: "app"},
+	}
+	cfgateGateway := &gwapiv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfgate-gateway", Namespace: "app", Annotations: map[string]string{annotations.AnnotationTunnelRef: "cfgate-tunnel"}},
+	}
+	cfgateTunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfgate-tunnel", Namespace: "app"},
+		Spec: cfgatev1alpha1.CloudflareTunnelSpec{Cloudflare: cfgatev1alpha1.CloudflareConfig{
+			SecretRef: cfgatev1alpha1.SecretRef{Name: "cf-cfgate", Namespace: "secrets-cfgate"},
+		}},
+		Status: cfgatev1alpha1.CloudflareTunnelStatus{AccountID: "cfgate-account"},
+	}
+	reconciler = newAccessAppReconciler(t, mock, multiParentRoute, plainGateway, cfgateGateway, cfgateTunnel)
+	creds, err = reconciler.resolveApplicationCredentials(ctx, app, []accessApplicationTarget{{Kind: "HTTPRoute", Namespace: "app", Name: "multi-parent-route"}})
+	if err != nil {
+		t.Fatalf("resolveApplicationCredentials() multi-parent cfgate Gateway error = %v", err)
+	}
+	if creds.AccountID != "cfgate-account" ||
+		creds.CredentialSecretRef == nil ||
+		creds.CredentialSecretRef.Name != "cf-cfgate" ||
+		creds.CredentialSecretRef.Namespace != "secrets-cfgate" {
+		t.Fatalf("multi-parent credentials = %q/%+v, want cfgate-account secrets-cfgate/cf-cfgate", creds.AccountID, creds.CredentialSecretRef)
+	}
+
 	for _, tt := range []struct {
 		name    string
 		targets []accessApplicationTarget
@@ -666,6 +698,13 @@ func TestResolveApplicationCredentials(t *testing.T) {
 	}{
 		{name: "no targets", wantErr: "no targets available"},
 		{name: "missing tunnel annotation", targets: []accessApplicationTarget{{Kind: "Gateway", Namespace: "app", Name: "gateway"}}, objects: []client.Object{&gwapiv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "app"}}}, wantErr: "missing cfgate.io/tunnel-ref"},
+		{name: "HTTPRoute without cfgate Gateway parent", targets: []accessApplicationTarget{{Kind: "HTTPRoute", Namespace: "app", Name: "route"}}, objects: []client.Object{
+			&gwapiv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
+				Spec:       gwapiv1.HTTPRouteSpec{CommonRouteSpec: gwapiv1.CommonRouteSpec{ParentRefs: []gwapiv1.ParentReference{{Name: "gateway"}}}},
+			},
+			&gwapiv1.Gateway{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "app"}},
+		}, wantErr: "has no resolvable cfgate Gateway parent with cfgate.io/tunnel-ref annotation"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			reconciler := newAccessAppReconciler(t, mock, tt.objects...)
