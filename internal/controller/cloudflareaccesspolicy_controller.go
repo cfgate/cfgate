@@ -126,6 +126,8 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		)
 		_ = r.updateStatus(ctx, &policy)
 		return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterError}, nil
+	} else {
+		policy.Status.Conditions = status.RemoveCondition(policy.Status.Conditions, status.ConditionTypeServiceTokensReady)
 	}
 
 	params, err := buildReusablePolicyParams(&policy)
