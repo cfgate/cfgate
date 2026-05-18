@@ -2,8 +2,13 @@ package cloudflare
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	cf "github.com/cloudflare/cloudflare-go/v6"
+	"github.com/cloudflare/cloudflare-go/v6/option"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
 )
 
@@ -124,6 +129,88 @@ func TestAccessApplicationPolicyLinkParams(t *testing.T) {
 	}
 }
 
+func TestClientAccessApplicationConversionErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		response   string
+		call       func(context.Context, *clientImpl) error
+		wantPrefix string
+	}{
+		{
+			name:     "create",
+			method:   http.MethodPost,
+			path:     "/accounts/account/access/apps",
+			response: malformedAccessApplicationEnvelope(),
+			call: func(ctx context.Context, client *clientImpl) error {
+				_, err := client.CreateAccessApplication(ctx, "account", ApplicationParams{Name: "app", Domain: "app.example.com"})
+				return err
+			},
+			wantPrefix: "failed to convert created access application",
+		},
+		{
+			name:     "get",
+			method:   http.MethodGet,
+			path:     "/accounts/account/access/apps/app-1",
+			response: malformedAccessApplicationEnvelope(),
+			call: func(ctx context.Context, client *clientImpl) error {
+				_, err := client.GetAccessApplication(ctx, "account", "app-1")
+				return err
+			},
+			wantPrefix: "failed to convert access application",
+		},
+		{
+			name:     "update",
+			method:   http.MethodPut,
+			path:     "/accounts/account/access/apps/app-1",
+			response: malformedAccessApplicationEnvelope(),
+			call: func(ctx context.Context, client *clientImpl) error {
+				_, err := client.UpdateAccessApplication(ctx, "account", "app-1", ApplicationParams{Name: "app", Domain: "app.example.com"})
+				return err
+			},
+			wantPrefix: "failed to convert updated access application",
+		},
+		{
+			name:     "list",
+			method:   http.MethodGet,
+			path:     "/accounts/account/access/apps",
+			response: malformedAccessApplicationListEnvelope(),
+			call: func(ctx context.Context, client *clientImpl) error {
+				_, err := client.ListAccessApplications(ctx, "account")
+				return err
+			},
+			wantPrefix: "failed to convert listed access application",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := testClientImpl(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != tt.method {
+					t.Fatalf("method = %s, want %s", r.Method, tt.method)
+				}
+				if r.URL.Path != tt.path {
+					t.Fatalf("path = %s, want %s", r.URL.Path, tt.path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.response))
+			})
+
+			err := tt.call(context.Background(), client)
+			if err == nil {
+				t.Fatal("access application conversion error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantPrefix) {
+				t.Fatalf("error = %q, want prefix %q", err.Error(), tt.wantPrefix)
+			}
+			if !strings.Contains(err.Error(), "unmarshal access application extras") {
+				t.Fatalf("error = %q, want unmarshal context", err.Error())
+			}
+		})
+	}
+}
+
 func TestMockClientUnstubbedAccessMethods(t *testing.T) {
 	mock := NewMockClient()
 	ctx := context.Background()
@@ -187,4 +274,44 @@ func TestMockClientUnstubbedAccessMethods(t *testing.T) {
 	if token, err := mock.RefreshServiceToken(ctx, "account", "token"); token != nil || err != nil {
 		t.Fatalf("RefreshServiceToken() = (%+v, %v), want nil nil", token, err)
 	}
+}
+
+func testClientImpl(t *testing.T, handler http.HandlerFunc) *clientImpl {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return &clientImpl{api: cf.NewClient(
+		option.WithAPIToken("test-token"),
+		option.WithBaseURL(server.URL),
+	)}
+}
+
+func malformedAccessApplicationEnvelope() string {
+	return `{
+		"success": true,
+		"errors": [],
+		"messages": [],
+		"result": {
+			"id": "app-1",
+			"aud": "aud-1",
+			"name": "app",
+			"domain": "app.example.com",
+			"type": "self_hosted",
+			"tags": 1
+		}
+	}`
+}
+
+func malformedAccessApplicationListEnvelope() string {
+	return `{
+		"result": [{
+			"id": "app-1",
+			"aud": "aud-1",
+			"name": "app",
+			"domain": "app.example.com",
+			"type": "self_hosted",
+			"tags": 1
+		}],
+		"result_info": {"page": 1, "per_page": 20}
+	}`
 }
