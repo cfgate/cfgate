@@ -640,7 +640,11 @@ func (c *clientImpl) CreateAccessApplication(ctx context.Context, accountID stri
 		return nil, fmt.Errorf("failed to create access application: %w", err)
 	}
 
-	return applicationFromNewResponse(result), nil
+	app, err := applicationFromNewResponse(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert created access application: %w", err)
+	}
+	return app, nil
 }
 
 // GetAccessApplication retrieves an Access application by ID.
@@ -655,7 +659,11 @@ func (c *clientImpl) GetAccessApplication(ctx context.Context, accountID, appID 
 		return nil, fmt.Errorf("failed to get access application: %w", err)
 	}
 
-	return applicationFromGetResponse(result), nil
+	app, err := applicationFromGetResponse(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert access application: %w", err)
+	}
+	return app, nil
 }
 
 // UpdateAccessApplication updates an existing Access application.
@@ -711,7 +719,11 @@ func (c *clientImpl) UpdateAccessApplication(ctx context.Context, accountID, app
 		return nil, fmt.Errorf("failed to update access application: %w", err)
 	}
 
-	return applicationFromUpdateResponse(result), nil
+	app, err := applicationFromUpdateResponse(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert updated access application: %w", err)
+	}
+	return app, nil
 }
 
 func accessApplicationDestinationURIs(params ApplicationParams) []string {
@@ -793,7 +805,13 @@ func (c *clientImpl) ListAccessApplications(ctx context.Context, accountID strin
 
 	for page.Next() {
 		app := page.Current()
-		apps = append(apps, *applicationFromListResponse(&app))
+		converted, err := applicationFromListResponse(&app)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert listed access application: %w", err)
+		}
+		if converted != nil {
+			apps = append(apps, *converted)
+		}
 	}
 
 	if err := page.Err(); err != nil {

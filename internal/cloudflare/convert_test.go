@@ -271,8 +271,9 @@ func TestApplicationResponseConverters(t *testing.T) {
 		},
 	}
 
-	assertApplication(t, applicationFromNewResponse(&resp))
-	assertApplication(t, applicationFromGetResponse(&zero_trust.AccessApplicationGetResponse{
+	app, err := applicationFromNewResponse(&resp)
+	assertApplication(t, mustApplication(t, app, err))
+	app, err = applicationFromGetResponse(&zero_trust.AccessApplicationGetResponse{
 		ID:                          resp.ID,
 		AUD:                         resp.AUD,
 		Name:                        resp.Name,
@@ -295,8 +296,9 @@ func TestApplicationResponseConverters(t *testing.T) {
 		CustomNonIdentityDenyURL:    resp.CustomNonIdentityDenyURL,
 		ReadServiceTokensFromHeader: resp.ReadServiceTokensFromHeader,
 		CORSHeaders:                 resp.CORSHeaders,
-	}))
-	assertApplication(t, applicationFromUpdateResponse(&zero_trust.AccessApplicationUpdateResponse{
+	})
+	assertApplication(t, mustApplication(t, app, err))
+	app, err = applicationFromUpdateResponse(&zero_trust.AccessApplicationUpdateResponse{
 		ID:                          resp.ID,
 		AUD:                         resp.AUD,
 		Name:                        resp.Name,
@@ -319,8 +321,9 @@ func TestApplicationResponseConverters(t *testing.T) {
 		CustomNonIdentityDenyURL:    resp.CustomNonIdentityDenyURL,
 		ReadServiceTokensFromHeader: resp.ReadServiceTokensFromHeader,
 		CORSHeaders:                 resp.CORSHeaders,
-	}))
-	assertApplication(t, applicationFromListResponse(&zero_trust.AccessApplicationListResponse{
+	})
+	assertApplication(t, mustApplication(t, app, err))
+	app, err = applicationFromListResponse(&zero_trust.AccessApplicationListResponse{
 		ID:                          resp.ID,
 		AUD:                         resp.AUD,
 		Name:                        resp.Name,
@@ -343,17 +346,26 @@ func TestApplicationResponseConverters(t *testing.T) {
 		CustomNonIdentityDenyURL:    resp.CustomNonIdentityDenyURL,
 		ReadServiceTokensFromHeader: resp.ReadServiceTokensFromHeader,
 		CORSHeaders:                 resp.CORSHeaders,
-	}))
+	})
+	assertApplication(t, mustApplication(t, app, err))
 
-	if applicationFromNewResponse(nil) != nil || applicationFromGetResponse(nil) != nil ||
-		applicationFromUpdateResponse(nil) != nil || applicationFromListResponse(nil) != nil {
-		t.Fatal("nil application response converted to non-nil app")
+	if app, err := applicationFromNewResponse(nil); app != nil || err != nil {
+		t.Fatalf("applicationFromNewResponse(nil) = (%#v, %v), want nil nil", app, err)
+	}
+	if app, err := applicationFromGetResponse(nil); app != nil || err != nil {
+		t.Fatalf("applicationFromGetResponse(nil) = (%#v, %v), want nil nil", app, err)
+	}
+	if app, err := applicationFromUpdateResponse(nil); app != nil || err != nil {
+		t.Fatalf("applicationFromUpdateResponse(nil) = (%#v, %v), want nil nil", app, err)
+	}
+	if app, err := applicationFromListResponse(nil); app != nil || err != nil {
+		t.Fatalf("applicationFromListResponse(nil) = (%#v, %v), want nil nil", app, err)
 	}
 }
 
 func TestApplyApplicationExtras(t *testing.T) {
 	app := &AccessApplication{}
-	applyApplicationExtras(app, `{
+	if err := applyApplicationExtras(app, `{
 		"tags":["cfgate","owner"],
 		"destinations":[
 			{"type":"public","uri":"app.example.com"},
@@ -361,7 +373,9 @@ func TestApplyApplicationExtras(t *testing.T) {
 			{"type":"public","uri":""}
 		],
 		"policies":[{"id":"policy-1","precedence":3},{"id":"","precedence":9}]
-	}`)
+	}`); err != nil {
+		t.Fatalf("applyApplicationExtras() error = %v", err)
+	}
 	if !reflect.DeepEqual(app.Tags, []string{"cfgate", "owner"}) {
 		t.Fatalf("Tags = %#v", app.Tags)
 	}
@@ -371,11 +385,18 @@ func TestApplyApplicationExtras(t *testing.T) {
 	if !reflect.DeepEqual(app.Policies, []ApplicationPolicyLink{{ID: "policy-1", Precedence: 3}}) {
 		t.Fatalf("Policies = %#v", app.Policies)
 	}
-	applyApplicationExtras(app, `bad-json`)
+	if err := applyApplicationExtras(app, `bad-json`); err == nil {
+		t.Fatal("applyApplicationExtras() malformed JSON error = nil")
+	}
 	if !reflect.DeepEqual(app.Tags, []string{"cfgate", "owner"}) {
 		t.Fatalf("malformed JSON changed app: %#v", app.Tags)
 	}
-	applyApplicationExtras(nil, `{"tags":["ignored"]}`)
+	if err := applyApplicationExtras(nil, `{"tags":["ignored"]}`); err != nil {
+		t.Fatalf("applyApplicationExtras(nil) error = %v", err)
+	}
+	if err := applyApplicationExtras(app, ""); err != nil {
+		t.Fatalf("applyApplicationExtras(empty) error = %v", err)
+	}
 }
 
 func TestPolicyAndGroupResponseConverters(t *testing.T) {
@@ -498,6 +519,17 @@ func assertApplication(t *testing.T, app *AccessApplication) {
 		!reflect.DeepEqual(app.CORSHeaders.AllowedHeaders, []string{"Authorization"}) {
 		t.Fatalf("CORSHeaders = %+v", app.CORSHeaders)
 	}
+}
+
+func mustApplication(t *testing.T, app *AccessApplication, err error) *AccessApplication {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("application converter error = %v", err)
+	}
+	if app == nil {
+		t.Fatal("application converter returned nil app")
+	}
+	return app
 }
 
 func assertPolicy(t *testing.T, policy *AccessPolicy) {

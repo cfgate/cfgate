@@ -912,8 +912,8 @@ func deleteAccessApplicationOwnerTag(
 	app *cfgatev1alpha1.CloudflareAccessApplication,
 ) error {
 	tag := accessApplicationOwnerTag(app)
-	if tag == accessApplicationTag {
-		return nil
+	if !strings.HasPrefix(tag, accessApplicationTag+":") {
+		return fmt.Errorf("refusing to delete non-owner Access tag %q", tag)
 	}
 	if err := accessService.Client().DeleteAccessTag(ctx, accountID, tag); err != nil {
 		return fmt.Errorf("delete Access application owner tag %s: %w", tag, err)

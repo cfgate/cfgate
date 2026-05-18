@@ -79,6 +79,17 @@ func TestValidateAccessApplicationPath(t *testing.T) {
 	}
 }
 
+func TestAccessApplicationOwnerTagIsScoped(t *testing.T) {
+	app := appWithFinalizer("app", "app")
+	tag := accessApplicationOwnerTag(app)
+	if tag == accessApplicationTag {
+		t.Fatalf("accessApplicationOwnerTag() = %q, want owner-scoped tag", tag)
+	}
+	if !strings.HasPrefix(tag, accessApplicationTag+":") {
+		t.Fatalf("accessApplicationOwnerTag() = %q, want %q prefix", tag, accessApplicationTag+":")
+	}
+}
+
 func TestDeleteStaleAccessApplications(t *testing.T) {
 	deleted := []string{}
 	mock := cloudflare.NewMockClient()

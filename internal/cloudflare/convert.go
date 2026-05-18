@@ -3,6 +3,7 @@ package cloudflare
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
@@ -234,9 +235,9 @@ func approvalGroupsToAPI(groups []ApprovalGroupParam) []zero_trust.ApprovalGroup
 // =============================================================================
 
 // applicationFromNewResponse converts AccessApplicationNewResponse to AccessApplication.
-func applicationFromNewResponse(resp *zero_trust.AccessApplicationNewResponse) *AccessApplication {
+func applicationFromNewResponse(resp *zero_trust.AccessApplicationNewResponse) (*AccessApplication, error) {
 	if resp == nil {
-		return nil
+		return nil, nil
 	}
 
 	// Use flat fields directly from response - no union extraction needed for common fields
@@ -275,15 +276,17 @@ func applicationFromNewResponse(resp *zero_trust.AccessApplicationNewResponse) *
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
-	applyApplicationExtras(app, resp.JSON.RawJSON())
+	if err := applyApplicationExtras(app, resp.JSON.RawJSON()); err != nil {
+		return nil, fmt.Errorf("parse access application create response extras: %w", err)
+	}
 
-	return app
+	return app, nil
 }
 
 // applicationFromGetResponse converts AccessApplicationGetResponse to AccessApplication.
-func applicationFromGetResponse(resp *zero_trust.AccessApplicationGetResponse) *AccessApplication {
+func applicationFromGetResponse(resp *zero_trust.AccessApplicationGetResponse) (*AccessApplication, error) {
 	if resp == nil {
-		return nil
+		return nil, nil
 	}
 
 	app := &AccessApplication{
@@ -320,15 +323,17 @@ func applicationFromGetResponse(resp *zero_trust.AccessApplicationGetResponse) *
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
-	applyApplicationExtras(app, resp.JSON.RawJSON())
+	if err := applyApplicationExtras(app, resp.JSON.RawJSON()); err != nil {
+		return nil, fmt.Errorf("parse access application get response extras: %w", err)
+	}
 
-	return app
+	return app, nil
 }
 
 // applicationFromUpdateResponse converts AccessApplicationUpdateResponse to AccessApplication.
-func applicationFromUpdateResponse(resp *zero_trust.AccessApplicationUpdateResponse) *AccessApplication {
+func applicationFromUpdateResponse(resp *zero_trust.AccessApplicationUpdateResponse) (*AccessApplication, error) {
 	if resp == nil {
-		return nil
+		return nil, nil
 	}
 
 	app := &AccessApplication{
@@ -365,15 +370,17 @@ func applicationFromUpdateResponse(resp *zero_trust.AccessApplicationUpdateRespo
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
-	applyApplicationExtras(app, resp.JSON.RawJSON())
+	if err := applyApplicationExtras(app, resp.JSON.RawJSON()); err != nil {
+		return nil, fmt.Errorf("parse access application update response extras: %w", err)
+	}
 
-	return app
+	return app, nil
 }
 
 // applicationFromListResponse converts AccessApplicationListResponse to AccessApplication.
-func applicationFromListResponse(resp *zero_trust.AccessApplicationListResponse) *AccessApplication {
+func applicationFromListResponse(resp *zero_trust.AccessApplicationListResponse) (*AccessApplication, error) {
 	if resp == nil {
-		return nil
+		return nil, nil
 	}
 
 	app := &AccessApplication{
@@ -410,14 +417,16 @@ func applicationFromListResponse(resp *zero_trust.AccessApplicationListResponse)
 		len(resp.CORSHeaders.AllowedOrigins) > 0 || resp.CORSHeaders.MaxAge > 0 {
 		app.CORSHeaders = corsHeadersFromSDK(&resp.CORSHeaders)
 	}
-	applyApplicationExtras(app, resp.JSON.RawJSON())
+	if err := applyApplicationExtras(app, resp.JSON.RawJSON()); err != nil {
+		return nil, fmt.Errorf("parse access application list response extras: %w", err)
+	}
 
-	return app
+	return app, nil
 }
 
-func applyApplicationExtras(app *AccessApplication, raw string) {
+func applyApplicationExtras(app *AccessApplication, raw string) error {
 	if app == nil || raw == "" {
-		return
+		return nil
 	}
 	var extra struct {
 		Tags         []string `json:"tags"`
@@ -431,7 +440,7 @@ func applyApplicationExtras(app *AccessApplication, raw string) {
 		} `json:"policies"`
 	}
 	if err := json.Unmarshal([]byte(raw), &extra); err != nil {
-		return
+		return fmt.Errorf("unmarshal access application extras: %w", err)
 	}
 	app.Tags = extra.Tags
 	for _, destination := range extra.Destinations {
@@ -447,6 +456,7 @@ func applyApplicationExtras(app *AccessApplication, raw string) {
 			})
 		}
 	}
+	return nil
 }
 
 // =============================================================================
