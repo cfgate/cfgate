@@ -33,6 +33,36 @@ var _ = Describe("CEL Validation E2E", func() {
 		}
 	})
 
+	Context("CloudflareTunnel validation", func() {
+		It("rejects mutually exclusive h2c and HTTP/2 origin defaults", func() {
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("h2c-http2"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Tunnel: cfgatev1alpha1.TunnelIdentity{
+						Name: testID("h2c-http2"),
+					},
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{
+						AccountID: validationAccountID(),
+						SecretRef: cfgatev1alpha1.SecretRef{
+							Name: "cloudflare-credentials",
+						},
+					},
+					OriginDefaults: cfgatev1alpha1.OriginDefaults{
+						HTTP2Origin: true,
+						H2cOrigin:   true,
+					},
+				},
+			}
+
+			err := k8sClient.Create(ctx, tunnel)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("http2Origin and h2cOrigin are mutually exclusive"))
+		})
+	})
+
 	Context("CloudflareAccessPolicy validation", func() {
 		It("rejects reusable policy with no include rules", func() {
 			policy := validReusablePolicy(testID("no-include"), namespace.Name)

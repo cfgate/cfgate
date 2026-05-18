@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	"cfgate.io/cfgate/internal/cloudflared"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -79,6 +80,8 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			deploymentName := fmt.Sprintf("%s-cloudflared", tunnel.Name)
 			deployment := waitForDeploymentSpec(ctx, k8sClient, deploymentName, namespace.Name, 1, DefaultTimeout)
 			Expect(deployment).NotTo(BeNil())
+			Expect(deployment.Spec.Template.Spec.Containers).NotTo(BeEmpty())
+			Expect(deployment.Spec.Template.Spec.Containers[0].Image).To(Equal(cloudflared.DefaultImage))
 
 			// Store for subsequent tests if needed.
 			sharedTunnel = tunnel
