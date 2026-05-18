@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -882,6 +883,58 @@ func getTunnelConfigurationFromCloudflare(ctx context.Context, cfClient *cloudfl
 		return nil, fmt.Errorf("failed to get tunnel configuration: %w", err)
 	}
 	return config, nil
+}
+
+type rawTunnelConfiguration struct {
+	Config rawTunnelConfig `json:"config"`
+}
+
+type rawTunnelConfig struct {
+	Ingress       []rawTunnelIngress `json:"ingress"`
+	OriginRequest map[string]any     `json:"originRequest,omitempty"`
+}
+
+type rawTunnelIngress struct {
+	Hostname      string         `json:"hostname"`
+	Path          string         `json:"path,omitempty"`
+	Service       string         `json:"service"`
+	OriginRequest map[string]any `json:"originRequest,omitempty"`
+}
+
+func getRawTunnelConfigurationFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string) (*rawTunnelConfiguration, error) {
+	config, err := getTunnelConfigurationFromCloudflare(ctx, cfClient, accountID, tunnelID)
+	if err != nil {
+		return nil, err
+	}
+
+	raw := config.JSON.RawJSON()
+	if raw == "" {
+		return nil, fmt.Errorf("tunnel configuration response did not include raw JSON")
+	}
+
+	var parsed rawTunnelConfiguration
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse raw tunnel configuration: %w", err)
+	}
+	return &parsed, nil
+}
+
+func findRawTunnelIngress(config *rawTunnelConfiguration, hostname string) (*rawTunnelIngress, bool) {
+	for i := range config.Config.Ingress {
+		if config.Config.Ingress[i].Hostname == hostname {
+			return &config.Config.Ingress[i], true
+		}
+	}
+	return nil, false
+}
+
+func rawOriginRequestBool(originRequest map[string]any, key string) (bool, bool) {
+	raw, ok := originRequest[key]
+	if !ok {
+		return false, false
+	}
+	value, ok := raw.(bool)
+	return value, ok
 }
 
 // ============================================================

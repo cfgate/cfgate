@@ -131,12 +131,14 @@ mise run fe2e "deletion invariants"
 
 # Annotations
 mise run fe2e "HTTPRoute Annotations"
+mise run fe2e "origin-h2c"
 
 # Multi-CRD interactions
 mise run fe2e "Combined"
 
 # CEL validation (no Cloudflare API needed)
 mise run fe2e "CEL Validation"
+mise run fe2e "CloudflareTunnel validation"
 ```
 
 The filter argument is passed directly through as Ginkgo's `--focus` regex. It is required.
@@ -175,14 +177,14 @@ Run cleanup before E2E tests to ensure a clean slate if previous runs left orpha
 test/e2e/
   e2e_suite_test.go     # Suite setup, framework init, cleanup helpers
   helpers_test.go       # Wait functions, resource creators, CF API verifiers
-  tunnel_test.go        # CloudflareTunnel lifecycle and recovery paths (~20 specs)
+  tunnel_test.go        # CloudflareTunnel lifecycle, default cloudflared image, and recovery paths (~20 specs)
   dns_test.go           # CloudflareDNS sync, cleanup, ownership, and fallback paths (~27 specs)
   access_test.go        # CloudflareAccessPolicy/Application bindings, paths, and service tokens
-  annotations_test.go   # HTTPRoute annotation parsing and propagation (16 specs)
+  annotations_test.go   # HTTPRoute annotation parsing and remote config propagation (16 specs)
   combined_test.go      # Multi-CRD interaction and cross-resource tests (7 specs)
   gateway_route_status_test.go # Gateway / HTTPRoute negative and status coverage (7 specs)
   invariants_test.go    # Structural invariants across tunnel, DNS, Access, Gateway, and HTTPRoute (10 specs)
-  validation_test.go    # CEL validation rules, no Cloudflare API needed (12 specs)
+  validation_test.go    # CEL validation rules, no Cloudflare API needed (13 specs)
 ```
 
 #### Test Naming Convention
@@ -253,6 +255,7 @@ Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller 
 | `waitForTunnelCondition` | Specific condition on tunnel |
 | `waitForTunnelDeleted` | Tunnel removed from K8s |
 | `waitForTunnelDeletedByIDFromCloudflare` | Tunnel removed from Cloudflare API by tunnel ID |
+| `getRawTunnelConfigurationFromCloudflare` | Remote tunnel config including SDK-unknown fields such as `h2cOrigin` |
 | `waitForDeploymentSpec` | cloudflared Deployment matches expected replicas |
 | `waitForDNSReady` | DNS status Ready=True (defined in dns_test.go) |
 | `waitForDNSDeleted` | DNS resource removed from K8s (defined in dns_test.go) |
@@ -265,6 +268,16 @@ Never use bare `Get` followed by `Expect(Update).To(Succeed())`; the controller 
 | `waitForServiceTokenDeletedFromCloudflare` | Service token removed from Cloudflare API |
 | `waitForServiceTokenSecretCreated` | Service token Secret created in K8s |
 | `waitForEventReason` | Matching Kubernetes event emitted |
+
+#### Release-Critical Surface Checks
+
+The E2E suite includes release-critical checks for behavior that is easy to regress across cfgate, Cloudflare API, and cloudflared fork boundaries:
+
+- `cfgate.io/origin-h2c` is verified against Cloudflare's remote tunnel config raw JSON so SDK-unknown fields such as `h2cOrigin` are not silently dropped.
+- CloudflareTunnel CEL validation rejects mutually exclusive `originDefaults.http2Origin` and `originDefaults.h2cOrigin`.
+- CloudflareTunnel deployment tests assert the default cloudflared image points at the inherent-design h2c fork.
+
+These checks cover control-plane config propagation. A public data-plane h2c smoke test is intentionally separate because it depends on DNS propagation and an externally reachable h2c backend.
 
 #### Resource Creators
 

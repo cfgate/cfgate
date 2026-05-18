@@ -1178,6 +1178,25 @@ SIb3DQEBCwUAA0EA+test+certificate+data+here==
 			By("Verifying tunnel ConfigurationSynced condition")
 			waitForTunnelCondition(ctx, k8sClient, sharedTunnel.Name, sharedTunnel.Namespace, "ConfigurationSynced", metav1.ConditionTrue, DefaultTimeout)
 
+			By("Verifying Cloudflare remote config enables h2cOrigin")
+			Eventually(func(g Gomega) {
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, sharedTunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				ingress, ok := findRawTunnelIngress(config, hostname)
+				g.Expect(ok).To(BeTrue(), "expected ingress rule for %s", hostname)
+				g.Expect(ingress.Service).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", svcName, namespace.Name)))
+
+				h2cOrigin, ok := rawOriginRequestBool(ingress.OriginRequest, "h2cOrigin")
+				g.Expect(ok).To(BeTrue(), "expected h2cOrigin in originRequest")
+				g.Expect(h2cOrigin).To(BeTrue())
+
+				http2Origin, ok := rawOriginRequestBool(ingress.OriginRequest, "http2Origin")
+				if ok {
+					g.Expect(http2Origin).To(BeFalse())
+				}
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
 			By("Testing with origin-h2c=false")
 			routeName2 := testID("route-noh2c")
 			hostname2 := fmt.Sprintf("%s.%s", testID("noh2c"), testEnv.CloudflareZoneName)
@@ -1227,6 +1246,21 @@ SIb3DQEBCwUAA0EA+test+certificate+data+here==
 				}
 				return r2.Annotations["cfgate.io/origin-h2c"] == "false"
 			}, ShortTimeout, DefaultInterval).Should(BeTrue())
+
+			By("Verifying Cloudflare remote config leaves h2cOrigin disabled")
+			Eventually(func(g Gomega) {
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, sharedTunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				ingress, ok := findRawTunnelIngress(config, hostname2)
+				g.Expect(ok).To(BeTrue(), "expected ingress rule for %s", hostname2)
+				g.Expect(ingress.Service).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", svcName, namespace.Name)))
+
+				h2cOrigin, ok := rawOriginRequestBool(ingress.OriginRequest, "h2cOrigin")
+				if ok {
+					g.Expect(h2cOrigin).To(BeFalse())
+				}
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 		})
 	})
 })
