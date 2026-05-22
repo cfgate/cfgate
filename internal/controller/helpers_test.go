@@ -270,6 +270,111 @@ func TestCloudflareDNSCollectHostnames(t *testing.T) {
 			t.Fatalf("route-only RecordType = %q, want CNAME", routeConfig.RecordType)
 		}
 	})
+
+	t.Run("route hostname annotation overrides spec hostnames", func(t *testing.T) {
+		scheme := controllerTestScheme(t)
+		gateway := &gatewayv1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "public",
+				Namespace: "apps",
+				Annotations: map[string]string{
+					annotations.AnnotationTunnelRef: "cfgate-system/edge",
+				},
+			},
+		}
+		route := &gatewayv1.HTTPRoute{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "route",
+				Namespace: "apps",
+				Annotations: map[string]string{
+					annotations.AnnotationHostname: "override.example.com",
+				},
+			},
+			Spec: gatewayv1.HTTPRouteSpec{
+				CommonRouteSpec: gatewayv1.CommonRouteSpec{
+					ParentRefs: []gatewayv1.ParentReference{{Name: "public"}},
+				},
+				Hostnames: []gatewayv1.Hostname{"ignored.example.com"},
+			},
+		}
+		dns := &cfgatev1alpha1.CloudflareDNS{
+			ObjectMeta: metav1.ObjectMeta{Name: "dns", Namespace: "cfgate-system"},
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: "edge"},
+				Source: cfgatev1alpha1.DNSHostnameSource{
+					GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: true},
+				},
+			},
+		}
+		tunnel := &cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "cfgate-system"},
+			Status:     cfgatev1alpha1.CloudflareTunnelStatus{TunnelDomain: "edge.cfargotunnel.com"},
+		}
+
+		r := &CloudflareDNSReconciler{
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route).Build(),
+		}
+		hostnames, err := r.collectHostnamesFromRoutes(context.Background(), dns, tunnel)
+		if err != nil {
+			t.Fatalf("collectHostnamesFromRoutes() error = %v", err)
+		}
+		if _, ok := hostnames["override.example.com"]; !ok || len(hostnames) != 1 {
+			t.Fatalf("hostnames = %#v, want only hostname annotation override", hostnames)
+		}
+	})
+
+	t.Run("route discovery falls back to listener hostname", func(t *testing.T) {
+		scheme := controllerTestScheme(t)
+		listenerHostname := gatewayv1.Hostname("listener.example.com")
+		gateway := &gatewayv1.Gateway{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "public",
+				Namespace: "apps",
+				Annotations: map[string]string{
+					annotations.AnnotationTunnelRef: "cfgate-system/edge",
+				},
+			},
+			Spec: gatewayv1.GatewaySpec{
+				Listeners: []gatewayv1.Listener{{
+					Name:     "web",
+					Protocol: gatewayv1.HTTPProtocolType,
+					Hostname: &listenerHostname,
+				}},
+			},
+		}
+		route := &gatewayv1.HTTPRoute{
+			ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "apps"},
+			Spec: gatewayv1.HTTPRouteSpec{
+				CommonRouteSpec: gatewayv1.CommonRouteSpec{
+					ParentRefs: []gatewayv1.ParentReference{{Name: "public"}},
+				},
+			},
+		}
+		dns := &cfgatev1alpha1.CloudflareDNS{
+			ObjectMeta: metav1.ObjectMeta{Name: "dns", Namespace: "cfgate-system"},
+			Spec: cfgatev1alpha1.CloudflareDNSSpec{
+				TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: "edge"},
+				Source: cfgatev1alpha1.DNSHostnameSource{
+					GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{Enabled: true},
+				},
+			},
+		}
+		tunnel := &cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "cfgate-system"},
+			Status:     cfgatev1alpha1.CloudflareTunnelStatus{TunnelDomain: "edge.cfargotunnel.com"},
+		}
+
+		r := &CloudflareDNSReconciler{
+			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route).Build(),
+		}
+		hostnames, err := r.collectHostnamesFromRoutes(context.Background(), dns, tunnel)
+		if err != nil {
+			t.Fatalf("collectHostnamesFromRoutes() error = %v", err)
+		}
+		if _, ok := hostnames["listener.example.com"]; !ok || len(hostnames) != 1 {
+			t.Fatalf("hostnames = %#v, want listener hostname fallback", hostnames)
+		}
+	})
 }
 
 func TestCloudflareDNSSyncRecords(t *testing.T) {

@@ -420,6 +420,83 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
 		})
 
+		It("should mount caPoolSecretRef and sync remote global caPool", func() {
+			caPoolTunnelName := testID("capool-secret")
+
+			By("Creating origin CA Secret")
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("origin-ca"),
+					Namespace: namespace.Name,
+				},
+				Type: corev1.SecretTypeOpaque,
+				StringData: map[string]string{
+					"bundle.pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+
+			By("Creating CloudflareTunnel CR with caPoolSecretRef")
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("capool-secret-cr"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Tunnel: cfgatev1alpha1.TunnelIdentity{
+						Name: caPoolTunnelName,
+					},
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{
+						AccountID: testEnv.CloudflareAccountID,
+						SecretRef: cfgatev1alpha1.SecretRef{
+							Name: "cloudflare-credentials",
+						},
+					},
+					FallbackCredentialsRef: e2eFallbackCredentialsRef(),
+					Cloudflared: cfgatev1alpha1.CloudflaredConfig{
+						Replicas: 1,
+					},
+					OriginDefaults: cfgatev1alpha1.OriginDefaults{
+						CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{
+							Name: secret.Name,
+							Key:  "bundle.pem",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, tunnel)).To(Succeed())
+
+			By("Waiting for tunnel to become ready")
+			tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, LongTimeout)
+
+			By("Verifying Secret is mounted as ca.pem")
+			deploymentName := fmt.Sprintf("%s-cloudflared", tunnel.Name)
+			deployment := waitForDeploymentSpec(ctx, k8sClient, deploymentName, namespace.Name, 1, LongTimeout)
+			Expect(deployment.Spec.Template.Spec.Volumes).To(ContainElement(SatisfyAll(
+				HaveField("Name", cloudflared.OriginCAPoolVolumeName),
+				HaveField("Secret.SecretName", secret.Name),
+				HaveField("Secret.Items", ContainElement(SatisfyAll(
+					HaveField("Key", "bundle.pem"),
+					HaveField("Path", cloudflared.OriginCAPoolFileName),
+				))),
+			)))
+			Expect(deployment.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(SatisfyAll(
+				HaveField("Name", cloudflared.OriginCAPoolVolumeName),
+				HaveField("MountPath", cloudflared.OriginCAPoolMountPath),
+				HaveField("ReadOnly", true),
+			)))
+
+			By("Verifying Cloudflare remote config includes global caPool")
+			Eventually(func(g Gomega) {
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				caPool, ok := rawOriginRequestString(config.Config.OriginRequest, "caPool")
+				g.Expect(ok).To(BeTrue(), "expected global caPool in originRequest")
+				g.Expect(caPool).To(Equal(cloudflared.OriginCAPoolPath()))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+		})
+
 		It("should update cloudflared Deployment when spec changes", func() {
 			scaleTunnelName := testID("scale")
 

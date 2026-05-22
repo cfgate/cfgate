@@ -100,6 +100,18 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 		return ctrl.Result{Requeue: true}, nil
 	}
 
+	if err := validateAccessApplicationType(&app); err != nil {
+		log.Error(err, "unsupported access application type")
+		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
+			status.NewCondition(status.ConditionTypeApplicationSynced, metav1.ConditionFalse, status.ReasonUnsupportedApplicationType, status.Error2ConditionMsg(err), app.Generation),
+		)
+		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
+			status.NewAccessApplicationReadyCondition(app.Status.Conditions, app.Generation),
+		)
+		_ = r.updateApplicationStatus(ctx, &app)
+		return ctrl.Result{RequeueAfter: accessApplicationRequeueAfterError}, nil
+	}
+
 	targets, refGrantOK, err := r.resolveApplicationTargets(ctx, &app)
 	if err != nil {
 		log.Error(err, "failed to resolve access application targets")
@@ -530,6 +542,14 @@ func (r *CloudflareAccessApplicationReconciler) resolveCloudflareRefCredentials(
 	}, nil
 }
 
+func validateAccessApplicationType(app *cfgatev1alpha1.CloudflareAccessApplication) error {
+	appType := app.Spec.Application.Type
+	if appType == "" || appType == "self_hosted" {
+		return nil
+	}
+	return fmt.Errorf("unsupported access application type %q: only self_hosted is supported", appType)
+}
+
 func (r *CloudflareAccessApplicationReconciler) gatewayForApplicationTarget(ctx context.Context, target accessApplicationTarget) (*gwapiv1.Gateway, error) {
 	if target.Kind == "Gateway" {
 		var gateway gwapiv1.Gateway
@@ -706,6 +726,10 @@ func buildAccessApplicationParams(app *cfgatev1alpha1.CloudflareAccessApplicatio
 	if multipleTargets {
 		name = name + "-" + sanitizeAccessApplicationName(target.Domain)
 	}
+	appType := cfg.Type
+	if appType == "" {
+		appType = "self_hosted"
+	}
 	httpOnly := cfg.HttpOnlyCookieAttribute
 	return cloudflare.ApplicationParams{
 		Name:                        name,
@@ -713,7 +737,7 @@ func buildAccessApplicationParams(app *cfgatev1alpha1.CloudflareAccessApplicatio
 		Destinations:                []string{target.Domain},
 		Tags:                        []string{accessApplicationTag, accessApplicationOwnerTag(app)},
 		Policies:                    append([]cloudflare.ApplicationPolicyLink(nil), policies...),
-		Type:                        cfg.Type,
+		Type:                        appType,
 		SessionDuration:             cfg.SessionDuration,
 		AllowedIdps:                 cfg.AllowedIdps,
 		AutoRedirectToIdentity:      cfg.AutoRedirectToIdentity,

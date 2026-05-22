@@ -138,7 +138,9 @@ metadata:
 
 #### `cfgate.io/origin-ca-pool`
 
-Path to a CA certificate pool file used to verify the origin server's TLS certificate. The path must be accessible inside the cloudflared container.
+Literal in-container path to a CA certificate pool file used to verify the origin server's TLS certificate. cfgate sends this value to Cloudflare as per-ingress `originRequest.caPool`, but does not mount files for annotation paths.
+
+Use `spec.originDefaults.caPoolSecretRef` on `CloudflareTunnel` when cfgate should mount a Kubernetes Secret. That managed Secret mount is available at `/etc/cfgate/origin-ca-pool/ca.pem`.
 
 **Valid values:** File path string
 

@@ -86,6 +86,36 @@ func TestBuildArgs(t *testing.T) {
 		}
 	})
 
+	t.Run("default metrics port is 44483", func(t *testing.T) {
+		tunnel := newDeploymentTestTunnel("test")
+		args := buildArgs(tunnel)
+
+		found := false
+		for i, arg := range args {
+			if arg == "--metrics" && i+1 < len(args) && args[i+1] == "0.0.0.0:44483" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("args should contain default metrics address, got %v", args)
+		}
+	})
+
+	t.Run("metrics disabled omits metrics arg", func(t *testing.T) {
+		disabled := false
+		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
+			t.Spec.Cloudflared.Metrics.Enabled = &disabled
+		})
+		args := buildArgs(tunnel)
+
+		for _, arg := range args {
+			if arg == "--metrics" {
+				t.Errorf("args should not contain metrics when disabled, got %v", args)
+			}
+		}
+	})
+
 	t.Run("protocol specified", func(t *testing.T) {
 		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
 			t.Spec.Cloudflared.Protocol = "quic"
@@ -181,6 +211,18 @@ func TestBuildContainer(t *testing.T) {
 			t.Error("default resource limits should be set")
 		}
 	})
+
+	t.Run("metrics disabled omits port", func(t *testing.T) {
+		disabled := false
+		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
+			t.Spec.Cloudflared.Metrics.Enabled = &disabled
+		})
+		container := buildContainer(tunnel, "test-token-secret")
+
+		if len(container.Ports) != 0 {
+			t.Fatalf("Ports = %+v, want none", container.Ports)
+		}
+	})
 }
 
 func TestBuildDeployment(t *testing.T) {
@@ -259,6 +301,63 @@ func TestBuildDeployment(t *testing.T) {
 		want := fmt.Sprintf("%s-cloudflared", "my-tunnel")
 		if deployment.Name != want {
 			t.Errorf("deployment name = %q, want %q", deployment.Name, want)
+		}
+	})
+
+	t.Run("metrics disabled omits probes", func(t *testing.T) {
+		disabled := false
+		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
+			t.Spec.Cloudflared.Metrics.Enabled = &disabled
+		})
+		deployment := builder.BuildDeployment(tunnel, "token-value")
+		container := deployment.Spec.Template.Spec.Containers[0]
+
+		if container.LivenessProbe != nil || container.ReadinessProbe != nil {
+			t.Fatalf("probes = (%+v, %+v), want nil", container.LivenessProbe, container.ReadinessProbe)
+		}
+	})
+
+	t.Run("ca pool secret volume and mount", func(t *testing.T) {
+		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
+			t.Spec.OriginDefaults.CAPoolSecretRef = &cfgatev1alpha1.CAPoolSecretRef{
+				Name: "origin-ca",
+				Key:  "bundle.pem",
+			}
+		})
+		deployment := builder.BuildDeployment(tunnel, "token-value")
+
+		if len(deployment.Spec.Template.Spec.Volumes) != 1 {
+			t.Fatalf("volumes = %+v, want 1", deployment.Spec.Template.Spec.Volumes)
+		}
+		volume := deployment.Spec.Template.Spec.Volumes[0]
+		if volume.Name != OriginCAPoolVolumeName || volume.Secret == nil || volume.Secret.SecretName != "origin-ca" {
+			t.Fatalf("volume = %+v, want origin CA Secret volume", volume)
+		}
+		if got := volume.Secret.Items[0].Key; got != "bundle.pem" {
+			t.Fatalf("Secret item key = %q, want bundle.pem", got)
+		}
+		if got := volume.Secret.Items[0].Path; got != OriginCAPoolFileName {
+			t.Fatalf("Secret item path = %q, want %q", got, OriginCAPoolFileName)
+		}
+
+		mounts := deployment.Spec.Template.Spec.Containers[0].VolumeMounts
+		if len(mounts) != 1 {
+			t.Fatalf("mounts = %+v, want 1", mounts)
+		}
+		if mounts[0].Name != OriginCAPoolVolumeName || mounts[0].MountPath != OriginCAPoolMountPath || !mounts[0].ReadOnly {
+			t.Fatalf("mount = %+v, want read-only origin CA mount", mounts[0])
+		}
+	})
+
+	t.Run("ca pool empty key defaults to ca.crt", func(t *testing.T) {
+		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
+			t.Spec.OriginDefaults.CAPoolSecretRef = &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"}
+		})
+		deployment := builder.BuildDeployment(tunnel, "token-value")
+		item := deployment.Spec.Template.Spec.Volumes[0].Secret.Items[0]
+
+		if item.Key != DefaultOriginCAPoolSecretKey {
+			t.Fatalf("Secret item key = %q, want %q", item.Key, DefaultOriginCAPoolSecretKey)
 		}
 	})
 }

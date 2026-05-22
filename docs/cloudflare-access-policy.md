@@ -57,6 +57,13 @@ Supported rule types include:
 
 `serviceToken.name` references an entry in `spec.serviceTokens`; the controller creates the token before syncing the policy and uses the created Cloudflare ID in the policy rule.
 
+Each `include`, `exclude`, and `require` item must specify exactly one selector. The controller rejects invalid selector combinations before calling Cloudflare so status carries a local validation error.
+
+Decision compatibility:
+
+- `non_identity` requires at least one `include` rule using `serviceToken` or `anyValidServiceToken`.
+- `bypass` cannot use identity selectors such as `email`, `emailList`, `emailDomain`, `oidcClaim`, `gsuiteGroup`, or `group`.
+
 ## Status
 
 | Field | Description |

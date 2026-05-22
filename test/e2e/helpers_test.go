@@ -937,6 +937,15 @@ func rawOriginRequestBool(originRequest map[string]any, key string) (bool, bool)
 	return value, ok
 }
 
+func rawOriginRequestString(originRequest map[string]any, key string) (string, bool) {
+	raw, ok := originRequest[key]
+	if !ok {
+		return "", false
+	}
+	value, ok := raw.(string)
+	return value, ok
+}
+
 // ============================================================
 // CloudflareDNS Creation Helpers
 // ============================================================

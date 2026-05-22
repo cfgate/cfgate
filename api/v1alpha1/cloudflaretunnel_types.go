@@ -167,7 +167,7 @@ type CloudflaredConfig struct {
 type MetricsConfig struct {
 	// Enabled enables the metrics endpoint.
 	// +kubebuilder:default=true
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// Port is the port for the metrics endpoint.
 	// +kubebuilder:validation:Minimum=1

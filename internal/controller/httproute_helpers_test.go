@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/controller/annotations"
@@ -126,7 +127,8 @@ func TestValidateParentRef(t *testing.T) {
 		Spec: gatewayv1.GatewaySpec{
 			GatewayClassName: "cfgate",
 			Listeners: []gatewayv1.Listener{{
-				Name: listenerName,
+				Name:     listenerName,
+				Protocol: gatewayv1.HTTPProtocolType,
 			}},
 		},
 	}
@@ -156,10 +158,31 @@ func TestValidateParentRef(t *testing.T) {
 	if statusResult.Conditions[0].Reason != status.ReasonNoTunnelRef {
 		t.Fatalf("validateParentRef() reason = %q, want %q", statusResult.Conditions[0].Reason, status.ReasonNoTunnelRef)
 	}
+
+	same := gatewayv1.NamespacesFromSame
+	gateway = gateway.DeepCopy()
+	gateway.Annotations = map[string]string{annotations.AnnotationTunnelRef: "cfgate-system/tunnel"}
+	gateway.Spec.Listeners[0].AllowedRoutes = &gatewayv1.AllowedRoutes{
+		Namespaces: &gatewayv1.RouteNamespaces{From: &same},
+	}
+	route.Namespace = "other"
+	gatewayNS := gatewayv1.Namespace("app")
+	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass)
+	statusResult = r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
+		Namespace:   &gatewayNS,
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	if statusResult.Conditions[0].Reason != status.ReasonNotAllowedByListeners {
+		t.Fatalf("validateParentRef() reason = %q, want %q", statusResult.Conditions[0].Reason, status.ReasonNotAllowedByListeners)
+	}
 }
 
 func TestResolveBackends(t *testing.T) {
 	scheme := controllerTestScheme(t)
+	if err := gatewayv1b1.Install(scheme); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "app"},
 	}
@@ -186,6 +209,39 @@ func TestResolveBackends(t *testing.T) {
 	condition = r.resolveBackends(context.Background(), route)
 	if condition.Status != metav1.ConditionFalse || condition.Reason != status.ReasonBackendNotFound {
 		t.Fatalf("resolveBackends() = %+v, want missing backend condition", condition)
+	}
+
+	backendNS := gatewayv1.Namespace("backend")
+	route.Namespace = "app"
+	route.Spec.Rules[0].BackendRefs[0].Name = "svc"
+	route.Spec.Rules[0].BackendRefs[0].Namespace = &backendNS
+	crossNSService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "backend"}}
+	r = newHTTPRouteTestReconciler(t, scheme, crossNSService)
+	condition = r.resolveBackends(context.Background(), route)
+	if condition.Status != metav1.ConditionFalse || condition.Reason != status.ReasonRefNotPermitted {
+		t.Fatalf("resolveBackends() = %+v, want RefNotPermitted", condition)
+	}
+
+	serviceName := gatewayv1.ObjectName("svc")
+	grant := &gatewayv1b1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: "allow-svc", Namespace: "backend"},
+		Spec: gatewayv1b1.ReferenceGrantSpec{
+			From: []gatewayv1b1.ReferenceGrantFrom{{
+				Group:     gatewayv1.Group(gatewayv1.GroupName),
+				Kind:      gatewayv1.Kind("HTTPRoute"),
+				Namespace: gatewayv1.Namespace("app"),
+			}},
+			To: []gatewayv1b1.ReferenceGrantTo{{
+				Group: gatewayv1.Group(""),
+				Kind:  gatewayv1.Kind("Service"),
+				Name:  &serviceName,
+			}},
+		},
+	}
+	r = newHTTPRouteTestReconciler(t, scheme, crossNSService, grant)
+	condition = r.resolveBackends(context.Background(), route)
+	if condition.Status != metav1.ConditionTrue {
+		t.Fatalf("resolveBackends() = %+v, want resolved refs", condition)
 	}
 }
 
@@ -242,7 +298,6 @@ func TestValidatePathTypes(t *testing.T) {
 
 	r.validatePathTypes(route)
 
-	assertEventContains(t, recorder, "UnsupportedPathType")
 	assertEventContains(t, recorder, "PathTypeNotice")
 }
 

@@ -43,8 +43,8 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.ownership.ownerId` | `string` | *(namespace/name of the CloudflareDNS resource)* | No | Cluster/installation identifier for TXT ownership records. Max 253 chars. Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(/[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$`. |
 | `spec.ownership.txtRecord.enabled` | `*bool` | `true` (nil defaults to true) | No | Enables TXT record-based ownership tracking. |
 | `spec.ownership.txtRecord.prefix` | `string` | `_cfgate` | No | Prefix for TXT record names. Max 63 chars. |
-| `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated (alpha.13).** Ignored; the controller always writes a fixed comment. Schema removal is deferred to a future cleanup. |
-| `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated (alpha.13).** Ignored; the controller always uses `"managed by cfgate"`. Schema removal is deferred to a future cleanup. |
+| `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller always writes a fixed comment. Schema removal is deferred to a future cleanup. |
+| `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller always uses `"managed by cfgate"`. Schema removal is deferred to a future cleanup. |
 | `spec.cleanupPolicy.deleteOnRouteRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the source route is deleted. |
 | `spec.cleanupPolicy.deleteOnResourceRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the CloudflareDNS resource itself is deleted (finalizer cleanup). |
 | `spec.cleanupPolicy.onlyManaged` | `*bool` | `true` (nil defaults to true) | No | Only delete records that were created by cfgate, verified via ownership tracking. |
@@ -208,7 +208,7 @@ This pattern is compatible with external-dns. The TXT record name is `{prefix}.{
 
 **Comment ownership (compatibility only):** The controller writes a fixed `"managed by cfgate"` comment on all managed DNS records. This is informational only and is not used for ownership verification or conflict detection. TXT record ownership is the sole mechanism for multi-cluster safety.
 
-> **Deprecation notice (alpha.13):** The `spec.ownership.comment.enabled` and `spec.ownership.comment.template` fields are deprecated and ignored. The controller always writes `"managed by cfgate"` regardless of these values. The fields remain in the schema for compatibility, and schema removal is deferred to a future cleanup pass. Removing the `comment` section from `spec.ownership` produces no behavioral change.
+> **Deprecation notice (`v0.1.0-alpha.13`):** The `spec.ownership.comment.enabled` and `spec.ownership.comment.template` fields are deprecated and ignored. The controller always writes `"managed by cfgate"` regardless of these values. The fields remain in the schema for compatibility, and schema removal is deferred to a future cleanup pass. Removing the `comment` section from `spec.ownership` produces no behavioral change.
 
 **`ownerId`:** Identifies this installation. Defaults to `{namespace}/{name}` of the CloudflareDNS resource. Override this when you need explicit control over the identity (e.g., migrating between CloudflareDNS resources).
 
