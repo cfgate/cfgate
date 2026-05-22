@@ -250,10 +250,6 @@ spec:
                     description: Type is the application type.
                     enum:
                     - self_hosted
-                    - saas
-                    - ssh
-                    - vnc
-                    - browser_isolation
                     type: string
                 type: object
                 x-kubernetes-validations:

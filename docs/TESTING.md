@@ -24,6 +24,8 @@ Current tunnel correctness coverage includes:
 - `cfgate.io/hostname` override and listener hostname fallback for tunnel/DNS route discovery
 - HTTPRoute path translation to anchored cloudflared regexes
 - cross-namespace backend `Service` `ReferenceGrant` enforcement
+- HTTPRoute unsupported backend status for multiple backendRefs and non-Service backend group/kind values
+- CloudflareAccessApplication runtime validation for stale non-`self_hosted` application types
 
 E2E image assumptions use the cfgate cloudflared fork. h2c-specific E2E assertions require `ghcr.io/inherent-design/cloudflared:*‑h2c.*`; upstream cloudflared image overrides are no-h2c mode only.
 
@@ -190,10 +192,10 @@ test/e2e/
   helpers_test.go       # Wait functions, resource creators, CF API verifiers
   tunnel_test.go        # CloudflareTunnel lifecycle, default cloudflared image, and recovery paths (~20 specs)
   dns_test.go           # CloudflareDNS sync, cleanup, ownership, and fallback paths (~27 specs)
-  access_test.go        # CloudflareAccessPolicy/Application bindings, paths, and service tokens
+  access_test.go        # CloudflareAccessPolicy/Application bindings, paths, service tokens, and Access Application type admission
   annotations_test.go   # HTTPRoute annotation parsing and remote config propagation (16 specs)
   combined_test.go      # Multi-CRD interaction and cross-resource tests (7 specs)
-  gateway_route_status_test.go # Gateway / HTTPRoute negative and status coverage (7 specs)
+  gateway_route_status_test.go # Gateway / HTTPRoute negative and status coverage, including unsupported backendRefs (9 specs)
   invariants_test.go    # Structural invariants across tunnel, DNS, Access, Gateway, and HTTPRoute (10 specs)
   validation_test.go    # CEL validation rules, no Cloudflare API needed (13 specs)
 ```

@@ -34,7 +34,13 @@ Key fields:
 | `application` | Access Application settings shared by generated apps. `path` overrides derived target paths. |
 | `policyRefs` | Required reusable policies to attach. Omit `precedence` on every ref to use list order starting at `1`, or set `precedence` on every ref for custom ordering. Do not mix modes; explicit precedence values must be unique. Duplicate namespace/name pairs in one list are invalid. |
 
-Only `application.type: self_hosted` is supported in this release. Other Cloudflare Access application types (`saas`, `ssh`, `vnc`, `browser_isolation`) are deferred and are rejected with `ApplicationSynced=False`, reason `UnsupportedApplicationType`.
+The current CRD admits only `application.type: self_hosted`. That matches cfgate's Gateway/HTTPRoute model: targets resolve to Cloudflare Tunnel ingress rules backed by Kubernetes `Service` origins. Non-self-hosted Cloudflare Access app types are deferred because they require separate Cloudflare payloads and likely a different cfgate API shape:
+
+- `saas` represents third-party SaaS SSO applications, not Kubernetes `Service` traffic.
+- Browser SSH/VNC/RDP and browser isolation apps use protocol-specific Cloudflare request bodies instead of the current HTTP/HTTPS tunnel ingress shape.
+- `bookmark` controls App Launcher visibility and does not protect routed traffic.
+
+If an old CRD or stale manifest still lets another type reach the controller, cfgate rejects it with `ApplicationSynced=False`, reason `UnsupportedApplicationType`.
 
 Cross-namespace target references require a `ReferenceGrant` in the target namespace. Cross-namespace policy references require a `ReferenceGrant` in the policy namespace.
 
