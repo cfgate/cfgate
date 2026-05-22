@@ -269,7 +269,7 @@ type AccessApplication struct {
 // EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
 // EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
 //
-// +kubebuilder:validation:XValidation:rule="[has(self.ip), has(self.ipList), has(self.country), has(self.everyone), has(self.serviceToken), has(self.anyValidServiceToken), has(self.email), has(self.emailList), has(self.emailDomain), has(self.oidcClaim), has(self.gsuiteGroup), has(self.group)].exists(x, x)",message="at least one rule type must be specified"
+// +kubebuilder:validation:XValidation:rule="[has(self.ip), has(self.ipList), has(self.country), has(self.everyone), has(self.serviceToken), has(self.anyValidServiceToken), has(self.email), has(self.emailList), has(self.emailDomain), has(self.oidcClaim), has(self.gsuiteGroup), has(self.group)].filter(x, x).size() == 1",message="exactly one rule type must be specified"
 type AccessRule struct {
 	// ============================================================
 	// P0: No IdP Required

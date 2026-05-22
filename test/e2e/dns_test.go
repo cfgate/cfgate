@@ -780,6 +780,74 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 		})
 
+		It("should use cfgate.io/hostname for tunnel config and DNS route discovery", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+			By("Creating Gateway-backed discovery resources")
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("gw")
+			tunnelRef := fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name)
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, tunnelRef)
+
+			By("Creating an HTTPRoute with a hostname override")
+			serviceName := testID("svc")
+			createTestService(ctx, k8sClient, serviceName, namespace.Name, 8080)
+			overrideHostname := fmt.Sprintf("%s.%s", testID("override"), testEnv.CloudflareZoneName)
+			ignoredHostname := fmt.Sprintf("%s.%s", testID("ignored"), testEnv.CloudflareZoneName)
+			route := createHTTPRoute(ctx, k8sClient, testID("route"), namespace.Name, gatewayName, []string{ignoredHostname}, serviceName, 8080)
+			updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+				annotations["e2e.dns/hostname-override"] = "enabled"
+				annotations["cfgate.io/hostname"] = overrideHostname
+			})
+
+			By("Creating CloudflareDNS route discovery")
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-hostname-override"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: sharedTunnel.Name},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{
+						{Name: testEnv.CloudflareZoneName},
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						GatewayRoutes: &cfgatev1alpha1.DNSGatewayRoutesSource{
+							Enabled:          true,
+							AnnotationFilter: "e2e.dns/hostname-override=enabled",
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+
+			By("Verifying remote tunnel config uses the override hostname")
+			Eventually(func(g Gomega) {
+				var current cfgatev1alpha1.CloudflareTunnel
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sharedTunnel), &current)).To(Succeed())
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, current.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				_, ok := findRawTunnelIngress(config, overrideHostname)
+				g.Expect(ok).To(BeTrue(), "expected ingress rule for hostname override")
+				_, ok = findRawTunnelIngress(config, ignoredHostname)
+				g.Expect(ok).To(BeFalse(), "ignored spec hostname should not be synced")
+			}, LongTimeout, DefaultInterval).Should(Succeed())
+
+			By("Verifying DNS sync uses the override hostname")
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, overrideHostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil())
+				g.Expect(record.Content).To(Equal(sharedTunnel.Status.TunnelDomain))
+
+				ignoredRecord, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, ignoredHostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ignoredRecord).To(BeNil())
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+		})
+
 		It("should use fallback credentials during DNS deletion when primary tunnel credentials disappear", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
 			By("Creating dedicated primary credentials for a deletion-path tunnel")
 			primarySecretName := testID("primary-creds")

@@ -43,6 +43,7 @@ func TestNewTunnelConfig(t *testing.T) {
 		wantHTTP2        bool
 		wantNoTLSVerify  bool
 		wantTimeout      string
+		wantCAPool       string
 		wantFallback     string
 		wantCatchAllLast bool
 	}{
@@ -99,6 +100,17 @@ func TestNewTunnelConfig(t *testing.T) {
 			wantFallback:     "http_status:404",
 		},
 		{
+			name: "ca pool secret ref set",
+			tunnel: newTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
+				t.Spec.OriginDefaults.CAPoolSecretRef = &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"}
+			}),
+			tunnelID:         "test-id",
+			wantOriginNil:    false,
+			wantCAPool:       OriginCAPoolPath(),
+			wantCatchAllLast: true,
+			wantFallback:     "http_status:404",
+		},
+		{
 			name: "custom fallback target",
 			tunnel: newTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
 				t.Spec.FallbackTarget = "http://fallback.default.svc:8080"
@@ -137,6 +149,9 @@ func TestNewTunnelConfig(t *testing.T) {
 				}
 				if tt.wantTimeout != "" && config.OriginRequest.ConnectTimeout != tt.wantTimeout {
 					t.Errorf("ConnectTimeout = %q, want %q", config.OriginRequest.ConnectTimeout, tt.wantTimeout)
+				}
+				if tt.wantCAPool != "" && config.OriginRequest.CAPool != tt.wantCAPool {
+					t.Errorf("CAPool = %q, want %q", config.OriginRequest.CAPool, tt.wantCAPool)
 				}
 			}
 
@@ -677,7 +692,7 @@ func TestParseConfig(t *testing.T) {
 	roundTrip := &TunnelConfig{
 		TunnelID:     "test-id",
 		NoAutoUpdate: true,
-		Metrics:      "0.0.0.0:2000",
+		Metrics:      "0.0.0.0:44483",
 		Ingress: []IngressRule{
 			{Hostname: "example.com", Service: "http://web:80"},
 			{Service: "http_status:404"},
@@ -925,7 +940,7 @@ func TestMarshalExtended(t *testing.T) {
 		original := &TunnelConfig{
 			TunnelID:     "test-id",
 			NoAutoUpdate: true,
-			Metrics:      "0.0.0.0:2000",
+			Metrics:      "0.0.0.0:44483",
 			Protocol:     "quic",
 			Ingress: []IngressRule{
 				{Hostname: "example.com", Service: "http://web:80"},

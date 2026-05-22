@@ -20,7 +20,19 @@ const (
 	DefaultImage = "ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1"
 
 	// DefaultMetricsPort is the default port for cloudflared metrics.
-	DefaultMetricsPort = 2000
+	DefaultMetricsPort = 44483
+
+	// OriginCAPoolVolumeName is the Secret volume name for origin CA certificates.
+	OriginCAPoolVolumeName = "origin-ca-pool"
+
+	// OriginCAPoolMountPath is where the origin CA Secret is mounted in cloudflared.
+	OriginCAPoolMountPath = "/etc/cfgate/origin-ca-pool"
+
+	// OriginCAPoolFileName is the mounted filename for the origin CA bundle.
+	OriginCAPoolFileName = "ca.pem"
+
+	// DefaultOriginCAPoolSecretKey is used when caPoolSecretRef.key is empty.
+	DefaultOriginCAPoolSecretKey = "ca.crt"
 
 	// TokenEnvVar is the environment variable name for the tunnel token.
 	TokenEnvVar = "TUNNEL_TOKEN"
@@ -69,10 +81,11 @@ func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel
 	}
 
 	container := buildContainer(tunnel, tokenSecretName)
-	liveness, readiness := buildProbes(getMetricsPort(tunnel))
-
-	container.LivenessProbe = liveness
-	container.ReadinessProbe = readiness
+	if metricsEnabled(tunnel) {
+		liveness, readiness := buildProbes(getMetricsPort(tunnel))
+		container.LivenessProbe = liveness
+		container.ReadinessProbe = readiness
+	}
 
 	// Merge pod annotations from spec
 	podAnnotations := map[string]string{}
@@ -108,6 +121,8 @@ func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel
 			},
 		},
 	}
+
+	addOriginCAPoolVolume(tunnel, deployment)
 
 	// Add node selector if specified
 	if len(tunnel.Spec.Cloudflared.NodeSelector) > 0 {
@@ -203,8 +218,6 @@ func buildContainer(tunnel *cfgatev1alpha1.CloudflareTunnel, tokenSecretName str
 	}
 
 	args := buildArgs(tunnel)
-	metricsPort := getMetricsPort(tunnel)
-
 	container := corev1.Container{
 		Name:            "cloudflared",
 		Image:           image,
@@ -229,13 +242,22 @@ func buildContainer(tunnel *cfgatev1alpha1.CloudflareTunnel, tokenSecretName str
 				},
 			},
 		},
-		Ports: []corev1.ContainerPort{
-			{
-				Name:          "metrics",
-				ContainerPort: metricsPort,
-				Protocol:      corev1.ProtocolTCP,
-			},
-		},
+	}
+
+	if metricsEnabled(tunnel) {
+		container.Ports = []corev1.ContainerPort{{
+			Name:          "metrics",
+			ContainerPort: getMetricsPort(tunnel),
+			Protocol:      corev1.ProtocolTCP,
+		}}
+	}
+
+	if tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      OriginCAPoolVolumeName,
+			MountPath: OriginCAPoolMountPath,
+			ReadOnly:  true,
+		})
 	}
 
 	// Add resource requirements if specified
@@ -296,9 +318,9 @@ func buildArgs(tunnel *cfgatev1alpha1.CloudflareTunnel) []string {
 		"--no-autoupdate",
 	}
 
-	// Add metrics endpoint
-	metricsPort := getMetricsPort(tunnel)
-	args = append(args, "--metrics", fmt.Sprintf("0.0.0.0:%d", metricsPort))
+	if metricsEnabled(tunnel) {
+		args = append(args, "--metrics", fmt.Sprintf("0.0.0.0:%d", getMetricsPort(tunnel)))
+	}
 
 	// Add protocol if specified
 	if tunnel.Spec.Cloudflared.Protocol != "" && tunnel.Spec.Cloudflared.Protocol != "auto" {
@@ -320,4 +342,40 @@ func getMetricsPort(tunnel *cfgatev1alpha1.CloudflareTunnel) int32 {
 		return tunnel.Spec.Cloudflared.Metrics.Port
 	}
 	return DefaultMetricsPort
+}
+
+// OriginCAPoolPath returns the in-container CA bundle path used by cloudflared.
+func OriginCAPoolPath() string {
+	return fmt.Sprintf("%s/%s", OriginCAPoolMountPath, OriginCAPoolFileName)
+}
+
+func metricsEnabled(tunnel *cfgatev1alpha1.CloudflareTunnel) bool {
+	return tunnel.Spec.Cloudflared.Metrics.Enabled == nil || *tunnel.Spec.Cloudflared.Metrics.Enabled
+}
+
+func originCAPoolSecretKey(ref *cfgatev1alpha1.CAPoolSecretRef) string {
+	if ref == nil || ref.Key == "" {
+		return DefaultOriginCAPoolSecretKey
+	}
+	return ref.Key
+}
+
+func addOriginCAPoolVolume(tunnel *cfgatev1alpha1.CloudflareTunnel, deployment *appsv1.Deployment) {
+	ref := tunnel.Spec.OriginDefaults.CAPoolSecretRef
+	if ref == nil {
+		return
+	}
+
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, corev1.Volume{
+		Name: OriginCAPoolVolumeName,
+		VolumeSource: corev1.VolumeSource{
+			Secret: &corev1.SecretVolumeSource{
+				SecretName: ref.Name,
+				Items: []corev1.KeyToPath{{
+					Key:  originCAPoolSecretKey(ref),
+					Path: OriginCAPoolFileName,
+				}},
+			},
+		},
+	})
 }

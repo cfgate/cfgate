@@ -274,6 +274,48 @@ func TestBuildReusablePolicyParams(t *testing.T) {
 	if err != nil || len(params.Include) != 1 {
 		t.Fatalf("buildReusablePolicyParams(everyone) = (%+v, %v)", params, err)
 	}
+
+	t.Run("rejects multiple selectors", func(t *testing.T) {
+		policy := baseAccessPolicy("app", "policy")
+		policy.Spec.Include = []cfgatev1alpha1.AccessRule{{
+			Everyone: &trueValue,
+			Email:    &cfgatev1alpha1.AccessEmailRule{Addresses: []string{"user@example.com"}},
+		}}
+		_, err := buildReusablePolicyParams(policy)
+		if err == nil || !strings.Contains(err.Error(), "exactly one selector") {
+			t.Fatalf("buildReusablePolicyParams() error = %v, want exactly one selector", err)
+		}
+	})
+
+	t.Run("rejects non identity without service token", func(t *testing.T) {
+		policy := baseAccessPolicy("app", "policy")
+		policy.Spec.Decision = "non_identity"
+		policy.Spec.Include = []cfgatev1alpha1.AccessRule{{Everyone: &trueValue}}
+		_, err := buildReusablePolicyParams(policy)
+		if err == nil || !strings.Contains(err.Error(), "non_identity policies require") {
+			t.Fatalf("buildReusablePolicyParams() error = %v, want non_identity service token error", err)
+		}
+	})
+
+	t.Run("allows non identity service token", func(t *testing.T) {
+		policy := baseAccessPolicy("app", "policy")
+		policy.Spec.Decision = "non_identity"
+		policy.Spec.Include = []cfgatev1alpha1.AccessRule{{AnyValidServiceToken: &trueValue}}
+		params, err := buildReusablePolicyParams(policy)
+		if err != nil || len(params.Include) != 1 || params.Include[0].AnyValidServiceToken == nil {
+			t.Fatalf("buildReusablePolicyParams() = (%+v, %v), want service token policy", params, err)
+		}
+	})
+
+	t.Run("rejects bypass identity selector", func(t *testing.T) {
+		policy := baseAccessPolicy("app", "policy")
+		policy.Spec.Decision = "bypass"
+		policy.Spec.Include = []cfgatev1alpha1.AccessRule{{Email: &cfgatev1alpha1.AccessEmailRule{Addresses: []string{"user@example.com"}}}}
+		_, err := buildReusablePolicyParams(policy)
+		if err == nil || !strings.Contains(err.Error(), "bypass policies cannot use identity selectors") {
+			t.Fatalf("buildReusablePolicyParams() error = %v, want bypass identity selector error", err)
+		}
+	})
 }
 
 func TestK8sSecretWriterWriteSecret(t *testing.T) {

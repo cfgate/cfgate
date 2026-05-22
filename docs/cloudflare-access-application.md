@@ -34,6 +34,8 @@ Key fields:
 | `application` | Access Application settings shared by generated apps. `path` overrides derived target paths. |
 | `policyRefs` | Required reusable policies to attach. Omit `precedence` on every ref to use list order starting at `1`, or set `precedence` on every ref for custom ordering. Do not mix modes; explicit precedence values must be unique. Duplicate namespace/name pairs in one list are invalid. |
 
+Only `application.type: self_hosted` is supported in this release. Other Cloudflare Access application types (`saas`, `ssh`, `vnc`, `browser_isolation`) are deferred and are rejected with `ApplicationSynced=False`, reason `UnsupportedApplicationType`.
+
 Cross-namespace target references require a `ReferenceGrant` in the target namespace. Cross-namespace policy references require a `ReferenceGrant` in the policy namespace.
 
 ## Path Rules

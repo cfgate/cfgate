@@ -16,6 +16,17 @@ Unit coverage is the primary CI coverage signal. The default unit test surface i
 - `./cmd/...` for manager and cleanup entrypoint orchestration
 - `./internal/...` for controller helpers, annotations, status, feature detection, cloudflared builders, and Cloudflare client logic
 
+Current tunnel correctness coverage includes:
+
+- cloudflared metrics default port `44483` and `metrics.enabled: false` omission of args, ports, and HTTP probes
+- `caPoolSecretRef` Secret volume/item/mount generation and global `originRequest.caPool`
+- per-route `originServerName`, `caPool`, host header, TLS verify, HTTP/2, and h2c origin request propagation
+- `cfgate.io/hostname` override and listener hostname fallback for tunnel/DNS route discovery
+- HTTPRoute path translation to anchored cloudflared regexes
+- cross-namespace backend `Service` `ReferenceGrant` enforcement
+
+E2E image assumptions use the cfgate cloudflared fork. h2c-specific E2E assertions require `ghcr.io/inherent-design/cloudflared:*‑h2c.*`; upstream cloudflared image overrides are no-h2c mode only.
+
 ```bash
 mise run test          # unit tests
 mise run test:cover    # unit tests with coverage (out/coverage/unit.coverprofile)

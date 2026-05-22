@@ -706,7 +706,7 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 						config.Proxied = &proxied
 					}
 
-					for _, h := range route.Spec.Hostnames {
+					for _, h := range routeHostnamesForGateway(&route, &gw, parentRef) {
 						hostnames[string(h)] = config
 					}
 				}

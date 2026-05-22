@@ -906,6 +906,19 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 			Expect(r.Annotations["cfgate.io/origin-server-name"]).To(Equal(serverName),
 				"Server name annotation should be preserved")
 
+			By("Verifying Cloudflare remote config includes originServerName")
+			Eventually(func(g Gomega) {
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, sharedTunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				ingress, ok := findRawTunnelIngress(config, hostname)
+				g.Expect(ok).To(BeTrue(), "expected ingress rule for %s", hostname)
+
+				originServerName, ok := rawOriginRequestString(ingress.OriginRequest, "originServerName")
+				g.Expect(ok).To(BeTrue(), "expected originServerName in originRequest")
+				g.Expect(originServerName).To(Equal(serverName))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+
 			By("Verifying tunnel ConfigurationSynced condition")
 			waitForTunnelCondition(ctx, k8sClient, sharedTunnel.Name, sharedTunnel.Namespace, "ConfigurationSynced", metav1.ConditionTrue, DefaultTimeout)
 		})
@@ -915,29 +928,10 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 			svcName := testID("svc")
 			createTestService(ctx, k8sClient, svcName, namespace.Name, 443)
 
-			By("Creating a ConfigMap with CA certificate")
-			caConfigMap := &corev1.ConfigMap{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testID("ca-pool"),
-					Namespace: namespace.Name,
-				},
-				Data: map[string]string{
-					"ca.crt": `-----BEGIN CERTIFICATE-----
-MIIBkTCB+wIJAKHBfpegPjMCMA0GCSqGSIb3DQEBCwUAMBExDzANBgNVBAMMBnRl
-c3RjYTAeFw0yNTAxMDEwMDAwMDBaFw0zNTAxMDEwMDAwMDBaMBExDzANBgNVBAMM
-BnRlc3RjYTBcMA0GCSqGSIb3DQEBAQUAA0sAMEgCQQC7o96FCE0AaaWx6azPF2bO
-TYgqfNUhNNB1MHD7DmP9frO8qQqHLqdGExUl0qKqKGPckAJsY2Q++z4E5XNODJj9
-AgMBAAGjUzBRMB0GA1UdDgQWBBQEpb7XYABbgFPxH1wptT19ExEJKTAfBgNVHSME
-GDAWgBQEpb7XYABbgFPxH1wptT19ExEJKTAPBgNVHRMBAf8EBTADAQH/MA0GCSqG
-SIb3DQEBCwUAA0EA+test+certificate+data+here==
------END CERTIFICATE-----`,
-				},
-			}
-			Expect(k8sClient.Create(ctx, caConfigMap)).To(Succeed())
-
 			By("Creating HTTPRoute with origin-ca-pool annotation")
 			hostname := fmt.Sprintf("%s.%s", testID("capool"), testEnv.CloudflareZoneName)
 			routeName := testID("route")
+			caPoolPath := "/etc/cfgate/origin-ca-pool/ca.pem"
 
 			route := &gatewayv1.HTTPRoute{
 				ObjectMeta: metav1.ObjectMeta{
@@ -946,7 +940,7 @@ SIb3DQEBCwUAA0EA+test+certificate+data+here==
 					Annotations: map[string]string{
 						"cfgate.io/origin-protocol":   "https",
 						"cfgate.io/origin-ssl-verify": "true",
-						"cfgate.io/origin-ca-pool":    caConfigMap.Name, // Reference to ConfigMap
+						"cfgate.io/origin-ca-pool":    caPoolPath,
 						"cfgate.io/dns-sync":          "enabled",
 					},
 				},
@@ -990,8 +984,21 @@ SIb3DQEBCwUAA0EA+test+certificate+data+here==
 			By("Verifying route annotations are preserved")
 			var r gatewayv1.HTTPRoute
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: routeName, Namespace: namespace.Name}, &r)).To(Succeed())
-			Expect(r.Annotations["cfgate.io/origin-ca-pool"]).To(Equal(caConfigMap.Name),
+			Expect(r.Annotations["cfgate.io/origin-ca-pool"]).To(Equal(caPoolPath),
 				"CA pool annotation should be preserved")
+
+			By("Verifying Cloudflare remote config includes caPool")
+			Eventually(func(g Gomega) {
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, sharedTunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+
+				ingress, ok := findRawTunnelIngress(config, hostname)
+				g.Expect(ok).To(BeTrue(), "expected ingress rule for %s", hostname)
+
+				caPool, ok := rawOriginRequestString(ingress.OriginRequest, "caPool")
+				g.Expect(ok).To(BeTrue(), "expected caPool in originRequest")
+				g.Expect(caPool).To(Equal(caPoolPath))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 
 			By("Verifying tunnel ConfigurationSynced condition")
 			waitForTunnelCondition(ctx, k8sClient, sharedTunnel.Name, sharedTunnel.Namespace, "ConfigurationSynced", metav1.ConditionTrue, DefaultTimeout)

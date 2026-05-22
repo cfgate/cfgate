@@ -87,8 +87,10 @@ func NewTunnelConfig(tunnel *cfgatev1alpha1.CloudflareTunnel, tunnelID string) *
 	config := &TunnelConfig{
 		TunnelID:     tunnelID,
 		NoAutoUpdate: true,
-		Metrics:      fmt.Sprintf("0.0.0.0:%d", getMetricsPort(tunnel)),
 		Ingress:      []IngressRule{},
+	}
+	if metricsEnabled(tunnel) {
+		config.Metrics = fmt.Sprintf("0.0.0.0:%d", getMetricsPort(tunnel))
 	}
 
 	// Set protocol if specified
@@ -100,12 +102,16 @@ func NewTunnelConfig(tunnel *cfgatev1alpha1.CloudflareTunnel, tunnelID string) *
 	if tunnel.Spec.OriginDefaults.ConnectTimeout != "" ||
 		tunnel.Spec.OriginDefaults.NoTLSVerify ||
 		tunnel.Spec.OriginDefaults.HTTP2Origin ||
-		tunnel.Spec.OriginDefaults.H2cOrigin {
+		tunnel.Spec.OriginDefaults.H2cOrigin ||
+		tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
 		config.OriginRequest = &OriginRequestConfig{
 			ConnectTimeout: tunnel.Spec.OriginDefaults.ConnectTimeout,
 			NoTLSVerify:    tunnel.Spec.OriginDefaults.NoTLSVerify,
 			HTTP2Origin:    tunnel.Spec.OriginDefaults.HTTP2Origin,
 			H2cOrigin:      tunnel.Spec.OriginDefaults.H2cOrigin,
+		}
+		if tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
+			config.OriginRequest.CAPool = OriginCAPoolPath()
 		}
 	}
 

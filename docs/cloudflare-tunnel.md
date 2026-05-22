@@ -100,7 +100,7 @@ Controls the cloudflared daemon Deployment. The controller creates a Deployment 
 
 **Protocol selection:** The `auto` default lets cloudflared negotiate the best protocol. Use `quic` for UDP-based transport (lower latency, better for unstable connections) or `http2` for environments where UDP is blocked.
 
-**Metrics:** Enabled by default on port 44483. The endpoint serves Prometheus-compatible metrics at `/metrics` on each cloudflared pod. Use `podAnnotations` to configure Prometheus scraping.
+**Metrics:** Enabled by default on port 44483. The endpoint serves Prometheus-compatible metrics at `/metrics` on each cloudflared pod. When `metrics.enabled: false`, cfgate omits the `--metrics` flag, container port, and cloudflared HTTP probes. Use `podAnnotations` to configure Prometheus scraping.
 
 Generated cloudflared pods are compatible with Kubernetes `restricted` Pod Security by default. cfgate runs them as non-root, uses the runtime-default seccomp profile, disables privilege escalation, and drops all Linux capabilities.
 
@@ -142,16 +142,18 @@ Users who do not need h2c can override the image to upstream:
 ```yaml
 spec:
   cloudflared:
-    image: cloudflare/cloudflared:2026.3.0
+    image: cloudflare/cloudflared:2026.5.0
 ```
 
-The `h2cOrigin` field and `cfgate.io/origin-h2c` annotation are silently ignored by upstream cloudflared (unrecognized config key).
+The upstream image is a no-h2c mode override only. The `h2cOrigin` field and `cfgate.io/origin-h2c` annotation require the cfgate fork image.
 
 ### `spec.originDefaults`
 
 Default settings for how cloudflared connects to backend services in the cluster. These apply to all ingress rules unless overridden by route-specific [annotations](annotations.md).
 
-**`caPoolSecretRef`:** Use this when your backend services present TLS certificates signed by a private CA. The Secret must contain the CA certificate chain in PEM format. Without this, connections to services using private CA certificates will fail TLS verification (unless `noTLSVerify` is set, which is not recommended for production).
+**`caPoolSecretRef`:** Use this when your backend services present TLS certificates signed by a private CA. The Secret must contain the CA certificate chain in PEM format. cfgate mounts the selected Secret key into cloudflared at `/etc/cfgate/origin-ca-pool/ca.pem` and sends `originRequest.caPool` with that path in the remote tunnel configuration. If `key` is omitted or empty, cfgate reads `ca.crt`. Without this, connections to services using private CA certificates will fail TLS verification (unless `noTLSVerify` is set, which is not recommended for production).
+
+If the referenced Secret or key is missing, cfgate does not deploy cloudflared and marks `CloudflaredDeployed=False` and `Ready=False`.
 
 ```yaml
 spec:

@@ -210,6 +210,9 @@ func (r *CloudflareAccessPolicyReconciler) resolveCloudflareRefCredentials(ctx c
 }
 
 func buildReusablePolicyParams(policy *cfgatev1alpha1.CloudflareAccessPolicy) (cloudflare.PolicyParams, error) {
+	if err := validateAccessPolicyCompatibility(policy); err != nil {
+		return cloudflare.PolicyParams{}, err
+	}
 	include, err := convertAccessRulesWithServiceTokens(policy.Spec.Include, policy.Status.ServiceTokenIDs)
 	if err != nil {
 		return cloudflare.PolicyParams{}, fmt.Errorf("include rules: %w", err)
@@ -234,6 +237,83 @@ func buildReusablePolicyParams(policy *cfgatev1alpha1.CloudflareAccessPolicy) (c
 		ApprovalRequired:             policy.Spec.ApprovalRequired,
 		ApprovalGroups:               convertApprovalGroups(policy.Spec.ApprovalGroups),
 	}, nil
+}
+
+func validateAccessPolicyCompatibility(policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
+	ruleSets := map[string][]cfgatev1alpha1.AccessRule{
+		"include": policy.Spec.Include,
+		"exclude": policy.Spec.Exclude,
+		"require": policy.Spec.Require,
+	}
+	for setName, rules := range ruleSets {
+		for i, rule := range rules {
+			if countAccessRuleSelectors(rule) != 1 {
+				return fmt.Errorf("%s[%d]: exactly one selector must be specified", setName, i)
+			}
+			if policy.Spec.Decision == "bypass" && accessRuleHasIdentitySelector(rule) {
+				return fmt.Errorf("%s[%d]: bypass policies cannot use identity selectors", setName, i)
+			}
+		}
+	}
+	if policy.Spec.Decision == "non_identity" {
+		for _, rule := range policy.Spec.Include {
+			if rule.ServiceToken != nil || (rule.AnyValidServiceToken != nil && *rule.AnyValidServiceToken) {
+				return nil
+			}
+		}
+		return fmt.Errorf("non_identity policies require an include serviceToken or anyValidServiceToken selector")
+	}
+	return nil
+}
+
+func countAccessRuleSelectors(rule cfgatev1alpha1.AccessRule) int {
+	count := 0
+	if rule.IP != nil {
+		count++
+	}
+	if rule.IPList != nil {
+		count++
+	}
+	if rule.Country != nil {
+		count++
+	}
+	if rule.Everyone != nil {
+		count++
+	}
+	if rule.ServiceToken != nil {
+		count++
+	}
+	if rule.AnyValidServiceToken != nil {
+		count++
+	}
+	if rule.Email != nil {
+		count++
+	}
+	if rule.EmailList != nil {
+		count++
+	}
+	if rule.EmailDomain != nil {
+		count++
+	}
+	if rule.OIDCClaim != nil {
+		count++
+	}
+	if rule.GSuiteGroup != nil {
+		count++
+	}
+	if rule.Group != nil {
+		count++
+	}
+	return count
+}
+
+func accessRuleHasIdentitySelector(rule cfgatev1alpha1.AccessRule) bool {
+	return rule.Email != nil ||
+		rule.EmailList != nil ||
+		rule.EmailDomain != nil ||
+		rule.OIDCClaim != nil ||
+		rule.GSuiteGroup != nil ||
+		rule.Group != nil
 }
 
 func convertAccessRules(crdRules []cfgatev1alpha1.AccessRule) ([]cloudflare.AccessRuleParam, error) {

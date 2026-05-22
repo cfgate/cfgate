@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -428,6 +429,9 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	if tunnel.Status.TunnelID == "" {
 		return fmt.Errorf("tunnel ID not set in status")
 	}
+	if err := r.validateOriginCAPoolSecretRef(ctx, tunnel); err != nil {
+		return err
+	}
 
 	// Get tunnel token
 	cfClient, err := r.getCloudflareClient(ctx, tunnel)
@@ -523,6 +527,30 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	return nil
 }
 
+func (r *CloudflareTunnelReconciler) validateOriginCAPoolSecretRef(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
+	ref := tunnel.Spec.OriginDefaults.CAPoolSecretRef
+	if ref == nil {
+		return nil
+	}
+
+	var secret corev1.Secret
+	key := ref.Key
+	if key == "" {
+		key = cloudflared.DefaultOriginCAPoolSecretKey
+	}
+	namespacedName := types.NamespacedName{Name: ref.Name, Namespace: tunnel.Namespace}
+	if err := r.Get(ctx, namespacedName, &secret); err != nil {
+		if apierrors.IsNotFound(err) {
+			return fmt.Errorf("origin CA pool Secret %s/%s not found", tunnel.Namespace, ref.Name)
+		}
+		return fmt.Errorf("failed to get origin CA pool Secret %s/%s: %w", tunnel.Namespace, ref.Name, err)
+	}
+	if _, ok := secret.Data[key]; !ok {
+		return fmt.Errorf("origin CA pool Secret %s/%s missing key %q", tunnel.Namespace, ref.Name, key)
+	}
+	return nil
+}
+
 // syncConfiguration syncs the tunnel configuration to Cloudflare.
 // Collects routes from Gateway/HTTPRoute resources and pushes to Cloudflare API.
 func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
@@ -543,12 +571,16 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 	if tunnel.Spec.OriginDefaults.ConnectTimeout != "" ||
 		tunnel.Spec.OriginDefaults.NoTLSVerify ||
 		tunnel.Spec.OriginDefaults.HTTP2Origin ||
-		tunnel.Spec.OriginDefaults.H2cOrigin {
+		tunnel.Spec.OriginDefaults.H2cOrigin ||
+		tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
 		defaults = &cloudflare.OriginRequestConfig{
 			ConnectTimeout: tunnel.Spec.OriginDefaults.ConnectTimeout,
 			NoTLSVerify:    tunnel.Spec.OriginDefaults.NoTLSVerify,
 			HTTP2Origin:    tunnel.Spec.OriginDefaults.HTTP2Origin,
 			H2cOrigin:      tunnel.Spec.OriginDefaults.H2cOrigin,
+		}
+		if tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
+			defaults.CAPool = cloudflared.OriginCAPoolPath()
 		}
 	}
 
@@ -666,7 +698,14 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 				}
 
 				if string(parentRef.Name) == gw.Name && parentNS == gw.Namespace {
-					routeRules, err := r.buildRulesFromHTTPRoute(&route)
+					hostnames := routeHostnamesForGateway(&route, &gw, parentRef)
+					if len(hostnames) == 0 {
+						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
+							"skipping HTTPRoute %s/%s: no route hostnames and no matching listener hostname", route.Namespace, route.Name)
+						continue
+					}
+
+					routeRules, err := r.buildRulesFromHTTPRouteForHostnames(&route, hostnames)
 					if err != nil {
 						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
 							"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
@@ -701,9 +740,13 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 // multiple backendRefs (Cloudflare tunnel ingress is 1:1) or an unsupported
 // backend group/kind. Rules with zero backendRefs are skipped.
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTPRoute) ([]cloudflare.IngressRule, error) {
+	return r.buildRulesFromHTTPRouteForHostnames(route, effectiveHTTPRouteHostnames(route))
+}
+
+func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnames(route *gateway.HTTPRoute, hostnames []gateway.Hostname) ([]cloudflare.IngressRule, error) {
 	var rules []cloudflare.IngressRule
 
-	for _, hostname := range route.Spec.Hostnames {
+	for _, hostname := range hostnames {
 		for _, rule := range route.Spec.Rules {
 			if len(rule.BackendRefs) == 0 {
 				continue
@@ -744,15 +787,7 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTP
 
 			var originRequest *cloudflare.OriginRequestConfig
 			originConfig := cloudflared.BuildOriginConfig(nil, route.Annotations)
-			if originConfig != nil {
-				originRequest = &cloudflare.OriginRequestConfig{
-					ConnectTimeout: originConfig.ConnectTimeout,
-					NoTLSVerify:    originConfig.NoTLSVerify,
-					HTTP2Origin:    originConfig.HTTP2Origin,
-					H2cOrigin:      originConfig.H2cOrigin,
-					HTTPHostHeader: originConfig.HTTPHostHeader,
-				}
-			}
+			originRequest = cloudflaredOriginRequestToCloudflare(originConfig)
 
 			if len(rule.Matches) == 0 {
 				rules = append(rules, cloudflare.IngressRule{
@@ -764,9 +799,9 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTP
 			}
 
 			for _, match := range rule.Matches {
-				path := ""
-				if match.Path != nil && match.Path.Value != nil {
-					path = *match.Path.Value
+				path, err := cloudflaredPathRegex(match)
+				if err != nil {
+					return nil, fmt.Errorf("route %s/%s: %w", route.Namespace, route.Name, err)
 				}
 				rules = append(rules, cloudflare.IngressRule{
 					Hostname:      string(hostname),
@@ -779,6 +814,87 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTP
 	}
 
 	return rules, nil
+}
+
+func effectiveHTTPRouteHostnames(route *gateway.HTTPRoute) []gateway.Hostname {
+	if host := annotations.GetAnnotation(route, annotations.AnnotationHostname); host != "" {
+		return []gateway.Hostname{gateway.Hostname(host)}
+	}
+	return append([]gateway.Hostname(nil), route.Spec.Hostnames...)
+}
+
+func routeHostnamesForGateway(route *gateway.HTTPRoute, gw *gateway.Gateway, parentRef gateway.ParentReference) []gateway.Hostname {
+	hostnames := effectiveHTTPRouteHostnames(route)
+	if len(hostnames) > 0 {
+		return hostnames
+	}
+
+	seen := map[string]struct{}{}
+	for _, listener := range gw.Spec.Listeners {
+		if parentRef.SectionName != nil && listener.Name != *parentRef.SectionName {
+			continue
+		}
+		if listener.Protocol != gateway.HTTPProtocolType && listener.Protocol != gateway.HTTPSProtocolType {
+			continue
+		}
+		if !listenerAllowsHTTPRouteKind(listener) {
+			continue
+		}
+		if listener.Hostname == nil || *listener.Hostname == "" {
+			continue
+		}
+		hostname := string(*listener.Hostname)
+		if _, ok := seen[hostname]; ok {
+			continue
+		}
+		seen[hostname] = struct{}{}
+		hostnames = append(hostnames, *listener.Hostname)
+	}
+	return hostnames
+}
+
+func cloudflaredOriginRequestToCloudflare(config *cloudflared.OriginRequestConfig) *cloudflare.OriginRequestConfig {
+	if config == nil {
+		return nil
+	}
+	return &cloudflare.OriginRequestConfig{
+		ConnectTimeout:   config.ConnectTimeout,
+		NoTLSVerify:      config.NoTLSVerify,
+		HTTP2Origin:      config.HTTP2Origin,
+		H2cOrigin:        config.H2cOrigin,
+		HTTPHostHeader:   config.HTTPHostHeader,
+		OriginServerName: config.OriginServerName,
+		CAPool:           config.CAPool,
+	}
+}
+
+func cloudflaredPathRegex(match gateway.HTTPRouteMatch) (string, error) {
+	if match.Path == nil || match.Path.Value == nil || *match.Path.Value == "" {
+		return "", nil
+	}
+
+	path := *match.Path.Value
+	matchType := gateway.PathMatchPathPrefix
+	if match.Path.Type != nil {
+		matchType = *match.Path.Type
+	}
+
+	switch matchType {
+	case gateway.PathMatchPathPrefix:
+		if path == "/" {
+			return "^/.*$", nil
+		}
+		return fmt.Sprintf("^%s(?:/.*)?$", regexp.QuoteMeta(path)), nil
+	case gateway.PathMatchExact:
+		return fmt.Sprintf("^%s$", regexp.QuoteMeta(path)), nil
+	case gateway.PathMatchRegularExpression:
+		if _, err := regexp.Compile(path); err != nil {
+			return "", fmt.Errorf("unsupported path regular expression %q: %w", path, err)
+		}
+		return path, nil
+	default:
+		return "", fmt.Errorf("unsupported path match type %q", matchType)
+	}
 }
 
 // reconcileDelete handles CloudflareTunnel deletion by deleting tunnel connections

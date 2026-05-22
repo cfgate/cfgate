@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -29,6 +30,9 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 			},
 			Cloudflare: cfgatev1alpha1.CloudflareConfig{
 				AccountID: "account",
+			},
+			OriginDefaults: cfgatev1alpha1.OriginDefaults{
+				CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"},
 			},
 		},
 		Status: cfgatev1alpha1.CloudflareTunnelStatus{
@@ -56,6 +60,15 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "route",
 			Namespace: "default",
+			Annotations: map[string]string{
+				"cfgate.io/origin-http-host-header": "origin.example.com",
+				"cfgate.io/origin-server-name":      "tls.example.com",
+				"cfgate.io/origin-ca-pool":          "/etc/cfgate/custom-ca.pem",
+				"cfgate.io/origin-ssl-verify":       "false",
+				"cfgate.io/origin-http2":            "true",
+				"cfgate.io/origin-h2c":              "true",
+				"cfgate.io/origin-connect-timeout":  "12s",
+			},
 		},
 		Spec: gatewayv1.HTTPRouteSpec{
 			CommonRouteSpec: gatewayv1.CommonRouteSpec{
@@ -96,6 +109,22 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 		}
 		if len(config.Ingress) == 0 || config.Ingress[0].Hostname != "app.example.com" {
 			t.Fatalf("config.Ingress = %#v, want app.example.com rule", config.Ingress)
+		}
+		if config.OriginRequest == nil || config.OriginRequest.CAPool != "/etc/cfgate/origin-ca-pool/ca.pem" {
+			t.Fatalf("config.OriginRequest = %#v, want global caPool", config.OriginRequest)
+		}
+		origin := config.Ingress[0].OriginRequest
+		if origin == nil {
+			t.Fatal("ingress OriginRequest is nil")
+		}
+		if origin.HTTPHostHeader != "origin.example.com" ||
+			origin.OriginServerName != "tls.example.com" ||
+			origin.CAPool != "/etc/cfgate/custom-ca.pem" ||
+			!origin.NoTLSVerify ||
+			!origin.HTTP2Origin ||
+			!origin.H2cOrigin ||
+			origin.ConnectTimeout != "12s" {
+			t.Fatalf("ingress OriginRequest = %#v, want propagated route annotations", origin)
 		}
 		return nil
 	}
@@ -139,6 +168,174 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 	}
 	if current.Status.TunnelID != "old-id" {
 		t.Fatalf("stored Status.TunnelID = %q, want old-id", current.Status.TunnelID)
+	}
+}
+
+func TestValidateOriginCAPoolSecretRef(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+		Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+			OriginDefaults: cfgatev1alpha1.OriginDefaults{
+				CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"},
+			},
+		},
+	}
+
+	t.Run("passes with default key", func(t *testing.T) {
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: "default"},
+			Data:       map[string][]byte{"ca.crt": []byte("pem")},
+		}
+		reconciler := &CloudflareTunnelReconciler{
+			Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build(),
+		}
+		if err := reconciler.validateOriginCAPoolSecretRef(ctx, tunnel); err != nil {
+			t.Fatalf("validateOriginCAPoolSecretRef() error = %v", err)
+		}
+	})
+
+	t.Run("reports missing secret", func(t *testing.T) {
+		reconciler := &CloudflareTunnelReconciler{
+			Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		}
+		if err := reconciler.validateOriginCAPoolSecretRef(ctx, tunnel); err == nil {
+			t.Fatal("validateOriginCAPoolSecretRef() error = nil, want missing Secret error")
+		}
+	})
+
+	t.Run("reports missing explicit key", func(t *testing.T) {
+		explicit := tunnel.DeepCopy()
+		explicit.Spec.OriginDefaults.CAPoolSecretRef.Key = "bundle.pem"
+		secret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: "default"},
+			Data:       map[string][]byte{"ca.crt": []byte("pem")},
+		}
+		reconciler := &CloudflareTunnelReconciler{
+			Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build(),
+		}
+		if err := reconciler.validateOriginCAPoolSecretRef(ctx, explicit); err == nil {
+			t.Fatal("validateOriginCAPoolSecretRef() error = nil, want missing key error")
+		}
+	})
+}
+
+func TestBuildRulesFromHTTPRouteUsesHostnameAnnotation(t *testing.T) {
+	servicePort := gatewayv1.PortNumber(8080)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationHostname: "override.example.com",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"ignored.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "app",
+							Port: &servicePort,
+						},
+					},
+				}},
+			}},
+		},
+	}
+
+	rules, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRoute(route)
+	if err != nil {
+		t.Fatalf("buildRulesFromHTTPRoute() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].Hostname != "override.example.com" {
+		t.Fatalf("rules = %#v, want hostname annotation override", rules)
+	}
+}
+
+func TestRouteHostnamesForGatewayFallsBackToListener(t *testing.T) {
+	section := gatewayv1.SectionName("web")
+	listenerHostname := gatewayv1.Hostname("listener.example.com")
+	gw := &gatewayv1.Gateway{
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{{
+				Name:     section,
+				Protocol: gatewayv1.HTTPProtocolType,
+				Hostname: &listenerHostname,
+			}},
+		},
+	}
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "default"},
+	}
+	parentRef := gatewayv1.ParentReference{Name: "gateway", SectionName: &section}
+
+	hostnames := routeHostnamesForGateway(route, gw, parentRef)
+	if len(hostnames) != 1 || hostnames[0] != listenerHostname {
+		t.Fatalf("routeHostnamesForGateway() = %#v, want listener hostname", hostnames)
+	}
+}
+
+func TestCloudflaredPathRegex(t *testing.T) {
+	tests := []struct {
+		name    string
+		match   gatewayv1.HTTPRouteMatch
+		want    string
+		wantErr bool
+	}{
+		{name: "omitted path", match: gatewayv1.HTTPRouteMatch{}, want: ""},
+		{
+			name: "path prefix",
+			match: gatewayv1.HTTPRouteMatch{Path: &gatewayv1.HTTPPathMatch{
+				Type:  pathMatchType(gatewayv1.PathMatchPathPrefix),
+				Value: stringPtr("/foo"),
+			}},
+			want: "^/foo(?:/.*)?$",
+		},
+		{
+			name: "exact",
+			match: gatewayv1.HTTPRouteMatch{Path: &gatewayv1.HTTPPathMatch{
+				Type:  pathMatchType(gatewayv1.PathMatchExact),
+				Value: stringPtr("/foo"),
+			}},
+			want: "^/foo$",
+		},
+		{
+			name: "regular expression",
+			match: gatewayv1.HTTPRouteMatch{Path: &gatewayv1.HTTPPathMatch{
+				Type:  pathMatchType(gatewayv1.PathMatchRegularExpression),
+				Value: stringPtr("^/v[0-9]+/"),
+			}},
+			want: "^/v[0-9]+/",
+		},
+		{
+			name: "invalid regular expression",
+			match: gatewayv1.HTTPRouteMatch{Path: &gatewayv1.HTTPPathMatch{
+				Type:  pathMatchType(gatewayv1.PathMatchRegularExpression),
+				Value: stringPtr("["),
+			}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := cloudflaredPathRegex(tt.match)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("cloudflaredPathRegex() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("cloudflaredPathRegex() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("cloudflaredPathRegex() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
