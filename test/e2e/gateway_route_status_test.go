@@ -196,6 +196,124 @@ var _ = Describe("Gateway and HTTPRoute Status E2E", Label("cloudflare"), Ordere
 			Expect(findCondition(cfgateParent.Conditions, string(gatewayv1.RouteConditionResolvedRefs)).Reason).To(Equal("BackendNotFound"))
 		})
 
+		It("should set ResolvedRefs=False when one rule has multiple Service backendRefs", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("multi-backend-gw")
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name))
+
+			serviceOne := createTestService(ctx, k8sClient, testID("svc-one"), namespace.Name, 8080)
+			serviceTwo := createTestService(ctx, k8sClient, testID("svc-two"), namespace.Name, 8080)
+			parentNamespace := gatewayv1.Namespace(namespace.Name)
+			route := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("multi-backend-route"),
+					Namespace: namespace.Name,
+				},
+				Spec: gatewayv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayv1.CommonRouteSpec{
+						ParentRefs: []gatewayv1.ParentReference{{
+							Name:      gatewayv1.ObjectName(gatewayName),
+							Namespace: &parentNamespace,
+						}},
+					},
+					Hostnames: []gatewayv1.Hostname{
+						gatewayv1.Hostname(fmt.Sprintf("%s.example.test", testID("multi-backend"))),
+					},
+					Rules: []gatewayv1.HTTPRouteRule{{
+						BackendRefs: []gatewayv1.HTTPBackendRef{
+							{
+								BackendRef: gatewayv1.BackendRef{
+									BackendObjectReference: gatewayv1.BackendObjectReference{
+										Name: gatewayv1.ObjectName(serviceOne.Name),
+										Port: ptrTo(gatewayv1.PortNumber(8080)),
+									},
+								},
+							},
+							{
+								BackendRef: gatewayv1.BackendRef{
+									BackendObjectReference: gatewayv1.BackendObjectReference{
+										Name: gatewayv1.ObjectName(serviceTwo.Name),
+										Port: ptrTo(gatewayv1.PortNumber(8080)),
+									},
+								},
+							},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, route)).To(Succeed())
+
+			route = waitForHTTPRouteParentCondition(ctx, k8sClient, route.Name, route.Namespace, namespace.Name, gatewayName, string(gatewayv1.RouteConditionResolvedRefs), metav1.ConditionFalse, DefaultTimeout)
+			cfgateParent := findCfgateRouteParent(route)
+			Expect(cfgateParent).NotTo(BeNil())
+			condition := findCondition(cfgateParent.Conditions, string(gatewayv1.RouteConditionResolvedRefs))
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Reason).To(Equal("UnsupportedValue"))
+			Expect(condition.Message).To(ContainSubstring("multiple backendRefs are not supported by cfgate tunnel ingress"))
+		})
+
+		It("should set ResolvedRefs=False when backend kind or group is unsupported", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("unsupported-backend-gw")
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name))
+
+			exampleGroup := gatewayv1.Group("example.com")
+			configMapKind := gatewayv1.Kind("ConfigMap")
+			cases := []struct {
+				name        string
+				group       *gatewayv1.Group
+				kind        *gatewayv1.Kind
+				wantMessage string
+			}{
+				{name: "backend-group", group: &exampleGroup, wantMessage: "unsupported backend group"},
+				{name: "backend-kind", kind: &configMapKind, wantMessage: "unsupported backend kind"},
+			}
+
+			for _, tc := range cases {
+				parentNamespace := gatewayv1.Namespace(namespace.Name)
+				route := &gatewayv1.HTTPRoute{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      testID(tc.name),
+						Namespace: namespace.Name,
+					},
+					Spec: gatewayv1.HTTPRouteSpec{
+						CommonRouteSpec: gatewayv1.CommonRouteSpec{
+							ParentRefs: []gatewayv1.ParentReference{{
+								Name:      gatewayv1.ObjectName(gatewayName),
+								Namespace: &parentNamespace,
+							}},
+						},
+						Hostnames: []gatewayv1.Hostname{
+							gatewayv1.Hostname(fmt.Sprintf("%s.example.test", testID(tc.name))),
+						},
+						Rules: []gatewayv1.HTTPRouteRule{{
+							BackendRefs: []gatewayv1.HTTPBackendRef{{
+								BackendRef: gatewayv1.BackendRef{
+									BackendObjectReference: gatewayv1.BackendObjectReference{
+										Group: tc.group,
+										Kind:  tc.kind,
+										Name:  "svc",
+										Port:  ptrTo(gatewayv1.PortNumber(8080)),
+									},
+								},
+							}},
+						}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, route)).To(Succeed())
+
+				route = waitForHTTPRouteParentCondition(ctx, k8sClient, route.Name, route.Namespace, namespace.Name, gatewayName, string(gatewayv1.RouteConditionResolvedRefs), metav1.ConditionFalse, DefaultTimeout)
+				cfgateParent := findCfgateRouteParent(route)
+				Expect(cfgateParent).NotTo(BeNil())
+				condition := findCondition(cfgateParent.Conditions, string(gatewayv1.RouteConditionResolvedRefs))
+				Expect(condition).NotTo(BeNil())
+				Expect(condition.Reason).To(Equal("UnsupportedValue"))
+				Expect(condition.Message).To(ContainSubstring(tc.wantMessage))
+			}
+		})
+
 		It("should set Accepted=False when a cross-namespace parent attachment is not allowed by listener policy", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
 			otherNamespace := createTestNamespace("cfgate-httproute-other")
 			DeferCleanup(func() {
@@ -316,3 +434,12 @@ var _ = Describe("Gateway and HTTPRoute Status E2E", Label("cloudflare"), Ordere
 		})
 	})
 })
+
+func findCfgateRouteParent(route *gatewayv1.HTTPRoute) *gatewayv1.RouteParentStatus {
+	for i := range route.Status.Parents {
+		if string(route.Status.Parents[i].ControllerName) == "cfgate.io/cloudflare-tunnel-controller" {
+			return &route.Status.Parents[i]
+		}
+	}
+	return nil
+}

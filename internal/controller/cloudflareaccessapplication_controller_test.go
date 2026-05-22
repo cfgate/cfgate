@@ -79,6 +79,38 @@ func TestValidateAccessApplicationPath(t *testing.T) {
 	}
 }
 
+func TestValidateAccessApplicationType(t *testing.T) {
+	tests := []struct {
+		name    string
+		appType string
+		wantErr bool
+	}{
+		{name: "empty"},
+		{name: "self hosted", appType: "self_hosted"},
+		{name: "saas", appType: "saas", wantErr: true},
+		{name: "ssh", appType: "ssh", wantErr: true},
+		{name: "vnc", appType: "vnc", wantErr: true},
+		{name: "browser isolation", appType: "browser_isolation", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := &cfgatev1alpha1.CloudflareAccessApplication{
+				Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
+					Application: cfgatev1alpha1.AccessApplication{Type: tt.appType},
+				},
+			}
+			err := validateAccessApplicationType(app)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateAccessApplicationType(%q) got nil error, want error", tt.appType)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateAccessApplicationType(%q) error = %v, want nil", tt.appType, err)
+			}
+		})
+	}
+}
+
 func TestAccessApplicationOwnerTagIsScoped(t *testing.T) {
 	app := appWithFinalizer("app", "app")
 	tag := accessApplicationOwnerTag(app)

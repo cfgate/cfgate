@@ -157,7 +157,7 @@ type AccessApplication struct {
 	SessionDuration string `json:"sessionDuration,omitempty"`
 
 	// Type is the application type.
-	// +kubebuilder:validation:Enum=self_hosted;saas;ssh;vnc;browser_isolation
+	// +kubebuilder:validation:Enum=self_hosted
 	// +kubebuilder:default=self_hosted
 	Type string `json:"type,omitempty"`
 

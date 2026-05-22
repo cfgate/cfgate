@@ -503,10 +503,34 @@ func (r *HTTPRouteReconciler) resolveBackends(
 			}
 		}
 
+		if len(rule.BackendRefs) > 1 {
+			return status.NewCondition(
+				string(gwapiv1.RouteConditionResolvedRefs),
+				metav1.ConditionFalse,
+				status.ReasonUnsupportedValue,
+				"multiple backendRefs are not supported by cfgate tunnel ingress",
+				route.Generation,
+			)
+		}
+
 		for _, backend := range rule.BackendRefs {
-			// Skip non-Service backends
-			if backend.Kind != nil && *backend.Kind != "Service" {
-				continue
+			if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
+				return status.NewCondition(
+					string(gwapiv1.RouteConditionResolvedRefs),
+					metav1.ConditionFalse,
+					status.ReasonUnsupportedValue,
+					fmt.Sprintf("unsupported backend group %q: only core Service backends are supported by cfgate tunnel ingress", *backend.Group),
+					route.Generation,
+				)
+			}
+			if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
+				return status.NewCondition(
+					string(gwapiv1.RouteConditionResolvedRefs),
+					metav1.ConditionFalse,
+					status.ReasonUnsupportedValue,
+					fmt.Sprintf("unsupported backend kind %q: only Service backends are supported by cfgate tunnel ingress", *backend.Kind),
+					route.Generation,
+				)
 			}
 
 			// Get the Service

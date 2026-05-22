@@ -205,6 +205,53 @@ func TestResolveBackends(t *testing.T) {
 		t.Fatalf("resolveBackends() status = %q, want %q", condition.Status, metav1.ConditionTrue)
 	}
 
+	unsupportedTests := []struct {
+		name        string
+		mutate      func(*gatewayv1.HTTPRoute)
+		wantMessage string
+	}{
+		{
+			name: "multiple backendRefs",
+			mutate: func(testRoute *gatewayv1.HTTPRoute) {
+				testRoute.Spec.Rules[0].BackendRefs = append(testRoute.Spec.Rules[0].BackendRefs, gatewayv1.HTTPBackendRef{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{Name: "other"},
+					},
+				})
+			},
+			wantMessage: "multiple backendRefs are not supported by cfgate tunnel ingress",
+		},
+		{
+			name: "unsupported backend group",
+			mutate: func(testRoute *gatewayv1.HTTPRoute) {
+				group := gatewayv1.Group("example.com")
+				testRoute.Spec.Rules[0].BackendRefs[0].Group = &group
+			},
+			wantMessage: "unsupported backend group",
+		},
+		{
+			name: "unsupported backend kind",
+			mutate: func(testRoute *gatewayv1.HTTPRoute) {
+				kind := gatewayv1.Kind("ConfigMap")
+				testRoute.Spec.Rules[0].BackendRefs[0].Kind = &kind
+			},
+			wantMessage: "unsupported backend kind",
+		},
+	}
+	for _, tt := range unsupportedTests {
+		t.Run(tt.name, func(t *testing.T) {
+			testRoute := route.DeepCopy()
+			tt.mutate(testRoute)
+			condition := r.resolveBackends(context.Background(), testRoute)
+			if condition.Status != metav1.ConditionFalse || condition.Reason != status.ReasonUnsupportedValue {
+				t.Fatalf("resolveBackends() = %+v, want UnsupportedValue", condition)
+			}
+			if !strings.Contains(condition.Message, tt.wantMessage) {
+				t.Fatalf("resolveBackends() message = %q, want substring %q", condition.Message, tt.wantMessage)
+			}
+		})
+	}
+
 	route.Spec.Rules[0].BackendRefs[0].Name = "missing"
 	condition = r.resolveBackends(context.Background(), route)
 	if condition.Status != metav1.ConditionFalse || condition.Reason != status.ReasonBackendNotFound {

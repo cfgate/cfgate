@@ -13,7 +13,9 @@ All notable changes to cfgate are documented in this file.
 - **(tunnel)** Block cloudflared deployment when referenced origin CA Secrets or keys are missing
 - **(cloudflared)** Align metrics fallback port with API/docs and honor metrics disablement
 - **(gateway)** Translate HTTPRoute paths to cloudflared regexes and enforce backend ReferenceGrants
+- **(gateway)** Report unsupported HTTPRoute backendRefs with `ResolvedRefs=False`
 - **(access)** Reject unsupported application types and invalid policy selector combinations
+- **(access)** Restrict Access Application CRD admission to `self_hosted`
 - **(release)** Drop changelog writeback and tighten latest tags
 - **(release)** Harden e2e preflight and coverage upload
 - Correct assurance score metadata and review notes
@@ -25,6 +27,7 @@ All notable changes to cfgate are documented in this file.
 
 - Add merged coverage tooling and orchestration tests
 - Expand e2e coverage and drop access mtls
+- Cover unsupported HTTPRoute backend status and Access Application type admission
 - Drop unused e2e helper stubs
 
 ### Refactoring

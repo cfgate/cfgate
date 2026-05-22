@@ -37,6 +37,32 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 		deleteTestNamespace(namespaceObj)
 	})
 
+	It("rejects non-self-hosted Access Application types at admission", func(ctx SpecContext) {
+		appName := testID("saas-app")
+		app := &cfgatev1alpha1.CloudflareAccessApplication{
+			ObjectMeta: metav1.ObjectMeta{Name: appName, Namespace: namespace},
+			Spec: cfgatev1alpha1.CloudflareAccessApplicationSpec{
+				TargetRef: &cfgatev1alpha1.PolicyTargetReference{
+					Group: "gateway.networking.k8s.io",
+					Kind:  "HTTPRoute",
+					Name:  "route",
+				},
+				Application: cfgatev1alpha1.AccessApplication{
+					Name: appName,
+					Type: "saas",
+				},
+				PolicyRefs: []cfgatev1alpha1.AccessPolicyReference{{Name: "policy"}},
+			},
+		}
+
+		err := k8sClient.Create(ctx, app)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(Or(
+			ContainSubstring("Unsupported value: \"saas\""),
+			ContainSubstring("supported values: \"self_hosted\""),
+		))
+	})
+
 	It("syncs a reusable policy and binds one application to an HTTPRoute", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
 		gatewayClassName := testID("access-gc-single")
 		createGatewayClass(ctx, k8sClient, gatewayClassName)
