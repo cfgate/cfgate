@@ -20,8 +20,8 @@ Current tunnel correctness coverage includes:
 
 - cloudflared metrics default port `44483` and `metrics.enabled: false` omission of args, ports, and HTTP probes
 - `caPoolSecretRef` Secret volume/item/mount generation and global `originRequest.caPool`
-- per-route `originServerName`, `caPool`, host header, TLS verify, HTTP/2, and h2c origin request propagation
-- `cfgate.io/hostname` override and listener hostname fallback for tunnel/DNS route discovery
+- managed per-route `caPool`, `originServerName`, host header, TLS verify, HTTP/2, and h2c origin request propagation
+- `cfgate.io/hostname` override for listener compatibility plus tunnel/DNS route discovery
 - HTTPRoute path translation to anchored cloudflared regexes
 - cross-namespace backend `Service` `ReferenceGrant` enforcement
 - HTTPRoute unsupported backend status for multiple backendRefs and non-Service backend group/kind values
@@ -55,7 +55,7 @@ All variables are injected via `mise` from `secrets.enc.yaml` and `.env`. See [C
 |----------|---------|
 | `CLOUDFLARE_ZONE_NAME` | Zone domain name for test DNS records (e.g., `example.com`) |
 
-Tests construct hostnames as `e2e-{type}-{node}-{line}.{CLOUDFLARE_ZONE_NAME}`. Without this variable, DNS and Access test suites are skipped.
+Tests construct hostnames as `e2e-{run}-{type}-{node}-{line}.{CLOUDFLARE_ZONE_NAME}`. Without this variable, DNS and Access test suites are skipped.
 
 > **Note:** `CLOUDFLARE_ZONE_NAME` is a test-only variable. The cfgate controller does not use it. Zones are configured per CloudflareDNS resource via `spec.zones[]`.
 
@@ -68,6 +68,8 @@ Tests construct hostnames as `e2e-{type}-{node}-{line}.{CLOUDFLARE_ZONE_NAME}`. 
 | `CLOUDFLARE_TEST_GROUP` | Test group name for GSuite group rule verification |
 | `E2E_SKIP_CLEANUP` | Set to `true` to skip resource cleanup after tests (for debugging) |
 | `E2E_USE_EXISTING_CLUSTER` | Set to `true` to use existing kubeconfig cluster instead of creating kind |
+| `E2E_RUN_ID` | Optional per-suite run ID override for Cloudflare resource names; auto-generated when unset |
+| `E2E_ORPHAN_MIN_AGE` | Minimum age for stale cross-run Cloudflare orphan cleanup (default: `2h`) |
 | `E2E_PROCS` | Ginkgo parallel process count (default: 4) |
 
 #### API Token Permissions
@@ -168,6 +170,10 @@ E2E_PROCS=8 mise run e2e
 
 #### Cleanup Orphaned Resources
 
+Each E2E suite run gets a run ID. When `E2E_RUN_ID` is unset, the suite auto-generates one so concurrent local runs do not share Cloudflare resource names. `SynchronizedBeforeSuite` removes stale `e2e-*` resources from older runs using `E2E_ORPHAN_MIN_AGE`; `SynchronizedAfterSuite` removes resources from the current run regardless of age.
+
+Tests that intentionally preserve a remote resource during CR deletion must register `DeferCleanup` immediately after discovering the remote ID, so failed assertions still clean up the business Cloudflare account.
+
 If tests fail or `E2E_SKIP_CLEANUP=true` was set, resources may be left in Cloudflare. The cleanup utility removes them:
 
 ```bash
@@ -205,10 +211,10 @@ test/e2e/
 Resources created during tests follow the pattern:
 
 ```
-e2e-{type}-{node}-{line}
+e2e-{run}-{type}-{node}-{line}
 ```
 
-The `{line}` component is the Ginkgo spec's source line number, making names deterministic and reproducible across runs. This ensures parallel test nodes do not collide and orphaned resources are identifiable.
+The `{run}` component scopes resources to one suite invocation, while `{line}` is the Ginkgo spec's source line number. This ensures parallel test nodes do not collide, concurrent suite runs do not delete each other's fresh Cloudflare resources, and orphaned resources remain identifiable.
 
 ### Test Patterns
 
@@ -319,7 +325,7 @@ The current invariant suite covers these resource families:
 | Context | IDs | What it verifies |
 |---------|-----|-----------------|
 | CloudflareTunnel Ready | INV-T1..T9 | Sub-conditions, TunnelID, TunnelDomain format, finalizer, deployment, config-hash |
-| CloudflareDNS Ready | INV-D1..D8 | Sub-conditions, SyncedRecords, ResolvedTarget, CF API CNAME, OwnershipVerified |
+| CloudflareDNS Ready | INV-D1..D8 | Sub-conditions, SyncedRecords, ResolvedTarget, CF API CNAME, non-fatal OwnershipVerified |
 | CloudflareAccessPolicy/Application Ready | INV-A1..A8 | Reusable policy state, application IDs, targets, finalizers, CF API resources |
 | Service token invariants | INV-ST1..ST4 | Service token Secret shape, status IDs, Cloudflare token presence |
 | Gateway status | INV-GW1..GW4 | Accepted, Programmed, addresses, supportedKinds |

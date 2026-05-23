@@ -372,18 +372,19 @@ type AccessIPRule struct {
 
 // AccessIPListRule references a Cloudflare IP List (P0 - no IdP required).
 //
-// AccessIPListRule allows referencing a managed IP list in Cloudflare by ID or name.
-// Using lists enables centralized IP management across multiple Access policies.
-// Maps to cloudflare-go IPListRule.
+// AccessIPListRule references a managed IP list in Cloudflare by ID. Name-based
+// lookup is not supported in v1alpha1. Using lists enables centralized IP
+// management across multiple Access policies. Maps to cloudflare-go IPListRule.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.id) || has(self.name)",message="either id or name must be specified"
+// +kubebuilder:validation:XValidation:rule="has(self.id)",message="id must be specified"
 type AccessIPListRule struct {
 	// ID of the IP list in Cloudflare.
 	// +optional
 	// +kubebuilder:validation:MaxLength=36
 	ID string `json:"id,omitempty"`
 
-	// Name of the IP list (looked up via API).
+	// Name is not supported for lookup in v1alpha1. Specify id instead.
+	// Deprecated: use id.
 	// +optional
 	// +kubebuilder:validation:MaxLength=255
 	Name string `json:"name,omitempty"`
@@ -434,18 +435,20 @@ type AccessEmailRule struct {
 
 // AccessEmailListRule references a Cloudflare Access email list (P1 - basic IdP required).
 //
-// AccessEmailListRule references a managed list of email addresses in Cloudflare.
-// Using lists enables centralized email management across multiple Access policies.
-// Maps to cloudflare-go EmailListRule.
+// AccessEmailListRule references a managed list of email addresses in Cloudflare
+// by ID. Name-based lookup is not supported in v1alpha1. Using lists enables
+// centralized email management across multiple Access policies. Maps to
+// cloudflare-go EmailListRule.
 //
-// +kubebuilder:validation:XValidation:rule="has(self.id) || has(self.name)",message="either id or name must be specified"
+// +kubebuilder:validation:XValidation:rule="has(self.id)",message="id must be specified"
 type AccessEmailListRule struct {
 	// ID of the Access list in Cloudflare.
 	// +optional
 	// +kubebuilder:validation:MaxLength=36
 	ID string `json:"id,omitempty"`
 
-	// Name of the Access list (looked up via API).
+	// Name is not supported for lookup in v1alpha1. Specify id instead.
+	// Deprecated: use id.
 	// +optional
 	// +kubebuilder:validation:MaxLength=255
 	Name string `json:"name,omitempty"`

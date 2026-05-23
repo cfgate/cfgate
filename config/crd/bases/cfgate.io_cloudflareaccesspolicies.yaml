@@ -220,13 +220,15 @@ spec:
                           maxLength: 36
                           type: string
                         name:
-                          description: Name of the Access list (looked up via API).
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
                           maxLength: 255
                           type: string
                       type: object
                       x-kubernetes-validations:
-                      - message: either id or name must be specified
-                        rule: has(self.id) || has(self.name)
+                      - message: id must be specified
+                        rule: has(self.id)
                     everyone:
                       description: |-
                         Everyone matches all users (use with caution).
@@ -289,13 +291,15 @@ spec:
                           maxLength: 36
                           type: string
                         name:
-                          description: Name of the IP list (looked up via API).
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
                           maxLength: 255
                           type: string
                       type: object
                       x-kubernetes-validations:
-                      - message: either id or name must be specified
-                        rule: has(self.id) || has(self.name)
+                      - message: id must be specified
+                        rule: has(self.id)
                     oidcClaim:
                       description: |-
                         OIDCClaim matches OIDC token claims.
@@ -427,13 +431,15 @@ spec:
                           maxLength: 36
                           type: string
                         name:
-                          description: Name of the Access list (looked up via API).
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
                           maxLength: 255
                           type: string
                       type: object
                       x-kubernetes-validations:
-                      - message: either id or name must be specified
-                        rule: has(self.id) || has(self.name)
+                      - message: id must be specified
+                        rule: has(self.id)
                     everyone:
                       description: |-
                         Everyone matches all users (use with caution).
@@ -496,13 +502,15 @@ spec:
                           maxLength: 36
                           type: string
                         name:
-                          description: Name of the IP list (looked up via API).
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
                           maxLength: 255
                           type: string
                       type: object
                       x-kubernetes-validations:
-                      - message: either id or name must be specified
-                        rule: has(self.id) || has(self.name)
+                      - message: id must be specified
+                        rule: has(self.id)
                     oidcClaim:
                       description: |-
                         OIDCClaim matches OIDC token claims.
@@ -649,13 +657,15 @@ spec:
                           maxLength: 36
                           type: string
                         name:
-                          description: Name of the Access list (looked up via API).
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
                           maxLength: 255
                           type: string
                       type: object
                       x-kubernetes-validations:
-                      - message: either id or name must be specified
-                        rule: has(self.id) || has(self.name)
+                      - message: id must be specified
+                        rule: has(self.id)
                     everyone:
                       description: |-
                         Everyone matches all users (use with caution).
@@ -718,13 +728,15 @@ spec:
                           maxLength: 36
                           type: string
                         name:
-                          description: Name of the IP list (looked up via API).
+                          description: |-
+                            Name is not supported for lookup in v1alpha1. Specify id instead.
+                            Deprecated: use id.
                           maxLength: 255
                           type: string
                       type: object
                       x-kubernetes-validations:
-                      - message: either id or name must be specified
-                        rule: has(self.id) || has(self.name)
+                      - message: id must be specified
+                        rule: has(self.id)
                     oidcClaim:
                       description: |-
                         OIDCClaim matches OIDC token claims.

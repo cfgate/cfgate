@@ -8,7 +8,8 @@ All notable changes to cfgate are documented in this file.
 ### Bug Fixes
 
 - **(tunnel)** Apply origin CA pool Secret mounts and remote `originRequest.caPool`
-- **(tunnel)** Propagate per-route origin server name and CA pool annotations
+- **(tunnel)** Propagate per-route origin server name and managed CA pool annotations
+- **(tunnel)** Reject route CA pool annotation paths that cfgate does not mount
 - **(tunnel)** Honor route hostname overrides and listener hostname fallback in tunnel/DNS discovery
 - **(tunnel)** Block cloudflared deployment when referenced origin CA Secrets or keys are missing
 - **(cloudflared)** Align metrics fallback port with API/docs and honor metrics disablement

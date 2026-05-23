@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"regexp"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -63,7 +65,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 			Annotations: map[string]string{
 				"cfgate.io/origin-http-host-header": "origin.example.com",
 				"cfgate.io/origin-server-name":      "tls.example.com",
-				"cfgate.io/origin-ca-pool":          "/etc/cfgate/custom-ca.pem",
+				"cfgate.io/origin-ca-pool":          "/etc/cfgate/origin-ca-pool/ca.pem",
 				"cfgate.io/origin-ssl-verify":       "false",
 				"cfgate.io/origin-http2":            "true",
 				"cfgate.io/origin-h2c":              "true",
@@ -119,7 +121,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 		}
 		if origin.HTTPHostHeader != "origin.example.com" ||
 			origin.OriginServerName != "tls.example.com" ||
-			origin.CAPool != "/etc/cfgate/custom-ca.pem" ||
+			origin.CAPool != "/etc/cfgate/origin-ca-pool/ca.pem" ||
 			!origin.NoTLSVerify ||
 			!origin.HTTP2Origin ||
 			!origin.H2cOrigin ||
@@ -255,6 +257,73 @@ func TestBuildRulesFromHTTPRouteUsesHostnameAnnotation(t *testing.T) {
 	}
 }
 
+func TestBuildRulesFromHTTPRouteValidatesOriginCAPool(t *testing.T) {
+	servicePort := gatewayv1.PortNumber(8080)
+	baseRoute := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "default",
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "app",
+							Port: &servicePort,
+						},
+					},
+				}},
+			}},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		caPool            string
+		originCAPoolMount bool
+		wantErr           string
+	}{
+		{
+			name:              "managed path accepted when mounted",
+			caPool:            "/etc/cfgate/origin-ca-pool/ca.pem",
+			originCAPoolMount: true,
+		},
+		{
+			name:    "managed path requires tunnel secret mount",
+			caPool:  "/etc/cfgate/origin-ca-pool/ca.pem",
+			wantErr: "requires CloudflareTunnel spec.originDefaults.caPoolSecretRef",
+		},
+		{
+			name:              "arbitrary path rejected even when mounted",
+			caPool:            "/etc/cfgate/custom-ca.pem",
+			originCAPoolMount: true,
+			wantErr:           "must be \"/etc/cfgate/origin-ca-pool/ca.pem\"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			route := baseRoute.DeepCopy()
+			route.Annotations = map[string]string{annotations.AnnotationOriginCAPool: tt.caPool}
+			rules, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnames(route, effectiveHTTPRouteHostnames(route), tt.originCAPoolMount)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("buildRulesFromHTTPRouteForHostnames() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildRulesFromHTTPRouteForHostnames() error = %v", err)
+			}
+			if len(rules) != 1 || rules[0].OriginRequest == nil || rules[0].OriginRequest.CAPool != tt.caPool {
+				t.Fatalf("rules = %#v, want managed caPool origin request", rules)
+			}
+		})
+	}
+}
+
 func TestRouteHostnamesForGatewayFallsBackToListener(t *testing.T) {
 	section := gatewayv1.SectionName("web")
 	listenerHostname := gatewayv1.Hostname("listener.example.com")
@@ -293,6 +362,14 @@ func TestCloudflaredPathRegex(t *testing.T) {
 				Value: stringPtr("/foo"),
 			}},
 			want: "^/foo(?:/.*)?$",
+		},
+		{
+			name: "path prefix with trailing slash",
+			match: gatewayv1.HTTPRouteMatch{Path: &gatewayv1.HTTPPathMatch{
+				Type:  pathMatchType(gatewayv1.PathMatchPathPrefix),
+				Value: stringPtr("/api/v1/"),
+			}},
+			want: "^/api/v1/.*$",
 		},
 		{
 			name: "exact",
@@ -336,6 +413,15 @@ func TestCloudflaredPathRegex(t *testing.T) {
 				t.Fatalf("cloudflaredPathRegex() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+
+	prefixRegex := regexp.MustCompile("^/foo(?:/.*)?$")
+	if !prefixRegex.MatchString("/foo") || !prefixRegex.MatchString("/foo/bar") || prefixRegex.MatchString("/foobar") {
+		t.Fatal("path prefix regex should match /foo and /foo/bar, but not /foobar")
+	}
+	trailingSlashRegex := regexp.MustCompile("^/api/v1/.*$")
+	if !trailingSlashRegex.MatchString("/api/v1/") || !trailingSlashRegex.MatchString("/api/v1/users") || trailingSlashRegex.MatchString("/api/v1") {
+		t.Fatal("trailing slash path prefix regex should match /api/v1/ and /api/v1/users, but not /api/v1")
 	}
 }
 

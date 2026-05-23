@@ -3,6 +3,8 @@ package e2e_test
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -811,16 +813,25 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 				for _, ingress := range config.Config.Ingress {
 					ruleSet[fmt.Sprintf("%s|%s|%s", ingress.Hostname, ingress.Path, ingress.Service)] = true
 				}
+				ruleKeys := make([]string, 0, len(ruleSet))
+				for key := range ruleSet {
+					ruleKeys = append(ruleKeys, key)
+				}
+				sort.Strings(ruleKeys)
+				ruleSetMessage := "remote ingress rules:\n" + strings.Join(ruleKeys, "\n")
 
-				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/app|http://%s.%s.svc.cluster.local:8080", hostnameOne, serviceOne.Name, namespace.Name)))
-				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/api|http://%s.%s.svc.cluster.local:8080", hostnameOne, serviceOne.Name, namespace.Name)))
-				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/app|http://%s.%s.svc.cluster.local:8080", hostnameTwo, serviceOne.Name, namespace.Name)))
-				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|/api|http://%s.%s.svc.cluster.local:8080", hostnameTwo, serviceOne.Name, namespace.Name)))
+				appPath := "^/app(?:/.*)?$"
+				apiPath := "^/api(?:/.*)?$"
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|%s|http://%s.%s.svc.cluster.local:8080", hostnameOne, appPath, serviceOne.Name, namespace.Name)), ruleSetMessage)
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|%s|http://%s.%s.svc.cluster.local:8080", hostnameOne, apiPath, serviceOne.Name, namespace.Name)), ruleSetMessage)
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|%s|http://%s.%s.svc.cluster.local:8080", hostnameTwo, appPath, serviceOne.Name, namespace.Name)), ruleSetMessage)
+				g.Expect(ruleSet).To(HaveKey(fmt.Sprintf("%s|%s|http://%s.%s.svc.cluster.local:8080", hostnameTwo, apiPath, serviceOne.Name, namespace.Name)), ruleSetMessage)
 				g.Expect(ruleSet).To(SatisfyAny(
 					HaveKey(fmt.Sprintf("%s||http://%s.%s.svc.cluster.local:9090", hostnameThree, serviceTwo.Name, namespace.Name)),
 					HaveKey(fmt.Sprintf("%s|/|http://%s.%s.svc.cluster.local:9090", hostnameThree, serviceTwo.Name, namespace.Name)),
-				))
-				g.Expect(ruleSet).To(HaveKey("||http_status:404"))
+					HaveKey(fmt.Sprintf("%s|^/.*$|http://%s.%s.svc.cluster.local:9090", hostnameThree, serviceTwo.Name, namespace.Name)),
+				), ruleSetMessage)
+				g.Expect(ruleSet).To(HaveKey("||http_status:404"), ruleSetMessage)
 			}, LongTimeout, DefaultInterval).Should(Succeed())
 		})
 	})

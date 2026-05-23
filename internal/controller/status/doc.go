@@ -34,9 +34,9 @@
 // CloudflareTunnel conditions:
 //   - Ready: Overall tunnel ready (all sub-conditions true)
 //   - CredentialsValid: Cloudflare API credentials validated
-//   - TunnelCreated: Tunnel exists in Cloudflare
-//   - TunnelConfigured: Tunnel configuration synced
-//   - DeploymentReady: cloudflared Deployment pods ready
+//   - TunnelReady: Tunnel exists in Cloudflare
+//   - ConfigurationSynced: Tunnel configuration synced
+//   - CloudflaredDeployed: cloudflared Deployment pods ready
 //
 // CloudflareDNS conditions:
 //   - Ready: Overall DNS sync ready
@@ -66,9 +66,9 @@
 //
 //	// CloudflareTunnel
 //	NewCredentialsValidCondition(valid bool, reason, message string, generation int64)
-//	NewTunnelCreatedCondition(created bool, reason, message string, generation int64)
-//	NewTunnelConfiguredCondition(configured bool, reason, message string, generation int64)
-//	NewDeploymentReadyCondition(ready bool, reason, message string, generation int64)
+//	NewTunnelOperationalCondition(ready bool, reason, message string, generation int64)
+//	NewConfigurationSyncedCondition(synced bool, reason, message string, generation int64)
+//	NewCloudflaredDeployedCondition(deployed bool, reason, message string, generation int64)
 //	NewTunnelReadyCondition(conditions []metav1.Condition, generation int64)
 //
 //	// CloudflareDNS

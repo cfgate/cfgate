@@ -240,18 +240,21 @@ func buildReusablePolicyParams(policy *cfgatev1alpha1.CloudflareAccessPolicy) (c
 }
 
 func validateAccessPolicyCompatibility(policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
-	ruleSets := map[string][]cfgatev1alpha1.AccessRule{
-		"include": policy.Spec.Include,
-		"exclude": policy.Spec.Exclude,
-		"require": policy.Spec.Require,
+	ruleSets := []struct {
+		name  string
+		rules []cfgatev1alpha1.AccessRule
+	}{
+		{name: "include", rules: policy.Spec.Include},
+		{name: "exclude", rules: policy.Spec.Exclude},
+		{name: "require", rules: policy.Spec.Require},
 	}
-	for setName, rules := range ruleSets {
-		for i, rule := range rules {
+	for _, set := range ruleSets {
+		for i, rule := range set.rules {
 			if countAccessRuleSelectors(rule) != 1 {
-				return fmt.Errorf("%s[%d]: exactly one selector must be specified", setName, i)
+				return fmt.Errorf("%s[%d]: exactly one selector must be specified", set.name, i)
 			}
 			if policy.Spec.Decision == "bypass" && accessRuleHasIdentitySelector(rule) {
-				return fmt.Errorf("%s[%d]: bypass policies cannot use identity selectors", setName, i)
+				return fmt.Errorf("%s[%d]: bypass policies cannot use identity selectors", set.name, i)
 			}
 		}
 	}

@@ -464,6 +464,51 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
 		})
 
+		It("applies zone-level proxied when hostname does not override it", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
+			hostname := fmt.Sprintf("%s.%s", testID("zone-proxied"), testEnv.CloudflareZoneName)
+			zoneProxied := false
+
+			By("Creating CloudflareDNS with defaults.proxied=true and zones[].proxied=false")
+			dnsResource := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("dns-zone-proxied"),
+					Namespace: namespace.Name,
+				},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{
+						Name:      sharedTunnel.Name,
+						Namespace: namespace.Name,
+					},
+					Zones: []cfgatev1alpha1.DNSZoneConfig{{
+						Name:    testEnv.CloudflareZoneName,
+						Proxied: &zoneProxied,
+					}},
+					Defaults: cfgatev1alpha1.DNSRecordDefaults{
+						Proxied: true,
+					},
+					Policy: cfgatev1alpha1.DNSPolicySync,
+					Source: cfgatev1alpha1.DNSHostnameSource{
+						Explicit: []cfgatev1alpha1.DNSExplicitHostname{{
+							Hostname: hostname,
+						}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
+			DeferCleanup(func(ctx SpecContext) {
+				_ = k8sClient.Delete(ctx, dnsResource)
+			})
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+
+			By("Verifying zone-level proxied overrides defaults.proxied")
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).NotTo(BeNil())
+				g.Expect(record.Proxied).To(BeFalse())
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+		})
+
 		It("handles hostname matching zone correctly", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
 			// Test that a hostname is matched to the correct zone.
 			hostname := fmt.Sprintf("%s.%s", testID("zone-match"), testEnv.CloudflareZoneName)
@@ -1244,18 +1289,27 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 
 			By("Verifying record is created")
 			recordID := waitForDNSRecordID(ctx, cfClient, zoneID, hostname, "CNAME", DefaultTimeout)
+			DeferCleanup(func() {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+				defer cancel()
+				cleanupDNSRecord(cleanupCtx, cfClient, zoneID, hostname, "CNAME")
+			})
+
+			By("Verifying cleanup policy is explicitly disabled")
+			var current cfgatev1alpha1.CloudflareDNS
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: dnsResource.Name, Namespace: dnsResource.Namespace}, &current)).To(Succeed())
+			Expect(current.Spec.CleanupPolicy.DeleteOnResourceRemoval).NotTo(BeNil())
+			Expect(*current.Spec.CleanupPolicy.DeleteOnResourceRemoval).To(BeFalse())
 
 			By("Deleting the CloudflareDNS resource")
 			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
 			waitForDNSDeleted(ctx, k8sClient, dnsResource.Name, namespace.Name, DefaultTimeout)
 
 			By("Verifying record is NOT deleted (cleanup disabled)")
-			Consistently(func() bool {
-				return dnsRecordByIDStillExists(ctx, cfClient, zoneID, recordID)
-			}, ShortTimeout, DefaultInterval).Should(BeTrue(), "Record should NOT be deleted when cleanup disabled")
-
-			// Manual cleanup.
-			cleanupDNSRecord(ctx, cfClient, zoneID, hostname, "CNAME")
+			Consistently(func(g Gomega) {
+				exists, detail := dnsRecordByIDStatus(ctx, cfClient, zoneID, recordID)
+				g.Expect(exists).To(BeTrue(), "Record should NOT be deleted when cleanup disabled: %s", detail)
+			}, ShortTimeout, DefaultInterval).Should(Succeed())
 		})
 	})
 
@@ -1583,17 +1637,25 @@ func waitForDNSRecordID(ctx context.Context, cfClient *cloudflare.Client, zoneID
 // dnsRecordByIDStillExists uses the direct record lookup API to reduce flakiness
 // from exact-name list calls under parallel E2E load.
 func dnsRecordByIDStillExists(ctx context.Context, cfClient *cloudflare.Client, zoneID, recordID string) bool {
+	exists, _ := dnsRecordByIDStatus(ctx, cfClient, zoneID, recordID)
+	return exists
+}
+
+func dnsRecordByIDStatus(ctx context.Context, cfClient *cloudflare.Client, zoneID, recordID string) (bool, string) {
 	record, err := cfClient.DNS.Records.Get(ctx, recordID, dns.RecordGetParams{
 		ZoneID: cloudflare.F(zoneID),
 	})
 	if err == nil {
-		return record != nil
+		if record == nil {
+			return false, fmt.Sprintf("record %s returned nil", recordID)
+		}
+		return true, fmt.Sprintf("record %s still exists", recordID)
 	}
 	if strings.Contains(strings.ToLower(err.Error()), "not found") {
-		return false
+		return false, fmt.Sprintf("record %s not found", recordID)
 	}
 	GinkgoWriter.Printf("DNS record get-by-ID error (treating as still-exists): id=%s err=%v\n", recordID, err)
-	return true
+	return true, fmt.Sprintf("record %s lookup error treated as still-exists: %v", recordID, err)
 }
 
 // cleanupDNSRecord manually deletes a DNS record for test hygiene.

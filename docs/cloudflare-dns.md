@@ -22,9 +22,9 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.tunnelRef.name` | `string` | *none* | Yes (if tunnelRef set) | Name of the CloudflareTunnel resource. 1-63 chars. |
 | `spec.tunnelRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the CloudflareTunnel. Max 63 chars. |
 | `spec.externalTarget.type` | `RecordType` | *none* | Yes (if externalTarget set) | DNS record type: `CNAME`, `A`, or `AAAA`. |
-| `spec.externalTarget.value` | `string` | *none* | Yes (if externalTarget set) | Target value: domain name for CNAME, IP address for A/AAAA. 1-255 chars. |
+| `spec.externalTarget.value` | `string` | *none* | Yes (if externalTarget set) | Target value: domain name for CNAME, IP address for A/AAAA. 1-253 chars. |
 | `spec.zones[]` | `[]DNSZoneConfig` | *none* | Yes | DNS zones to manage. Min 1, max 10. |
-| `spec.zones[].name` | `string` | *none* | Yes | Zone domain name (e.g., `example.com`). 1-255 chars. |
+| `spec.zones[].name` | `string` | *none* | Yes | Zone domain name (e.g., `example.com`). 1-253 chars. |
 | `spec.zones[].id` | `string` | *none* | No | Explicit Cloudflare zone ID. When provided, skips API zone lookup. Max 32 chars. |
 | `spec.zones[].proxied` | `*bool` | *(inherits from `spec.defaults.proxied`)* | No | Per-zone proxy override. `true` enables Cloudflare proxy (orange cloud), `false` DNS-only. `nil` inherits from `spec.defaults.proxied`. |
 | `spec.policy` | `DNSPolicy` | `sync` | No | DNS record lifecycle policy. One of: `sync`, `upsert-only`, `create-only`. |
@@ -34,8 +34,8 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.source.gatewayRoutes.namespaceSelector.matchLabels` | `map[string]string` | *none* | No | Select namespaces by label. Max 10 entries. At least one of `matchLabels` or `matchNames` required when `namespaceSelector` is set. |
 | `spec.source.gatewayRoutes.namespaceSelector.matchNames` | `[]string` | *none* | No | Select namespaces by name. Max 50 items. At least one of `matchLabels` or `matchNames` required when `namespaceSelector` is set. |
 | `spec.source.explicit[]` | `[]DNSExplicitHostname` | *none* | No | Explicitly defined hostnames to sync. Max 100 items. |
-| `spec.source.explicit[].hostname` | `string` | *none* | Yes | DNS hostname to create. 1-255 chars. |
-| `spec.source.explicit[].target` | `string` | *(resource-level resolved target)* | No | Per-hostname target override. Supports `{{ .TunnelDomain }}` when using `tunnelRef`. Max 255 chars. |
+| `spec.source.explicit[].hostname` | `string` | *none* | Yes | DNS hostname to create. 1-253 chars. |
+| `spec.source.explicit[].target` | `string` | *(resource-level resolved target)* | No | Per-hostname target override. Supports `{{ .TunnelDomain }}` when using `tunnelRef`. Max 253 chars. |
 | `spec.source.explicit[].proxied` | `*bool` | *(inherits from zone or defaults)* | No | Per-hostname Cloudflare proxy setting. `nil` inherits from zone then defaults. |
 | `spec.source.explicit[].ttl` | `int32` | `1` | No | DNS record TTL in seconds. `1` = auto (Cloudflare-managed, typically 300s). Explicit range: 60-86400. |
 | `spec.defaults.proxied` | `bool` | `true` | No | Default Cloudflare proxy setting for all records. |
@@ -282,11 +282,11 @@ spec:
 
 | Condition | Description |
 |-----------|-------------|
-| `Ready` | DNS sync is fully operational: credentials valid, zones resolved, records synced, ownership verified. Target resolution failures are surfaced through this condition with reason `TargetResolutionFailed`. |
+| `Ready` | DNS sync is operational: credentials valid, zones resolved, and records synced. Target resolution failures are surfaced through this condition with reason `TargetResolutionFailed`. |
 | `CredentialsValid` | Cloudflare API credentials have been validated. |
 | `ZonesResolved` | All configured zones have been resolved via the Cloudflare API (or verified by explicit ID). |
 | `RecordsSynced` | DNS records have been synchronized to Cloudflare. |
-| `OwnershipVerified` | TXT ownership records have been verified for all managed DNS records. |
+| `OwnershipVerified` | TXT ownership records have been verified for all managed DNS records. This condition is diagnostic and does not gate `Ready`. |
 
 ### kubectl Output Columns
 

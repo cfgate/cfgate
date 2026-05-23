@@ -43,13 +43,13 @@ Key fields:
 Supported rule types include:
 
 - `ip.ranges`
-- `ipList.id`
+- `ipList.id` (name lookup is not supported)
 - `country.codes`
 - `everyone`
 - `serviceToken.tokenId` or `serviceToken.name`
 - `anyValidServiceToken`
 - `email.addresses`
-- `emailList.id`
+- `emailList.id` (name lookup is not supported)
 - `emailDomain.domain`
 - `oidcClaim`
 - `gsuiteGroup`

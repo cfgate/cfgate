@@ -13,7 +13,7 @@ Per-route configuration applied to Gateway API HTTPRoute resources.
 | `cfgate.io/origin-connect-timeout` | Duration string (`30s`, `1m`) | `30s` | Origin connection timeout |
 | `cfgate.io/origin-http-host-header` | Hostname string | *none* | Host header override sent to origin |
 | `cfgate.io/origin-server-name` | Hostname string | *none* | TLS SNI server name |
-| `cfgate.io/origin-ca-pool` | File path string | *none* | CA certificate pool path |
+| `cfgate.io/origin-ca-pool` | Managed file path | *none* | CA certificate pool path |
 | `cfgate.io/origin-http2` | `true`, `false` | `false` | HTTP/2 to origin |
 | `cfgate.io/origin-h2c` | `true`, `false` | `false` | HTTP/2 cleartext (h2c) to origin |
 | `cfgate.io/ttl` | `1`-`86400` | `1` (auto) | DNS record TTL in seconds |
@@ -138,11 +138,11 @@ metadata:
 
 #### `cfgate.io/origin-ca-pool`
 
-Literal in-container path to a CA certificate pool file used to verify the origin server's TLS certificate. cfgate sends this value to Cloudflare as per-ingress `originRequest.caPool`, but does not mount files for annotation paths.
+Literal in-container path to a CA certificate pool file used to verify the origin server's TLS certificate. For alpha.5, cfgate accepts only its managed mount path, `/etc/cfgate/origin-ca-pool/ca.pem`, and only when the referenced `CloudflareTunnel` has `spec.originDefaults.caPoolSecretRef` configured.
 
 Use `spec.originDefaults.caPoolSecretRef` on `CloudflareTunnel` when cfgate should mount a Kubernetes Secret. That managed Secret mount is available at `/etc/cfgate/origin-ca-pool/ca.pem`.
 
-**Valid values:** File path string
+**Valid values:** `/etc/cfgate/origin-ca-pool/ca.pem`
 
 **Default:** Not set (system CA pool)
 
@@ -151,7 +151,7 @@ Use `spec.originDefaults.caPoolSecretRef` on `CloudflareTunnel` when cfgate shou
 ```yaml
 metadata:
   annotations:
-    cfgate.io/origin-ca-pool: "/etc/ssl/certs/custom-ca.pem"
+    cfgate.io/origin-ca-pool: "/etc/cfgate/origin-ca-pool/ca.pem"
 ```
 
 ---

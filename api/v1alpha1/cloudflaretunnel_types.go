@@ -315,9 +315,9 @@ type CloudflareTunnelStatus struct {
 // Status conditions:
 //   - Ready: tunnel is fully operational
 //   - CredentialsValid: API credentials have been validated
-//   - TunnelCreated: tunnel exists in Cloudflare
+//   - TunnelReady: tunnel exists in Cloudflare
 //   - ConfigurationSynced: ingress configuration is synced
-//   - DeploymentReady: cloudflared pods are running
+//   - CloudflaredDeployed: cloudflared pods are running
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status

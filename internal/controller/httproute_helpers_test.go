@@ -176,6 +176,277 @@ func TestValidateParentRef(t *testing.T) {
 	if statusResult.Conditions[0].Reason != status.ReasonNotAllowedByListeners {
 		t.Fatalf("validateParentRef() reason = %q, want %q", statusResult.Conditions[0].Reason, status.ReasonNotAllowedByListeners)
 	}
+
+	selectorFrom := gatewayv1.NamespacesFromSelector
+	gateway = gateway.DeepCopy()
+	gateway.Annotations = map[string]string{annotations.AnnotationTunnelRef: "cfgate-system/tunnel"}
+	gateway.Spec.Listeners[0].AllowedRoutes = &gatewayv1.AllowedRoutes{
+		Namespaces: &gatewayv1.RouteNamespaces{
+			From: &selectorFrom,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{"team": "payments"},
+			},
+		},
+	}
+	route.Namespace = "payments"
+	routeNS := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "payments",
+			Labels: map[string]string{"team": "payments"},
+		},
+	}
+	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, routeNS)
+	statusResult = r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
+		Namespace:   &gatewayNS,
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	if statusResult.Conditions[0].Status != metav1.ConditionTrue {
+		t.Fatalf("validateParentRef() selector match = %+v, want accepted condition", statusResult.Conditions)
+	}
+
+	routeNS.Labels = map[string]string{"team": "platform"}
+	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, routeNS)
+	statusResult = r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
+		Namespace:   &gatewayNS,
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	if statusResult.Conditions[0].Reason != status.ReasonNotAllowedByListeners {
+		t.Fatalf("validateParentRef() selector miss reason = %q, want %q", statusResult.Conditions[0].Reason, status.ReasonNotAllowedByListeners)
+	}
+}
+
+func TestValidateParentRefStatusReasons(t *testing.T) {
+	scheme := controllerTestScheme(t)
+	listenerName := gatewayv1.SectionName("https")
+	listenerHostname := gatewayv1.Hostname("api.example.com")
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "app",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "cfgate-system/tunnel",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     listenerName,
+				Protocol: gatewayv1.HTTPSProtocolType,
+				Hostname: &listenerHostname,
+			}},
+		},
+	}
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfgate"},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: gatewayv1.GatewayController(GatewayControllerName),
+		},
+	}
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{Name: "svc"},
+					},
+				}},
+			}},
+		},
+	}
+
+	r := newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass)
+	statusResult := r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	condition := statusResult.Conditions[0]
+	if condition.Type != string(gatewayv1.RouteConditionAccepted) ||
+		condition.Status != metav1.ConditionFalse ||
+		condition.Reason != status.ReasonNoMatchingListenerHostname ||
+		!strings.Contains(condition.Message, "hostname") {
+		t.Fatalf("validateParentRef() hostname mismatch condition = %+v, want NoMatchingListenerHostname", condition)
+	}
+
+	annotatedRoute := route.DeepCopy()
+	annotatedRoute.Spec.Hostnames = nil
+	annotatedRoute.Annotations = map[string]string{annotations.AnnotationHostname: "app.example.com"}
+	statusResult = r.validateParentRef(context.Background(), annotatedRoute, gatewayv1.ParentReference{
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	condition = statusResult.Conditions[0]
+	if condition.Status != metav1.ConditionFalse ||
+		condition.Reason != status.ReasonNoMatchingListenerHostname {
+		t.Fatalf("validateParentRef() annotation hostname mismatch = %+v, want NoMatchingListenerHostname", condition)
+	}
+
+	annotatedRoute.Annotations = map[string]string{annotations.AnnotationHostname: string(listenerHostname)}
+	statusResult = r.validateParentRef(context.Background(), annotatedRoute, gatewayv1.ParentReference{
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	condition = statusResult.Conditions[0]
+	if condition.Status != metav1.ConditionTrue {
+		t.Fatalf("validateParentRef() annotation hostname match = %+v, want Accepted=True", condition)
+	}
+
+	otherNamespace := gatewayv1.Namespace("app")
+	for _, tt := range []struct {
+		name   string
+		mutate func(*gatewayv1.Gateway, *gatewayv1.HTTPRoute)
+	}{
+		{
+			name: "unsupported protocol",
+			mutate: func(testGateway *gatewayv1.Gateway, _ *gatewayv1.HTTPRoute) {
+				testGateway.Spec.Listeners[0].Protocol = gatewayv1.ProtocolType("TCP")
+				testGateway.Spec.Listeners[0].Hostname = nil
+			},
+		},
+		{
+			name: "unsupported route kind",
+			mutate: func(testGateway *gatewayv1.Gateway, _ *gatewayv1.HTTPRoute) {
+				testGateway.Spec.Listeners[0].Hostname = nil
+				testGateway.Spec.Listeners[0].AllowedRoutes = &gatewayv1.AllowedRoutes{
+					Kinds: []gatewayv1.RouteGroupKind{{Kind: gatewayv1.Kind("TLSRoute")}},
+				}
+			},
+		},
+		{
+			name: "namespace not allowed",
+			mutate: func(testGateway *gatewayv1.Gateway, testRoute *gatewayv1.HTTPRoute) {
+				testGateway.Spec.Listeners[0].Hostname = nil
+				same := gatewayv1.NamespacesFromSame
+				testGateway.Spec.Listeners[0].AllowedRoutes = &gatewayv1.AllowedRoutes{
+					Namespaces: &gatewayv1.RouteNamespaces{From: &same},
+				}
+				testRoute.Namespace = "other"
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			testGateway := gateway.DeepCopy()
+			testRoute := route.DeepCopy()
+			tt.mutate(testGateway, testRoute)
+			r := newHTTPRouteTestReconciler(t, scheme, testGateway, gatewayClass)
+			statusResult := r.validateParentRef(context.Background(), testRoute, gatewayv1.ParentReference{
+				Namespace:   &otherNamespace,
+				Name:        "gateway",
+				SectionName: &listenerName,
+			})
+			if statusResult.Conditions[0].Reason != status.ReasonNotAllowedByListeners {
+				t.Fatalf("validateParentRef() reason = %q, want %q", statusResult.Conditions[0].Reason, status.ReasonNotAllowedByListeners)
+			}
+		})
+	}
+}
+
+func TestValidateParentRefPathSupport(t *testing.T) {
+	scheme := controllerTestScheme(t)
+	listenerName := gatewayv1.SectionName("https")
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "app",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "cfgate-system/tunnel",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     listenerName,
+				Protocol: gatewayv1.HTTPSProtocolType,
+			}},
+		},
+	}
+	gatewayClass := &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfgate"},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: gatewayv1.GatewayController(GatewayControllerName),
+		},
+	}
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "app"}}
+	regexType := gatewayv1.PathMatchRegularExpression
+	invalidRegex := "["
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Rules: []gatewayv1.HTTPRouteRule{{
+				Matches: []gatewayv1.HTTPRouteMatch{{
+					Path: &gatewayv1.HTTPPathMatch{Type: &regexType, Value: &invalidRegex},
+				}},
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{Name: "svc"},
+					},
+				}},
+			}},
+		},
+	}
+
+	r := newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, service)
+	statusResult := r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	condition := statusResult.Conditions[0]
+	if condition.Status != metav1.ConditionFalse ||
+		condition.Reason != status.ReasonUnsupportedValue ||
+		!strings.Contains(condition.Message, "unsupported path regular expression") {
+		t.Fatalf("validateParentRef() invalid regex condition = %+v, want Accepted UnsupportedValue", condition)
+	}
+	resolvedRefs := r.resolveBackends(context.Background(), route)
+	if resolvedRefs.Type != string(gatewayv1.RouteConditionResolvedRefs) || resolvedRefs.Status != metav1.ConditionTrue {
+		t.Fatalf("resolveBackends() = %+v, want ResolvedRefs=True", resolvedRefs)
+	}
+
+	unsupportedType := gatewayv1.PathMatchType("ImplementationSpecific")
+	unsupportedPath := "/unsupported"
+	unsupportedRoute := route.DeepCopy()
+	unsupportedRoute.Spec.Rules[0].Matches[0].Path.Type = &unsupportedType
+	unsupportedRoute.Spec.Rules[0].Matches[0].Path.Value = &unsupportedPath
+	statusResult = r.validateParentRef(context.Background(), unsupportedRoute, gatewayv1.ParentReference{
+		Name:        "gateway",
+		SectionName: &listenerName,
+	})
+	condition = statusResult.Conditions[0]
+	if condition.Status != metav1.ConditionFalse ||
+		condition.Reason != status.ReasonUnsupportedValue ||
+		!strings.Contains(condition.Message, "unsupported path match type") {
+		t.Fatalf("validateParentRef() unsupported path type condition = %+v, want Accepted UnsupportedValue", condition)
+	}
+}
+
+func TestHostnameMatches(t *testing.T) {
+	tests := []struct {
+		name             string
+		routeHostname    string
+		listenerHostname string
+		want             bool
+	}{
+		{name: "exact same hostname", routeHostname: "app.example.com", listenerHostname: "app.example.com", want: true},
+		{name: "case insensitive exact match", routeHostname: "APP.EXAMPLE.COM", listenerHostname: "app.example.com", want: true},
+		{name: "listener wildcard one label", routeHostname: "foo.example.com", listenerHostname: "*.example.com", want: true},
+		{name: "listener wildcard deep subdomain", routeHostname: "a.b.example.com", listenerHostname: "*.example.com"},
+		{name: "listener wildcard apex", routeHostname: "example.com", listenerHostname: "*.example.com"},
+		{name: "route wildcard exact listener one label", routeHostname: "*.example.com", listenerHostname: "foo.example.com", want: true},
+		{name: "route wildcard deep listener", routeHostname: "*.example.com", listenerHostname: "a.b.example.com"},
+		{name: "same wildcard hostname", routeHostname: "*.example.com", listenerHostname: "*.example.com", want: true},
+		{name: "unrelated hostname", routeHostname: "foo.example.com", listenerHostname: "bar.example.net"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hostnameMatches(tt.routeHostname, tt.listenerHostname)
+			if got != tt.want {
+				t.Fatalf("hostnameMatches(%q, %q) = %v, want %v", tt.routeHostname, tt.listenerHostname, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestResolveBackends(t *testing.T) {

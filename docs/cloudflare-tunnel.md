@@ -153,6 +153,8 @@ Default settings for how cloudflared connects to backend services in the cluster
 
 **`caPoolSecretRef`:** Use this when your backend services present TLS certificates signed by a private CA. The Secret must contain the CA certificate chain in PEM format. cfgate mounts the selected Secret key into cloudflared at `/etc/cfgate/origin-ca-pool/ca.pem` and sends `originRequest.caPool` with that path in the remote tunnel configuration. If `key` is omitted or empty, cfgate reads `ca.crt`. Without this, connections to services using private CA certificates will fail TLS verification (unless `noTLSVerify` is set, which is not recommended for production).
 
+The route annotation `cfgate.io/origin-ca-pool` can select that same managed path for a specific ingress rule. Alpha.5 rejects arbitrary annotation paths and rejects the annotation when this Secret ref is not configured, because cfgate cannot guarantee any other file exists inside cloudflared.
+
 If the referenced Secret or key is missing, cfgate does not deploy cloudflared and marks `CloudflaredDeployed=False` and `Ready=False`.
 
 ```yaml

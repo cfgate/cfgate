@@ -627,9 +627,9 @@ func TestSimpleConditionConstructors(t *testing.T) {
 		wantType string
 	}{
 		{"NewCredentialsValidCondition", NewCredentialsValidCondition, ConditionTypeCredentialsValid},
-		{"NewTunnelCreatedCondition", NewTunnelCreatedCondition, ConditionTypeTunnelCreated},
-		{"NewTunnelConfiguredCondition", NewTunnelConfiguredCondition, ConditionTypeTunnelConfigured},
-		{"NewDeploymentReadyCondition", NewDeploymentReadyCondition, ConditionTypeDeploymentReady},
+		{"NewTunnelOperationalCondition", NewTunnelOperationalCondition, ConditionTypeTunnelReady},
+		{"NewConfigurationSyncedCondition", NewConfigurationSyncedCondition, ConditionTypeConfigurationSynced},
+		{"NewCloudflaredDeployedCondition", NewCloudflaredDeployedCondition, ConditionTypeCloudflaredDeployed},
 		{"NewZonesResolvedCondition", NewZonesResolvedCondition, ConditionTypeZonesResolved},
 		{"NewRecordsSyncedCondition", NewRecordsSyncedCondition, ConditionTypeRecordsSynced},
 		{"NewOwnershipVerifiedCondition", NewOwnershipVerifiedCondition, ConditionTypeOwnershipVerified},
@@ -687,9 +687,9 @@ func setConditionStatus(conditions []metav1.Condition, condType string, status m
 func TestNewTunnelReadyCondition(t *testing.T) {
 	tunnelSubConditions := []string{
 		ConditionTypeCredentialsValid,
-		ConditionTypeTunnelCreated,
-		ConditionTypeTunnelConfigured,
-		ConditionTypeDeploymentReady,
+		ConditionTypeTunnelReady,
+		ConditionTypeConfigurationSynced,
+		ConditionTypeCloudflaredDeployed,
 	}
 
 	tests := []struct {
@@ -711,20 +711,20 @@ func TestNewTunnelReadyCondition(t *testing.T) {
 			wantReason: "CredsFailed",
 		},
 		{
-			name:       "tunnel not created",
-			conditions: setConditionStatus(allTrueConditions(tunnelSubConditions...), ConditionTypeTunnelCreated, metav1.ConditionFalse, "TunnelFailed", "tunnel bad"),
+			name:       "tunnel not ready",
+			conditions: setConditionStatus(allTrueConditions(tunnelSubConditions...), ConditionTypeTunnelReady, metav1.ConditionFalse, "TunnelFailed", "tunnel bad"),
 			wantStatus: metav1.ConditionFalse,
 			wantReason: "TunnelFailed",
 		},
 		{
-			name:       "tunnel not configured",
-			conditions: setConditionStatus(allTrueConditions(tunnelSubConditions...), ConditionTypeTunnelConfigured, metav1.ConditionFalse, "ConfigFailed", "config bad"),
+			name:       "configuration not synced",
+			conditions: setConditionStatus(allTrueConditions(tunnelSubConditions...), ConditionTypeConfigurationSynced, metav1.ConditionFalse, "ConfigFailed", "config bad"),
 			wantStatus: metav1.ConditionFalse,
 			wantReason: "ConfigFailed",
 		},
 		{
-			name:       "deployment not ready",
-			conditions: setConditionStatus(allTrueConditions(tunnelSubConditions...), ConditionTypeDeploymentReady, metav1.ConditionFalse, "DeployFailed", "deploy bad"),
+			name:       "cloudflared not deployed",
+			conditions: setConditionStatus(allTrueConditions(tunnelSubConditions...), ConditionTypeCloudflaredDeployed, metav1.ConditionFalse, "DeployFailed", "deploy bad"),
 			wantStatus: metav1.ConditionFalse,
 			wantReason: "DeployFailed",
 		},
@@ -761,7 +761,7 @@ func TestNewTunnelReadyCondition(t *testing.T) {
 		},
 		{
 			name:       "partial: two of four",
-			conditions: allTrueConditions(ConditionTypeCredentialsValid, ConditionTypeTunnelCreated),
+			conditions: allTrueConditions(ConditionTypeCredentialsValid, ConditionTypeTunnelReady),
 			wantStatus: metav1.ConditionUnknown,
 			wantReason: ReasonReconciling,
 		},
