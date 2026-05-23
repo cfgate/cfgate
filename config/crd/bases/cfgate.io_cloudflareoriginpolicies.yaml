@@ -1,0 +1,446 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.20.1
+  name: cloudflareoriginpolicies.cfgate.io
+spec:
+  group: cfgate.io
+  names:
+    kind: CloudflareOriginPolicy
+    listKind: CloudflareOriginPolicyList
+    plural: cloudflareoriginpolicies
+    shortNames:
+    - cfop
+    - cforiginpolicy
+    singular: cloudflareoriginpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.attachedTargets
+      name: Targets
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: CloudflareOriginPolicy attaches cfgate-specific origin settings
+          to HTTPRoutes.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              CloudflareOriginPolicySpec defines origin behavior for Gateway API targets.
+
+              CloudflareOriginPolicy is a cfgate-specific Direct Policy Attachment surface for
+              origin settings that do not have a portable Gateway API policy. BackendTLSPolicy
+              remains preferred for standard backend TLS validation when it fits.
+            properties:
+              origin:
+                description: Origin defines cloudflared origin behavior for the selected
+                  targets.
+                properties:
+                  caPoolRef:
+                    description: |-
+                      CAPoolRef selects a named origin CA pool managed by cfgate.
+                      Deprecated: use tls.caPoolRef.
+                    properties:
+                      name:
+                        description: Name is the spec.originCAPools name on the CloudflareTunnel.
+                        maxLength: 63
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  connectTimeout:
+                    description: |-
+                      ConnectTimeout is the timeout for establishing a new TCP connection to the origin.
+                      Deprecated: use connection.connectTimeout.
+                    pattern: ^[0-9]+(s|m|h)$
+                    type: string
+                  connection:
+                    description: Connection contains origin connection settings.
+                    properties:
+                      connectTimeout:
+                        description: ConnectTimeout is the timeout for establishing
+                          a new TCP connection to the origin.
+                        pattern: ^[0-9]+(s|m|h)$
+                        type: string
+                    type: object
+                  h2cOrigin:
+                    description: H2cOrigin makes cloudflared connect to cleartext
+                      HTTP/2 origins.
+                    type: boolean
+                  http:
+                    description: HTTP contains origin HTTP settings.
+                    properties:
+                      disableChunkedEncoding:
+                        description: DisableChunkedEncoding disables chunked transfer
+                          encoding to HTTP/1.1 origins.
+                        type: boolean
+                      httpHostHeader:
+                        description: HTTPHostHeader sets the HTTP Host header on requests
+                          sent to the backend Service.
+                        maxLength: 253
+                        type: string
+                    type: object
+                  http2Origin:
+                    description: HTTP2Origin makes cloudflared connect to HTTPS origins
+                      with HTTP/2.
+                    type: boolean
+                  httpHostHeader:
+                    description: |-
+                      HTTPHostHeader sets the HTTP Host header sent to the backend Service.
+                      Deprecated: use http.httpHostHeader.
+                    maxLength: 253
+                    type: string
+                  noTLSVerify:
+                    description: |-
+                      NoTLSVerify disables TLS verification for HTTPS origins.
+                      Deprecated: use tls.noTLSVerify.
+                    type: boolean
+                  originServerName:
+                    description: |-
+                      OriginServerName is the SNI and expected certificate hostname for HTTPS origins.
+                      Deprecated: use tls.originServerName.
+                    maxLength: 253
+                    type: string
+                  protocol:
+                    description: Protocol is the backend Service scheme. Empty defaults
+                      to HTTP.
+                    enum:
+                    - http
+                    - https
+                    type: string
+                  tls:
+                    description: TLS contains origin TLS settings.
+                    properties:
+                      caPoolRef:
+                        description: CAPoolRef selects a named origin CA pool managed
+                          by cfgate.
+                        properties:
+                          name:
+                            description: Name is the spec.originCAPools name on the
+                              CloudflareTunnel.
+                            maxLength: 63
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      matchSNItoHost:
+                        description: MatchSNIToHost makes cloudflared set SNI to the
+                          incoming request hostname.
+                        type: boolean
+                      noTLSVerify:
+                        description: NoTLSVerify disables TLS certificate verification
+                          for HTTPS origins.
+                        type: boolean
+                      originServerName:
+                        description: |-
+                          OriginServerName is the hostname cloudflared expects on the origin certificate
+                          and uses for SNI when connecting to HTTPS origins.
+                        maxLength: 253
+                        type: string
+                      tlsTimeout:
+                        description: TLSTimeout is the timeout for completing the
+                          TLS handshake.
+                        pattern: ^[0-9]+(s|m|h)$
+                        type: string
+                    type: object
+                type: object
+                x-kubernetes-validations:
+                - message: http2Origin and h2cOrigin are mutually exclusive
+                  rule: '!(self.http2Origin && self.h2cOrigin)'
+              targetRefs:
+                description: |-
+                  TargetRefs identifies Gateway API HTTPRoute resources this policy applies to.
+                  Cross-namespace targets require a Gateway API ReferenceGrant.
+                items:
+                  description: |-
+                    OriginPolicyTargetReference identifies a Gateway API HTTPRoute for origin policy attachment.
+
+                    Cross-namespace references require a ReferenceGrant in the target namespace that permits
+                    CloudflareOriginPolicy resources from the policy namespace.
+                  properties:
+                    group:
+                      default: gateway.networking.k8s.io
+                      description: Group is the API group of the target resource.
+                      maxLength: 253
+                      type: string
+                    kind:
+                      description: Kind is the target kind. CloudflareOriginPolicy
+                        targets HTTPRoute resources.
+                      enum:
+                      - HTTPRoute
+                      maxLength: 63
+                      type: string
+                    name:
+                      description: Name is the name of the target resource.
+                      maxLength: 253
+                      minLength: 1
+                      type: string
+                    namespace:
+                      default: ""
+                      description: |-
+                        Namespace is the namespace of the target resource.
+                        Cross-namespace targeting requires ReferenceGrant.
+                      maxLength: 253
+                      type: string
+                    sectionName:
+                      default: ""
+                      description: SectionName targets a named HTTPRoute rule.
+                      maxLength: 253
+                      type: string
+                  required:
+                  - group
+                  - kind
+                  - name
+                  - namespace
+                  - sectionName
+                  type: object
+                  x-kubernetes-validations:
+                  - message: group must be gateway.networking.k8s.io
+                    rule: self.group == 'gateway.networking.k8s.io'
+                  - message: kind must be HTTPRoute
+                    rule: self.kind == 'HTTPRoute'
+                maxItems: 16
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - group
+                - kind
+                - name
+                - namespace
+                - sectionName
+                x-kubernetes-list-type: map
+            required:
+            - targetRefs
+            type: object
+            x-kubernetes-validations:
+            - message: targetRefs must contain at least one target
+              rule: has(self.targetRefs) && size(self.targetRefs) > 0
+          status:
+            description: CloudflareOriginPolicyStatus defines observed origin policy
+              state.
+            properties:
+              ancestors:
+                description: Ancestors contains status for each targetRef.
+                items:
+                  description: |-
+                    PolicyAncestorStatus describes the policy attachment status for a specific target.
+
+                    PolicyAncestorStatus follows the Gateway API PolicyAncestorStatus pattern to report
+                    per-target attachment status. Each target reference in the spec has a corresponding
+                    ancestor status entry showing whether the policy was successfully attached.
+                  properties:
+                    ancestorRef:
+                      description: AncestorRef identifies the target.
+                      properties:
+                        group:
+                          default: gateway.networking.k8s.io
+                          description: Group is the API group of the target resource.
+                          maxLength: 253
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          enum:
+                          - Gateway
+                          - HTTPRoute
+                          maxLength: 63
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the target resource.
+                            Cross-namespace targeting requires ReferenceGrant.
+                          maxLength: 253
+                          type: string
+                        sectionName:
+                          description: SectionName targets specific listener (Gateway)
+                            or rule (Route).
+                          maxLength: 253
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: group must be gateway.networking.k8s.io
+                        rule: self.group == 'gateway.networking.k8s.io'
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
+                    conditions:
+                      description: Conditions for this specific target.
+                      items:
+                        description: Condition contains details for one aspect of
+                          the current state of this API Resource.
+                        properties:
+                          lastTransitionTime:
+                            description: |-
+                              lastTransitionTime is the last time the condition transitioned from one status to another.
+                              This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                            format: date-time
+                            type: string
+                          message:
+                            description: |-
+                              message is a human readable message indicating details about the transition.
+                              This may be an empty string.
+                            maxLength: 32768
+                            type: string
+                          observedGeneration:
+                            description: |-
+                              observedGeneration represents the .metadata.generation that the condition was set based upon.
+                              For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                              with respect to the current state of the instance.
+                            format: int64
+                            minimum: 0
+                            type: integer
+                          reason:
+                            description: |-
+                              reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                              Producers of specific condition types may define expected values and meanings for this field,
+                              and whether the values are considered a guaranteed API.
+                              The value should be a CamelCase string.
+                              This field may not be empty.
+                            maxLength: 1024
+                            minLength: 1
+                            pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                            type: string
+                          status:
+                            description: status of the condition, one of True, False,
+                              Unknown.
+                            enum:
+                            - "True"
+                            - "False"
+                            - Unknown
+                            type: string
+                          type:
+                            description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                            maxLength: 316
+                            pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                            type: string
+                        required:
+                        - lastTransitionTime
+                        - message
+                        - reason
+                        - status
+                        - type
+                        type: object
+                      maxItems: 8
+                      type: array
+                    controllerName:
+                      description: ControllerName identifies the controller managing
+                        this attachment.
+                      maxLength: 253
+                      type: string
+                  required:
+                  - ancestorRef
+                  - controllerName
+                  type: object
+                maxItems: 64
+                type: array
+              attachedTargets:
+                description: AttachedTargets is the count of successfully accepted
+                  Gateway API targets.
+                format: int32
+                type: integer
+              conditions:
+                description: Conditions describe current state.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                description: ObservedGeneration is the last generation processed by
+                  the controller.
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

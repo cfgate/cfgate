@@ -585,6 +585,8 @@ func TestConstants(t *testing.T) {
 		AnnotationOriginHTTPHostHeader,
 		AnnotationOriginServerName,
 		AnnotationOriginCAPool,
+		AnnotationOriginCAPoolMode,
+		AnnotationOriginCAPoolRef,
 		AnnotationOriginHTTP2,
 		AnnotationOriginH2c,
 	}

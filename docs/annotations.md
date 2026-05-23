@@ -14,6 +14,8 @@ Per-route configuration applied to Gateway API HTTPRoute resources.
 | `cfgate.io/origin-http-host-header` | Hostname string | *none* | Host header override sent to origin |
 | `cfgate.io/origin-server-name` | Hostname string | *none* | TLS SNI server name |
 | `cfgate.io/origin-ca-pool` | Managed file path | *none* | CA certificate pool path |
+| `cfgate.io/origin-ca-pool-mode` | `managed`, `unmanaged` | `managed` | CA pool path safety mode |
+| `cfgate.io/origin-ca-pool-ref` | Named pool | *none* | Named CA pool from `CloudflareTunnel.spec.originCAPools` |
 | `cfgate.io/origin-http2` | `true`, `false` | `false` | HTTP/2 to origin |
 | `cfgate.io/origin-h2c` | `true`, `false` | `false` | HTTP/2 cleartext (h2c) to origin |
 | `cfgate.io/ttl` | `1`-`86400` | `1` (auto) | DNS record TTL in seconds |
@@ -138,11 +140,15 @@ metadata:
 
 #### `cfgate.io/origin-ca-pool`
 
-Literal in-container path to a CA certificate pool file used to verify the origin server's TLS certificate. For alpha.5, cfgate accepts only its managed mount path, `/etc/cfgate/origin-ca-pool/ca.pem`, and only when the referenced `CloudflareTunnel` has `spec.originDefaults.caPoolSecretRef` configured.
+Literal in-container path to a CA certificate pool file used to verify the origin server's TLS certificate.
 
-Use `spec.originDefaults.caPoolSecretRef` on `CloudflareTunnel` when cfgate should mount a Kubernetes Secret. That managed Secret mount is available at `/etc/cfgate/origin-ca-pool/ca.pem`.
+Default `managed` mode accepts only cfgate-owned paths:
+- `/etc/cfgate/origin-ca-pool/ca.pem` when the referenced `CloudflareTunnel` has `spec.originDefaults.caPoolSecretRef` configured.
+- future named pool paths generated from `CloudflareTunnel.spec.originCAPools`.
 
-**Valid values:** `/etc/cfgate/origin-ca-pool/ca.pem`
+Set `cfgate.io/origin-ca-pool-mode: unmanaged` only when you intentionally run a custom cloudflared image or mount files yourself. In unmanaged mode, cfgate accepts absolute paths and emits a warning event because it does not mount or verify those files.
+
+**Valid values:** `/etc/cfgate/origin-ca-pool/ca.pem` in managed mode; absolute file path in unmanaged mode.
 
 **Default:** Not set (system CA pool)
 
@@ -153,6 +159,47 @@ metadata:
   annotations:
     cfgate.io/origin-ca-pool: "/etc/cfgate/origin-ca-pool/ca.pem"
 ```
+
+---
+
+#### `cfgate.io/origin-ca-pool-mode`
+
+Controls how cfgate validates `cfgate.io/origin-ca-pool`.
+
+**Valid values:** `managed`, `unmanaged`
+
+**Default:** `managed`
+
+**Read by:** CloudflareTunnel controller
+
+```yaml
+metadata:
+  annotations:
+    cfgate.io/origin-ca-pool: "/custom/certs/ca.pem"
+    cfgate.io/origin-ca-pool-mode: "unmanaged"
+```
+
+`unmanaged` is an escape hatch. cfgate requires an absolute path, writes it to Cloudflare as `originRequest.caPool`, and does not mount or verify that path.
+
+---
+
+#### `cfgate.io/origin-ca-pool-ref`
+
+Selects a named origin CA pool from `CloudflareTunnel.spec.originCAPools`. This is the preferred route-level API for private CA bundles because routes reference a Kubernetes-native name instead of a cloudflared filesystem path.
+
+**Valid values:** Named pool in the route's referenced `CloudflareTunnel`
+
+**Default:** Not set
+
+**Read by:** CloudflareTunnel controller
+
+```yaml
+metadata:
+  annotations:
+    cfgate.io/origin-ca-pool-ref: "internal"
+```
+
+Do not set `cfgate.io/origin-ca-pool` and `cfgate.io/origin-ca-pool-ref` on the same route.
 
 ---
 

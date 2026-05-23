@@ -42,6 +42,10 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.originDefaults.h2cOrigin` | `bool` | `false` | No | Enables HTTP/2 cleartext (h2c) for origin connections. Use for origins that speak HTTP/2 without TLS. Mutually exclusive with `http2Origin`. |
 | `spec.originDefaults.caPoolSecretRef.name` | `string` | *none* | Yes (if caPoolSecretRef set) | Name of the Secret containing CA certificates for origin TLS verification. 1-253 chars. |
 | `spec.originDefaults.caPoolSecretRef.key` | `string` | `ca.crt` | No | Key within the Secret containing the CA certificate chain in PEM format. Max 253 chars. |
+| `spec.originCAPools[].name` | `string` | *none* | Yes | Named CA pool selectable by route annotations and origin policies. Unique within a tunnel. |
+| `spec.originCAPools[].secretRef.name` | `string` | *none* | Yes | Secret containing a PEM-encoded CA bundle. |
+| `spec.originCAPools[].secretRef.namespace` | `string` | *(tunnel namespace)* | No | Secret namespace. Cross-namespace references require a Gateway API `ReferenceGrant`. |
+| `spec.originCAPools[].secretRef.key` | `string` | `ca.crt` | No | Secret data key containing the CA bundle. |
 | `spec.fallbackTarget` | `string` | `http_status:404` | No | Default service for requests that do not match any ingress rule. |
 | `spec.fallbackCredentialsRef.name` | `string` | *none* | Yes (if fallbackCredentialsRef set) | Name of the Secret containing fallback Cloudflare API credentials. 1-253 chars. |
 | `spec.fallbackCredentialsRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the fallback credentials Secret. Max 63 chars. |
@@ -153,7 +157,7 @@ Default settings for how cloudflared connects to backend services in the cluster
 
 **`caPoolSecretRef`:** Use this when your backend services present TLS certificates signed by a private CA. The Secret must contain the CA certificate chain in PEM format. cfgate mounts the selected Secret key into cloudflared at `/etc/cfgate/origin-ca-pool/ca.pem` and sends `originRequest.caPool` with that path in the remote tunnel configuration. If `key` is omitted or empty, cfgate reads `ca.crt`. Without this, connections to services using private CA certificates will fail TLS verification (unless `noTLSVerify` is set, which is not recommended for production).
 
-The route annotation `cfgate.io/origin-ca-pool` can select that same managed path for a specific ingress rule. Alpha.5 rejects arbitrary annotation paths and rejects the annotation when this Secret ref is not configured, because cfgate cannot guarantee any other file exists inside cloudflared.
+The route annotation `cfgate.io/origin-ca-pool` can select that same managed path for a specific ingress rule. In managed mode, cfgate rejects arbitrary annotation paths and rejects the annotation when this Secret ref is not configured, because cfgate cannot guarantee any other file exists inside cloudflared. Advanced users can opt into unmanaged file paths with `cfgate.io/origin-ca-pool-mode: unmanaged`; cfgate will pass the absolute path through and warn that it does not mount or verify the file.
 
 If the referenced Secret or key is missing, cfgate does not deploy cloudflared and marks `CloudflaredDeployed=False` and `Ready=False`.
 
@@ -166,6 +170,34 @@ spec:
       name: internal-ca
       key: ca-chain.pem
 ```
+
+### `spec.originCAPools`
+
+Named origin CA pools provide a Kubernetes-native replacement for route filesystem paths. cfgate mounts each referenced Secret key into cloudflared at a controller-owned path, then maps route annotations and origin policies to `originRequest.caPool`.
+
+```yaml
+spec:
+  originCAPools:
+    - name: internal
+      secretRef:
+        name: internal-ca
+        key: ca.crt
+    - name: partner
+      secretRef:
+        name: partner-ca
+        namespace: shared-certs
+        key: bundle.pem
+```
+
+Routes can select a pool by name:
+
+```yaml
+metadata:
+  annotations:
+    cfgate.io/origin-ca-pool-ref: internal
+```
+
+Cross-namespace Secret references require a Gateway API `ReferenceGrant` in the Secret namespace permitting `CloudflareTunnel` from the tunnel namespace to reference `Secret`.
 
 ### `spec.fallbackTarget`
 

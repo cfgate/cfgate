@@ -100,6 +100,14 @@ const (
 	// Values: file path string
 	AnnotationOriginCAPool = AnnotationPrefix + "origin-ca-pool"
 
+	// AnnotationOriginCAPoolMode controls how origin-ca-pool paths are interpreted.
+	// Values: "managed", "unmanaged"
+	AnnotationOriginCAPoolMode = AnnotationPrefix + "origin-ca-pool-mode"
+
+	// AnnotationOriginCAPoolRef references a named CloudflareTunnel origin CA pool.
+	// Values: pool name from CloudflareTunnel spec.originCAPools
+	AnnotationOriginCAPoolRef = AnnotationPrefix + "origin-ca-pool-ref"
+
 	// AnnotationOriginHTTP2 enables HTTP/2 to origin.
 	// Values: "true", "false"
 	// Default: "false"
