@@ -755,12 +755,24 @@ func (r *CloudflareDNSReconciler) resolveZones(ctx context.Context, dns *cfgatev
 	return zones, nil
 }
 
+func zoneProxiedOverrides(dns *cfgatev1alpha1.CloudflareDNS) map[string]*bool {
+	overrides := make(map[string]*bool, len(dns.Spec.Zones))
+	for i := range dns.Spec.Zones {
+		zone := dns.Spec.Zones[i]
+		if zone.Proxied != nil {
+			overrides[zone.Name] = zone.Proxied
+		}
+	}
+	return overrides
+}
+
 // syncRecords syncs DNS records to Cloudflare.
 // Compares desired state with actual state and applies changes respecting policy.
 // The hostnameConfigs map provides the effective per-hostname target, TTL,
 // proxied, and record type after source merging.
 func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, target string, hostnameConfigs map[string]HostnameConfig, zones map[string]string, dnsService *cloudflare.DNSService) error {
 	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
+	zoneProxied := zoneProxiedOverrides(dns)
 
 	ownershipPrefix := dns.Spec.Ownership.TXTRecord.Prefix
 	if ownershipPrefix == "" {
@@ -810,6 +822,9 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			ttl = 1 // auto
 		}
 		proxied := dns.Spec.Defaults.Proxied
+		if zoneProxiedValue := zoneProxied[zoneName]; zoneProxiedValue != nil {
+			proxied = *zoneProxiedValue
+		}
 		recordTarget := target
 		if hostnameConfig.Target != "" {
 			recordTarget = hostnameConfig.Target

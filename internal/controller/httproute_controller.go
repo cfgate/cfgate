@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -479,6 +480,17 @@ func (r *HTTPRouteReconciler) validateParentRef(
 		return parentStatus
 	}
 
+	if err := validateCloudflaredPathMatches(route); err != nil {
+		parentStatus.Conditions[0] = status.NewCondition(
+			string(gwapiv1.RouteConditionAccepted),
+			metav1.ConditionFalse,
+			status.ReasonUnsupportedValue,
+			err.Error(),
+			route.Generation,
+		)
+		return parentStatus
+	}
+
 	return parentStatus
 }
 
@@ -491,18 +503,6 @@ func (r *HTTPRouteReconciler) resolveBackends(
 	log := log.FromContext(ctx)
 
 	for _, rule := range route.Spec.Rules {
-		for _, match := range rule.Matches {
-			if err := validateCloudflaredPathMatch(match); err != nil {
-				return status.NewCondition(
-					string(gwapiv1.RouteConditionResolvedRefs),
-					metav1.ConditionFalse,
-					status.ReasonUnsupportedValue,
-					err.Error(),
-					route.Generation,
-				)
-			}
-		}
-
 		if len(rule.BackendRefs) > 1 {
 			return status.NewCondition(
 				string(gwapiv1.RouteConditionResolvedRefs),
@@ -712,6 +712,7 @@ func (r *HTTPRouteReconciler) routeAllowedByListeners(
 	ref gwapiv1.ParentReference,
 ) (bool, string, string) {
 	foundListener := false
+	hostnameMismatch := false
 	for _, listener := range gateway.Spec.Listeners {
 		if ref.SectionName != nil && listener.Name != *ref.SectionName {
 			continue
@@ -727,9 +728,18 @@ func (r *HTTPRouteReconciler) routeAllowedByListeners(
 			continue
 		}
 		if !listenerHostnameCompatible(route, listener) {
+			hostnameMismatch = true
 			continue
 		}
 		return true, "Accepted", "Route accepted by Gateway"
+	}
+
+	if hostnameMismatch {
+		if ref.SectionName != nil {
+			return false, status.ReasonNoMatchingListenerHostname,
+				fmt.Sprintf("Route hostnames are not compatible with listener %s", *ref.SectionName)
+		}
+		return false, status.ReasonNoMatchingListenerHostname, "No matching listener hostname found"
 	}
 
 	if !foundListener {
@@ -739,6 +749,17 @@ func (r *HTTPRouteReconciler) routeAllowedByListeners(
 		return false, status.ReasonNoMatchingListenerHostname, "No compatible listener found"
 	}
 	return false, status.ReasonNotAllowedByListeners, "Route is not allowed by Gateway listeners"
+}
+
+func validateCloudflaredPathMatches(route *gwapiv1.HTTPRoute) error {
+	for _, rule := range route.Spec.Rules {
+		for _, match := range rule.Matches {
+			if err := validateCloudflaredPathMatch(match); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func listenerAllowsHTTPRouteKind(listener gwapiv1.Listener) bool {
@@ -786,37 +807,18 @@ func (r *HTTPRouteReconciler) listenerAllowsRouteNamespace(
 		if err := r.Get(ctx, types.NamespacedName{Name: route.Namespace}, &ns); err != nil {
 			return false
 		}
-		return labelSelector.Matches(labelsSet(ns.Labels))
+		return labelSelector.Matches(labels.Set(ns.Labels))
 	default:
 		return route.Namespace == gateway.Namespace
 	}
 }
 
-func labelsSet(m map[string]string) labelsAdapter {
-	return labelsAdapter(m)
-}
-
-type labelsAdapter map[string]string
-
-func (l labelsAdapter) Has(label string) bool {
-	_, ok := l[label]
-	return ok
-}
-
-func (l labelsAdapter) Get(label string) string {
-	return l[label]
-}
-
-func (l labelsAdapter) Lookup(label string) (string, bool) {
-	v, ok := l[label]
-	return v, ok
-}
-
 func listenerHostnameCompatible(route *gwapiv1.HTTPRoute, listener gwapiv1.Listener) bool {
-	if listener.Hostname == nil || *listener.Hostname == "" || len(route.Spec.Hostnames) == 0 {
+	routeHostnames := effectiveHTTPRouteHostnames(route)
+	if listener.Hostname == nil || *listener.Hostname == "" || len(routeHostnames) == 0 {
 		return true
 	}
-	for _, routeHostname := range route.Spec.Hostnames {
+	for _, routeHostname := range routeHostnames {
 		if hostnameMatches(string(routeHostname), string(*listener.Hostname)) {
 			return true
 		}
@@ -831,14 +833,21 @@ func hostnameMatches(routeHostname, listenerHostname string) bool {
 		return true
 	}
 	if strings.HasPrefix(listenerHostname, "*.") {
-		suffix := strings.TrimPrefix(listenerHostname, "*")
-		return strings.HasSuffix(routeHostname, suffix) && routeHostname != strings.TrimPrefix(suffix, ".")
+		return wildcardHostnameMatches(routeHostname, listenerHostname)
 	}
 	if strings.HasPrefix(routeHostname, "*.") {
-		suffix := strings.TrimPrefix(routeHostname, "*")
-		return strings.HasSuffix(listenerHostname, suffix) && listenerHostname != strings.TrimPrefix(suffix, ".")
+		return wildcardHostnameMatches(listenerHostname, routeHostname)
 	}
 	return false
+}
+
+func wildcardHostnameMatches(hostname, wildcard string) bool {
+	suffix := strings.TrimPrefix(wildcard, "*")
+	prefix := strings.TrimSuffix(hostname, suffix)
+	return prefix != "" &&
+		prefix != hostname &&
+		!strings.Contains(prefix, ".") &&
+		strings.HasSuffix(hostname, suffix)
 }
 
 func validateCloudflaredPathMatch(match gwapiv1.HTTPRouteMatch) error {

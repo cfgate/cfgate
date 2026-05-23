@@ -39,26 +39,15 @@ const (
 	// ConditionTypeCredentialsValid indicates credentials are valid.
 	ConditionTypeCredentialsValid = "CredentialsValid"
 
-	// ConditionTypeTunnelCreated indicates tunnel exists in Cloudflare.
-	// Used by condition constructors for lifecycle tracking.
-	ConditionTypeTunnelCreated = "TunnelCreated"
-
 	// ConditionTypeTunnelReady indicates the tunnel exists and is healthy.
 	// Used by CloudflareTunnel controller for ongoing health status.
 	ConditionTypeTunnelReady = "TunnelReady"
-
-	// ConditionTypeTunnelConfigured indicates tunnel configuration is synced.
-	// Used by condition constructors for lifecycle tracking.
-	ConditionTypeTunnelConfigured = "TunnelConfigured"
 
 	// ConditionTypeCloudflaredDeployed indicates the cloudflared deployment is running.
 	ConditionTypeCloudflaredDeployed = "CloudflaredDeployed"
 
 	// ConditionTypeConfigurationSynced indicates the tunnel configuration is synced to Cloudflare API.
 	ConditionTypeConfigurationSynced = "ConfigurationSynced"
-
-	// ConditionTypeDeploymentReady indicates cloudflared deployment is ready.
-	ConditionTypeDeploymentReady = "DeploymentReady"
 )
 
 // cfgate-specific condition types for CloudflareDNS.
@@ -373,40 +362,40 @@ func NewCredentialsValidCondition(valid bool, reason, message string, generation
 	return NewCondition(ConditionTypeCredentialsValid, status, reason, message, generation)
 }
 
-// NewTunnelCreatedCondition creates a TunnelCreated condition.
-func NewTunnelCreatedCondition(created bool, reason, message string, generation int64) metav1.Condition {
-	status := metav1.ConditionFalse
-	if created {
-		status = metav1.ConditionTrue
-	}
-	return NewCondition(ConditionTypeTunnelCreated, status, reason, message, generation)
-}
-
-// NewTunnelConfiguredCondition creates a TunnelConfigured condition.
-func NewTunnelConfiguredCondition(configured bool, reason, message string, generation int64) metav1.Condition {
-	status := metav1.ConditionFalse
-	if configured {
-		status = metav1.ConditionTrue
-	}
-	return NewCondition(ConditionTypeTunnelConfigured, status, reason, message, generation)
-}
-
-// NewDeploymentReadyCondition creates a DeploymentReady condition.
-func NewDeploymentReadyCondition(ready bool, reason, message string, generation int64) metav1.Condition {
+// NewTunnelOperationalCondition creates a TunnelReady condition.
+func NewTunnelOperationalCondition(ready bool, reason, message string, generation int64) metav1.Condition {
 	status := metav1.ConditionFalse
 	if ready {
 		status = metav1.ConditionTrue
 	}
-	return NewCondition(ConditionTypeDeploymentReady, status, reason, message, generation)
+	return NewCondition(ConditionTypeTunnelReady, status, reason, message, generation)
+}
+
+// NewConfigurationSyncedCondition creates a ConfigurationSynced condition.
+func NewConfigurationSyncedCondition(synced bool, reason, message string, generation int64) metav1.Condition {
+	status := metav1.ConditionFalse
+	if synced {
+		status = metav1.ConditionTrue
+	}
+	return NewCondition(ConditionTypeConfigurationSynced, status, reason, message, generation)
+}
+
+// NewCloudflaredDeployedCondition creates a CloudflaredDeployed condition.
+func NewCloudflaredDeployedCondition(deployed bool, reason, message string, generation int64) metav1.Condition {
+	status := metav1.ConditionFalse
+	if deployed {
+		status = metav1.ConditionTrue
+	}
+	return NewCondition(ConditionTypeCloudflaredDeployed, status, reason, message, generation)
 }
 
 // NewTunnelReadyCondition creates the overall Ready condition for CloudflareTunnel.
-// Ready = CredentialsValid AND TunnelCreated AND TunnelConfigured AND DeploymentReady
+// Ready = CredentialsValid AND TunnelReady AND ConfigurationSynced AND CloudflaredDeployed
 func NewTunnelReadyCondition(conditions []metav1.Condition, generation int64) metav1.Condition {
 	ready := ConditionTrue(conditions, ConditionTypeCredentialsValid) &&
-		ConditionTrue(conditions, ConditionTypeTunnelCreated) &&
-		ConditionTrue(conditions, ConditionTypeTunnelConfigured) &&
-		ConditionTrue(conditions, ConditionTypeDeploymentReady)
+		ConditionTrue(conditions, ConditionTypeTunnelReady) &&
+		ConditionTrue(conditions, ConditionTypeConfigurationSynced) &&
+		ConditionTrue(conditions, ConditionTypeCloudflaredDeployed)
 
 	if ready {
 		return NewCondition(ConditionTypeReady, metav1.ConditionTrue,
@@ -416,9 +405,9 @@ func NewTunnelReadyCondition(conditions []metav1.Condition, generation int64) me
 	// Find first failing condition for message
 	for _, t := range []string{
 		ConditionTypeCredentialsValid,
-		ConditionTypeTunnelCreated,
-		ConditionTypeTunnelConfigured,
-		ConditionTypeDeploymentReady,
+		ConditionTypeTunnelReady,
+		ConditionTypeConfigurationSynced,
+		ConditionTypeCloudflaredDeployed,
 	} {
 		c := FindCondition(conditions, t)
 		if c != nil && c.Status != metav1.ConditionTrue {

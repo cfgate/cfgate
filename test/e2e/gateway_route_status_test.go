@@ -314,6 +314,127 @@ var _ = Describe("Gateway and HTTPRoute Status E2E", Label("cloudflare"), Ordere
 			}
 		})
 
+		It("should set Accepted=False with NoMatchingListenerHostname for named listener hostname mismatch", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("hostname-mismatch-gw")
+			listenerHostname := gatewayv1.Hostname(fmt.Sprintf("%s.api.example.test", testID("listener")))
+			gateway := &gatewayv1.Gateway{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      gatewayName,
+					Namespace: namespace.Name,
+					Annotations: map[string]string{
+						"cfgate.io/tunnel-ref": fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name),
+					},
+				},
+				Spec: gatewayv1.GatewaySpec{
+					GatewayClassName: gatewayv1.ObjectName(gatewayClassName),
+					Listeners: []gatewayv1.Listener{{
+						Name:     "https",
+						Protocol: gatewayv1.HTTPSProtocolType,
+						Port:     443,
+						Hostname: &listenerHostname,
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, gateway)).To(Succeed())
+
+			service := createTestService(ctx, k8sClient, testID("svc"), namespace.Name, 8080)
+			parentNamespace := gatewayv1.Namespace(namespace.Name)
+			sectionName := gatewayv1.SectionName("https")
+			route := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("hostname-mismatch-route"),
+					Namespace: namespace.Name,
+				},
+				Spec: gatewayv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayv1.CommonRouteSpec{
+						ParentRefs: []gatewayv1.ParentReference{{
+							Name:        gatewayv1.ObjectName(gatewayName),
+							Namespace:   &parentNamespace,
+							SectionName: &sectionName,
+						}},
+					},
+					Hostnames: []gatewayv1.Hostname{
+						gatewayv1.Hostname(fmt.Sprintf("%s.app.example.test", testID("route"))),
+					},
+					Rules: []gatewayv1.HTTPRouteRule{{
+						BackendRefs: []gatewayv1.HTTPBackendRef{{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: gatewayv1.ObjectName(service.Name),
+									Port: ptrTo(gatewayv1.PortNumber(8080)),
+								},
+							},
+						}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, route)).To(Succeed())
+
+			route = waitForHTTPRouteParentCondition(ctx, k8sClient, route.Name, route.Namespace, namespace.Name, gatewayName, string(gatewayv1.RouteConditionAccepted), metav1.ConditionFalse, DefaultTimeout)
+			cfgateParent := findCfgateRouteParent(route)
+			Expect(cfgateParent).NotTo(BeNil())
+			condition := findCondition(cfgateParent.Conditions, string(gatewayv1.RouteConditionAccepted))
+			Expect(condition).NotTo(BeNil())
+			Expect(condition.Reason).To(Equal("NoMatchingListenerHostname"))
+			Expect(condition.Message).To(ContainSubstring("hostname"))
+		})
+
+		It("should set Accepted=False for unsupported path regex and leave backend refs resolved", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+			gatewayClassName := testID("gc")
+			createGatewayClass(ctx, k8sClient, gatewayClassName)
+			gatewayName := testID("invalid-path-gw")
+			createGateway(ctx, k8sClient, gatewayName, namespace.Name, gatewayClassName, fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name))
+
+			service := createTestService(ctx, k8sClient, testID("svc"), namespace.Name, 8080)
+			parentNamespace := gatewayv1.Namespace(namespace.Name)
+			regexType := gatewayv1.PathMatchRegularExpression
+			invalidRegex := "["
+			route := &gatewayv1.HTTPRoute{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      testID("invalid-path-route"),
+					Namespace: namespace.Name,
+				},
+				Spec: gatewayv1.HTTPRouteSpec{
+					CommonRouteSpec: gatewayv1.CommonRouteSpec{
+						ParentRefs: []gatewayv1.ParentReference{{
+							Name:      gatewayv1.ObjectName(gatewayName),
+							Namespace: &parentNamespace,
+						}},
+					},
+					Hostnames: []gatewayv1.Hostname{
+						gatewayv1.Hostname(fmt.Sprintf("%s.example.test", testID("invalid-path"))),
+					},
+					Rules: []gatewayv1.HTTPRouteRule{{
+						Matches: []gatewayv1.HTTPRouteMatch{{
+							Path: &gatewayv1.HTTPPathMatch{Type: &regexType, Value: &invalidRegex},
+						}},
+						BackendRefs: []gatewayv1.HTTPBackendRef{{
+							BackendRef: gatewayv1.BackendRef{
+								BackendObjectReference: gatewayv1.BackendObjectReference{
+									Name: gatewayv1.ObjectName(service.Name),
+									Port: ptrTo(gatewayv1.PortNumber(8080)),
+								},
+							},
+						}},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, route)).To(Succeed())
+
+			route = waitForHTTPRouteParentCondition(ctx, k8sClient, route.Name, route.Namespace, namespace.Name, gatewayName, string(gatewayv1.RouteConditionAccepted), metav1.ConditionFalse, DefaultTimeout)
+			cfgateParent := findCfgateRouteParent(route)
+			Expect(cfgateParent).NotTo(BeNil())
+			accepted := findCondition(cfgateParent.Conditions, string(gatewayv1.RouteConditionAccepted))
+			Expect(accepted).NotTo(BeNil())
+			Expect(accepted.Reason).To(Equal("UnsupportedValue"))
+			Expect(accepted.Message).To(ContainSubstring("unsupported path regular expression"))
+			resolvedRefs := findCondition(cfgateParent.Conditions, string(gatewayv1.RouteConditionResolvedRefs))
+			Expect(resolvedRefs).NotTo(BeNil())
+			Expect(resolvedRefs.Status).To(Equal(metav1.ConditionTrue))
+		})
+
 		It("should set Accepted=False when a cross-namespace parent attachment is not allowed by listener policy", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
 			otherNamespace := createTestNamespace("cfgate-httproute-other")
 			DeferCleanup(func() {

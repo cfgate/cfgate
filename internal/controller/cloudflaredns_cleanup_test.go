@@ -8,6 +8,10 @@ import (
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestDeleteManagedStatusRecord(t *testing.T) {
@@ -260,6 +264,71 @@ func TestCleanupRecordsWithFallbackSkipsFailedStatusRecordsWithoutMaterializedRe
 	}
 	if len(deleted) != 1 || deleted[0] != "good-id" {
 		t.Fatalf("deleted record IDs = %#v, want only good-id", deleted)
+	}
+}
+
+func TestReconcileDeleteSkipsCleanupWhenDeleteOnResourceRemovalFalse(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	cleanupDisabled := false
+	mock := cloudflare.NewMockClient()
+	cleanupCalled := false
+
+	mock.ListDNSRecordsFunc = func(context.Context, string) ([]cloudflare.DNSRecord, error) {
+		cleanupCalled = true
+		return nil, nil
+	}
+	mock.ListDNSRecordsByNameTypeFunc = func(context.Context, string, string, string) ([]cloudflare.DNSRecord, error) {
+		cleanupCalled = true
+		return nil, nil
+	}
+	mock.DeleteDNSRecordFunc = func(context.Context, string, string) error {
+		cleanupCalled = true
+		return nil
+	}
+
+	dns := &cfgatev1alpha1.CloudflareDNS{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "dns",
+			Namespace:  "default",
+			Finalizers: []string{dnsFinalizer},
+		},
+		Spec: cfgatev1alpha1.CloudflareDNSSpec{
+			Policy: cfgatev1alpha1.DNSPolicySync,
+			CleanupPolicy: cfgatev1alpha1.DNSCleanupPolicy{
+				DeleteOnResourceRemoval: &cleanupDisabled,
+			},
+		},
+		Status: cfgatev1alpha1.CloudflareDNSStatus{
+			Records: []cfgatev1alpha1.DNSRecordSyncStatus{{
+				Hostname: "app.example.com",
+				Type:     "CNAME",
+				RecordID: "record-1",
+				ZoneID:   "zone-1",
+			}},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(dns).Build()
+	reconciler := &CloudflareDNSReconciler{
+		Client:   k8sClient,
+		Scheme:   scheme,
+		CFClient: mock,
+	}
+
+	if _, err := reconciler.reconcileDelete(ctx, dns); err != nil {
+		t.Fatalf("reconcileDelete() error = %v", err)
+	}
+	if cleanupCalled {
+		t.Fatal("reconcileDelete() called Cloudflare DNS cleanup with deleteOnResourceRemoval=false")
+	}
+
+	var current cfgatev1alpha1.CloudflareDNS
+	if err := k8sClient.Get(ctx, client.ObjectKey{Name: dns.Name, Namespace: dns.Namespace}, &current); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if len(current.Finalizers) != 0 {
+		t.Fatalf("finalizers = %#v, want none", current.Finalizers)
 	}
 }
 

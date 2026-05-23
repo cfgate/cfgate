@@ -5,10 +5,12 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -59,10 +61,13 @@ const (
 	EnvCloudflareTestGroup = "CLOUDFLARE_TEST_GROUP"
 	EnvSkipCleanup         = "E2E_SKIP_CLEANUP"
 	EnvUseExistingCluster  = "E2E_USE_EXISTING_CLUSTER"
+	EnvE2ERunID            = "E2E_RUN_ID"
+	EnvE2EOrphanMinAge     = "E2E_ORPHAN_MIN_AGE"
 	EnvKubeconfig          = "KUBECONFIG"
 
 	e2eFallbackCredentialsNamespace = "cfgate-e2e-system"
 	e2eFallbackCredentialsSecret    = "cloudflare-credentials"
+	defaultE2EOrphanMinAge          = 2 * time.Hour
 )
 
 var (
@@ -99,6 +104,9 @@ var (
 
 	// featureGates tracks optional Gateway API CRD availability.
 	featureGates *features.FeatureGates
+
+	// testRunID scopes Cloudflare resource names to a single suite invocation.
+	testRunID string
 )
 
 // E2ETestEnv holds the E2E test environment configuration.
@@ -131,6 +139,16 @@ type E2ETestEnv struct {
 	KindClusterName string
 }
 
+type e2eBootstrapData struct {
+	KubeconfigPath string `json:"kubeconfigPath"`
+	RunID          string `json:"runID"`
+}
+
+type e2eCleanupOptions struct {
+	includeCurrentRun bool
+	minAge            time.Duration
+}
+
 func init() {
 	// Register all schemes at package init time so the scheme is fully
 	// populated before any goroutine (manager, informers, reflectors) reads it.
@@ -150,9 +168,14 @@ func TestE2E(t *testing.T) {
 
 var _ = SynchronizedBeforeSuite(
 	// Process 1: cluster + CRDs + controller manager setup.
-	// Returns kubeconfig path as []byte for all processes.
+	// Returns kubeconfig path and E2E run ID as []byte for all processes.
 	func() []byte {
 		ctx, cancel = context.WithCancel(context.Background())
+		testRunID = strings.ToLower(os.Getenv(EnvE2ERunID))
+		if testRunID == "" {
+			testRunID = generateE2ERunID()
+		}
+		GinkgoWriter.Printf("E2E run ID: %s\n", testRunID)
 
 		// Initialize logger for controller-runtime.
 		zapConfig := zap.NewDevelopmentConfig()
@@ -170,7 +193,7 @@ var _ = SynchronizedBeforeSuite(
 		testEnv = loadTestEnv()
 
 		if testEnv.CloudflareAPIToken != "" && !testEnv.SkipCleanup {
-			cleanOrphanedE2EResources()
+			cleanOrphanedE2EResources(false)
 		}
 
 		// Find project root for CRD paths.
@@ -286,12 +309,22 @@ var _ = SynchronizedBeforeSuite(
 		}, 30*time.Second, 100*time.Millisecond).Should(BeTrue(), "Manager caches did not sync")
 
 		By("E2E test environment ready (Process 1)")
-		return []byte(kubeconfigPath)
+		data, err := json.Marshal(e2eBootstrapData{
+			KubeconfigPath: kubeconfigPath,
+			RunID:          testRunID,
+		})
+		Expect(err).NotTo(HaveOccurred(), "Failed to marshal E2E bootstrap data")
+		return data
 	},
 	// All processes: create K8s clients from kubeconfig path.
 	// NO manager creation; only Process 1 runs the controller.
 	func(data []byte) {
-		kubeconfigPath := string(data)
+		var bootstrap e2eBootstrapData
+		Expect(json.Unmarshal(data, &bootstrap)).To(Succeed(), "Failed to unmarshal E2E bootstrap data")
+		kubeconfigPath := bootstrap.KubeconfigPath
+		testRunID = bootstrap.RunID
+		Expect(testRunID).NotTo(BeEmpty(), "E2E run ID must not be empty")
+		GinkgoWriter.Printf("E2E run ID: %s\n", testRunID)
 
 		// Schemes already registered in init().
 
@@ -337,7 +370,7 @@ var _ = SynchronizedAfterSuite(
 
 		// 3. Sweep orphaned CF resources (doesn't need running manager).
 		if testEnv != nil && !testEnv.SkipCleanup && testEnv.CloudflareAPIToken != "" {
-			cleanOrphanedE2EResources()
+			cleanOrphanedE2EResources(true)
 		}
 
 		// 4. Teardown cluster.
@@ -349,12 +382,19 @@ var _ = SynchronizedAfterSuite(
 	},
 )
 
-// testID generates a deterministic resource name based on Ginkgo node for parallel safety.
-// Format: e2e-{type}-{node}-{line}
-// Cleanup relies on these patterns - all e2e-* resources are batch-deleted in AfterSuite.
+// testID generates a deterministic resource name scoped to this suite run.
+// Format: e2e-{run}-{type}-{node}-{line}
+// Cleanup relies on the e2e-* prefix and run segment for targeted sweeps.
 func testID(resourceType string) string {
 	specIndex := CurrentSpecReport().LeafNodeLocation.LineNumber
-	return fmt.Sprintf("e2e-%s-%d-%d", resourceType, GinkgoParallelProcess(), specIndex)
+	if testRunID == "" {
+		testRunID = "local"
+	}
+	return fmt.Sprintf("e2e-%s-%s-%d-%d", testRunID, resourceType, GinkgoParallelProcess(), specIndex)
+}
+
+func generateE2ERunID() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 // cleanOrphanedTestNamespaces removes any test namespaces that weren't cleaned up.
@@ -422,46 +462,99 @@ func ensureFallbackCredentialsSecret() {
 	Expect(k8sClient.Update(ctx, &existing)).To(Succeed(), "failed to update fallback credentials secret")
 }
 
-// cleanOrphanedE2EResources deletes all E2E test resources from Cloudflare.
-// This is the primary cleanup mechanism - runs before and after test execution.
-// Cleans: tunnels (e2e-*, recovery-*), DNS records (e2e-*, _cfgate.e2e-*),
-// Access applications (e2e-*), unreferenced cfgate owner tags, reusable Access
-// policies (e2e-*), and service tokens (e2e-*).
-func cleanOrphanedE2EResources() {
+func e2eOrphanMinAge() time.Duration {
+	raw := os.Getenv(EnvE2EOrphanMinAge)
+	if raw == "" {
+		return defaultE2EOrphanMinAge
+	}
+	minAge, err := time.ParseDuration(raw)
+	if err != nil {
+		GinkgoWriter.Printf("Invalid %s=%q, using %s\n", EnvE2EOrphanMinAge, raw, defaultE2EOrphanMinAge)
+		return defaultE2EOrphanMinAge
+	}
+	return minAge
+}
+
+func staleEnough(created time.Time, minAge time.Duration) bool {
+	return !created.IsZero() && time.Since(created) >= minAge
+}
+
+func isCurrentRunE2EResource(name string) bool {
+	return testRunID != "" && strings.Contains(name, "e2e-"+testRunID+"-")
+}
+
+func shouldCleanupE2EResource(name string, created time.Time, includeCurrentRun bool, minAge time.Duration) bool {
+	if includeCurrentRun && isCurrentRunE2EResource(name) {
+		return true
+	}
+	return staleEnough(created, minAge)
+}
+
+func createdAtFromRawJSON(raw string) time.Time {
+	var payload struct {
+		CreatedAt time.Time `json:"created_at"`
+		CreatedOn time.Time `json:"created_on"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return time.Time{}
+	}
+	if !payload.CreatedAt.IsZero() {
+		return payload.CreatedAt
+	}
+	return payload.CreatedOn
+}
+
+// cleanOrphanedE2EResources deletes E2E test resources from Cloudflare.
+// Startup cleanup removes stale non-current resources. Suite shutdown also removes
+// current-run resources regardless of age so local business accounts do not accrue
+// fresh e2e resources.
+func cleanOrphanedE2EResources(includeCurrentRun bool) {
 	By("Cleaning orphaned E2E resources from Cloudflare")
 
 	cfClient := cloudflare.NewClient(option.WithAPIToken(testEnv.CloudflareAPIToken))
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
+	options := e2eCleanupOptions{
+		includeCurrentRun: includeCurrentRun,
+		minAge:            e2eOrphanMinAge(),
+	}
+	GinkgoWriter.Printf("Cloudflare E2E cleanup: includeCurrentRun=%t minAge=%s runID=%s\n",
+		options.includeCurrentRun, options.minAge, testRunID)
 
 	// Clean tunnels.
-	cleanOrphanedTunnels(cleanupCtx, cfClient)
+	cleanOrphanedTunnels(cleanupCtx, cfClient, options)
 
 	// Clean DNS records (if zone configured).
 	if testEnv.CloudflareZoneName != "" {
-		cleanOrphanedDNSRecords(cleanupCtx, cfClient)
+		cleanOrphanedDNSRecords(cleanupCtx, cfClient, options)
 	}
 
 	// Clean Access applications, unreferenced owner tags, and reusable policies.
-	cleanOrphanedAccessApplications(cleanupCtx, cfClient)
+	cleanOrphanedAccessApplications(cleanupCtx, cfClient, options)
 	cleanOrphanedAccessTags(cleanupCtx, cfClient)
-	cleanOrphanedAccessPolicies(cleanupCtx, cfClient)
+	cleanOrphanedAccessPolicies(cleanupCtx, cfClient, options)
 
 	// Clean service tokens.
-	cleanOrphanedServiceTokens(cleanupCtx, cfClient)
+	cleanOrphanedServiceTokens(cleanupCtx, cfClient, options)
 }
 
 // cleanOrphanedTunnels deletes e2e-* and recovery-* tunnels.
-func cleanOrphanedTunnels(ctx context.Context, cfClient *cloudflare.Client) {
+func cleanOrphanedTunnels(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
 	iter := cfClient.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
 	})
 
 	var orphaned []struct{ ID, Name string }
+	var skipped int
 	for iter.Next() {
 		t := iter.Current()
-		if strings.HasPrefix(t.Name, "e2e-") || strings.HasPrefix(t.Name, "recovery-") {
+		if !strings.HasPrefix(t.Name, "e2e-") && !strings.HasPrefix(t.Name, "recovery-") {
+			continue
+		}
+		if shouldCleanupE2EResource(t.Name, t.CreatedAt, options.includeCurrentRun, options.minAge) {
 			orphaned = append(orphaned, struct{ ID, Name string }{t.ID, t.Name})
+		} else {
+			skipped++
 		}
 	}
 
@@ -471,11 +564,11 @@ func cleanOrphanedTunnels(ctx context.Context, cfClient *cloudflare.Client) {
 	}
 
 	if len(orphaned) == 0 {
-		GinkgoWriter.Printf("No orphaned tunnels found\n")
+		GinkgoWriter.Printf("No orphaned tunnels found (skipped %d fresh/unknown-age)\n", skipped)
 		return
 	}
 
-	GinkgoWriter.Printf("Deleting %d orphaned tunnels\n", len(orphaned))
+	GinkgoWriter.Printf("Deleting %d orphaned tunnels (skipped %d fresh/unknown-age)\n", len(orphaned), skipped)
 	for _, t := range orphaned {
 		_, _ = cfClient.ZeroTrust.Tunnels.Cloudflared.Connections.Delete(ctx, t.ID, zero_trust.TunnelCloudflaredConnectionDeleteParams{
 			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
@@ -490,7 +583,7 @@ func cleanOrphanedTunnels(ctx context.Context, cfClient *cloudflare.Client) {
 }
 
 // cleanOrphanedDNSRecords deletes e2e-* and _cfgate.e2e-* DNS records.
-func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client) {
+func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
 	// Get zone ID.
 	zoneList, err := cfClient.Zones.List(ctx, zones.ZoneListParams{
 		Name: cloudflare.F(testEnv.CloudflareZoneName),
@@ -507,11 +600,17 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client) {
 	})
 
 	var orphaned []struct{ ID, Name string }
+	var skipped int
 	for iter.Next() {
 		r := iter.Current()
 		// Match e2e-* hostnames and _cfgate.e2e-* ownership TXT records.
-		if strings.Contains(r.Name, "e2e-") || strings.HasPrefix(r.Name, "_cfgate.e2e-") {
+		if !strings.Contains(r.Name, "e2e-") && !strings.HasPrefix(r.Name, "_cfgate.e2e-") {
+			continue
+		}
+		if shouldCleanupE2EResource(r.Name, r.CreatedOn, options.includeCurrentRun, options.minAge) {
 			orphaned = append(orphaned, struct{ ID, Name string }{r.ID, r.Name})
+		} else {
+			skipped++
 		}
 	}
 
@@ -521,11 +620,11 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client) {
 	}
 
 	if len(orphaned) == 0 {
-		GinkgoWriter.Printf("No orphaned DNS records found\n")
+		GinkgoWriter.Printf("No orphaned DNS records found (skipped %d fresh/unknown-age)\n", skipped)
 		return
 	}
 
-	GinkgoWriter.Printf("Deleting %d orphaned DNS records\n", len(orphaned))
+	GinkgoWriter.Printf("Deleting %d orphaned DNS records (skipped %d fresh/unknown-age)\n", len(orphaned), skipped)
 	for _, r := range orphaned {
 		_, err := cfClient.DNS.Records.Delete(ctx, r.ID, dns.RecordDeleteParams{
 			ZoneID: cloudflare.F(zoneID),
@@ -537,18 +636,25 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client) {
 }
 
 // cleanOrphanedAccessApplications deletes e2e-* Access applications by name or domain.
-func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.Client) {
+func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
 	iter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
 	})
 
 	var orphaned []struct{ ID, Name string }
+	var skipped int
 	for iter.Next() {
 		app := iter.Current()
 		// Match e2e-* application names and domains. Some focused Access tests use
 		// stable app names such as admin-app but e2e-* hostnames.
-		if strings.HasPrefix(app.Name, "e2e-") || strings.HasPrefix(app.Domain, "e2e-") {
+		if !strings.Contains(app.Name, "e2e-") && !strings.Contains(app.Domain, "e2e-") {
+			continue
+		}
+		nameKey := app.Name + " " + app.Domain
+		if shouldCleanupE2EResource(nameKey, createdAtFromRawJSON(app.JSON.RawJSON()), options.includeCurrentRun, options.minAge) {
 			orphaned = append(orphaned, struct{ ID, Name string }{app.ID, app.Name})
+		} else {
+			skipped++
 		}
 	}
 
@@ -558,11 +664,11 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 	}
 
 	if len(orphaned) == 0 {
-		GinkgoWriter.Printf("No orphaned Access applications found\n")
+		GinkgoWriter.Printf("No orphaned Access applications found (skipped %d fresh/unknown-age)\n", skipped)
 		return
 	}
 
-	GinkgoWriter.Printf("Deleting %d orphaned Access applications\n", len(orphaned))
+	GinkgoWriter.Printf("Deleting %d orphaned Access applications (skipped %d fresh/unknown-age)\n", len(orphaned), skipped)
 	for _, app := range orphaned {
 		_, err := cfClient.ZeroTrust.Access.Applications.Delete(ctx, app.ID, zero_trust.AccessApplicationDeleteParams{
 			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
@@ -627,16 +733,22 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client) {
 }
 
 // cleanOrphanedAccessPolicies deletes e2e-* reusable Access policies.
-func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Client) {
+func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
 	iter := cfClient.ZeroTrust.Access.Policies.ListAutoPaging(ctx, zero_trust.AccessPolicyListParams{
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
 	})
 
 	var orphaned []struct{ ID, Name string }
+	var skipped int
 	for iter.Next() {
 		policy := iter.Current()
-		if strings.HasPrefix(policy.Name, "e2e-") {
+		if !strings.Contains(policy.Name, "e2e-") {
+			continue
+		}
+		if shouldCleanupE2EResource(policy.Name, policy.CreatedAt, options.includeCurrentRun, options.minAge) {
 			orphaned = append(orphaned, struct{ ID, Name string }{policy.ID, policy.Name})
+		} else {
+			skipped++
 		}
 	}
 
@@ -646,11 +758,11 @@ func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Clien
 	}
 
 	if len(orphaned) == 0 {
-		GinkgoWriter.Printf("No orphaned Access policies found\n")
+		GinkgoWriter.Printf("No orphaned Access policies found (skipped %d fresh/unknown-age)\n", skipped)
 		return
 	}
 
-	GinkgoWriter.Printf("Deleting %d orphaned Access policies\n", len(orphaned))
+	GinkgoWriter.Printf("Deleting %d orphaned Access policies (skipped %d fresh/unknown-age)\n", len(orphaned), skipped)
 	for _, policy := range orphaned {
 		_, err := cfClient.ZeroTrust.Access.Policies.Delete(ctx, policy.ID, zero_trust.AccessPolicyDeleteParams{
 			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
@@ -662,17 +774,23 @@ func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Clien
 }
 
 // cleanOrphanedServiceTokens deletes e2e-* service tokens.
-func cleanOrphanedServiceTokens(ctx context.Context, cfClient *cloudflare.Client) {
+func cleanOrphanedServiceTokens(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
 	iter := cfClient.ZeroTrust.Access.ServiceTokens.ListAutoPaging(ctx, zero_trust.AccessServiceTokenListParams{
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
 	})
 
 	var orphaned []struct{ ID, Name string }
+	var skipped int
 	for iter.Next() {
 		token := iter.Current()
 		// Match e2e-* token names.
-		if strings.HasPrefix(token.Name, "e2e-") {
+		if !strings.Contains(token.Name, "e2e-") {
+			continue
+		}
+		if shouldCleanupE2EResource(token.Name, createdAtFromRawJSON(token.JSON.RawJSON()), options.includeCurrentRun, options.minAge) {
 			orphaned = append(orphaned, struct{ ID, Name string }{token.ID, token.Name})
+		} else {
+			skipped++
 		}
 	}
 
@@ -682,11 +800,11 @@ func cleanOrphanedServiceTokens(ctx context.Context, cfClient *cloudflare.Client
 	}
 
 	if len(orphaned) == 0 {
-		GinkgoWriter.Printf("No orphaned service tokens found\n")
+		GinkgoWriter.Printf("No orphaned service tokens found (skipped %d fresh/unknown-age)\n", skipped)
 		return
 	}
 
-	GinkgoWriter.Printf("Deleting %d orphaned service tokens\n", len(orphaned))
+	GinkgoWriter.Printf("Deleting %d orphaned service tokens (skipped %d fresh/unknown-age)\n", len(orphaned), skipped)
 	for _, token := range orphaned {
 		_, err := cfClient.ZeroTrust.Access.ServiceTokens.Delete(ctx, token.ID, zero_trust.AccessServiceTokenDeleteParams{
 			AccountID: cloudflare.F(testEnv.CloudflareAccountID),

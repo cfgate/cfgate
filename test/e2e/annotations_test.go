@@ -42,6 +42,17 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 
 		// Create Cloudflare credentials secret
 		createCloudflareCredentialsSecret(namespace.Name)
+		originCASecret := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      testID("origin-ca"),
+				Namespace: namespace.Name,
+			},
+			Type: corev1.SecretTypeOpaque,
+			StringData: map[string]string{
+				"ca.crt": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+			},
+		}
+		Expect(k8sClient.Create(ctx, originCASecret)).To(Succeed())
 
 		// Create Cloudflare client for verification
 		cfClient = getCloudflareClient()
@@ -54,7 +65,31 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 
 		// Create shared tunnel for all annotation tests
 		By("Creating shared CloudflareTunnel for annotation tests")
-		sharedTunnel = createCloudflareTunnelInContext(ctx, k8sClient, "annotations-tunnel", namespace.Name, tunnelName)
+		sharedTunnel = &cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "annotations-tunnel",
+				Namespace: namespace.Name,
+			},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				Tunnel: cfgatev1alpha1.TunnelIdentity{
+					Name: tunnelName,
+				},
+				Cloudflare: cfgatev1alpha1.CloudflareConfig{
+					AccountID: testEnv.CloudflareAccountID,
+					SecretRef: cfgatev1alpha1.SecretRef{
+						Name: "cloudflare-credentials",
+					},
+				},
+				FallbackCredentialsRef: e2eFallbackCredentialsRef(),
+				Cloudflared: cfgatev1alpha1.CloudflaredConfig{
+					Replicas: 1,
+				},
+				OriginDefaults: cfgatev1alpha1.OriginDefaults{
+					CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: originCASecret.Name},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, sharedTunnel)).To(Succeed())
 		sharedTunnel = waitForTunnelReady(ctx, k8sClient, sharedTunnel.Name, sharedTunnel.Namespace, DefaultTimeout)
 
 		// Create shared GatewayClass

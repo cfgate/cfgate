@@ -287,6 +287,17 @@ func TestBuildReusablePolicyParams(t *testing.T) {
 		}
 	})
 
+	t.Run("validation order is deterministic", func(t *testing.T) {
+		policy := baseAccessPolicy("app", "policy")
+		policy.Spec.Include = []cfgatev1alpha1.AccessRule{{}}
+		policy.Spec.Exclude = []cfgatev1alpha1.AccessRule{{}}
+		policy.Spec.Require = []cfgatev1alpha1.AccessRule{{}}
+		err := validateAccessPolicyCompatibility(policy)
+		if err == nil || err.Error() != "include[0]: exactly one selector must be specified" {
+			t.Fatalf("validateAccessPolicyCompatibility() error = %v, want include[0] selector error", err)
+		}
+	})
+
 	t.Run("rejects non identity without service token", func(t *testing.T) {
 		policy := baseAccessPolicy("app", "policy")
 		policy.Spec.Decision = "non_identity"

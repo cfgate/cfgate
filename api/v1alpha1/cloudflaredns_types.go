@@ -457,9 +457,9 @@ type CloudflareDNSStatus struct {
 // Status conditions:
 //   - Ready: DNS sync is fully operational
 //   - CredentialsValid: Cloudflare credentials have been validated
-//   - TargetResolved: Tunnel reference or external target has been resolved
-//   - ZonesDiscovered: All configured zones have been discovered via API
-//   - DNSSynced: DNS records have been synchronized to Cloudflare
+//   - ZonesResolved: All configured zones have been resolved via API
+//   - RecordsSynced: DNS records have been synchronized to Cloudflare
+//   - OwnershipVerified: TXT ownership records have been verified, when enabled
 //
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
