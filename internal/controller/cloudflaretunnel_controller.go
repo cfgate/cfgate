@@ -475,11 +475,15 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	if err := r.validateOriginCAPoolSecretRef(ctx, tunnel); err != nil {
 		return err
 	}
-	originCAPoolMounts, _, _, err := r.resolveOriginCAPoolMounts(ctx, tunnel)
+	backendTLSPolicies, err := r.backendTLSPoliciesForTunnel(ctx, tunnel)
 	if err != nil {
 		return err
 	}
-	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel); err != nil {
+	originCAPoolMounts, _, _, err := r.resolveOriginCAPoolMounts(ctx, tunnel, backendTLSPolicies)
+	if err != nil {
+		return err
+	}
+	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel, backendTLSPolicies); err != nil {
 		return err
 	}
 

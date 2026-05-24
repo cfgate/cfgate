@@ -19,6 +19,7 @@ import (
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/cloudflared"
+	"cfgate.io/cfgate/internal/controller/annotations"
 )
 
 const (
@@ -31,11 +32,15 @@ type originRuntime struct {
 }
 
 func (r *CloudflareTunnelReconciler) buildOriginRuntime(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (*originRuntime, error) {
-	_, namedPaths, backendTLSPaths, err := r.resolveOriginCAPoolMounts(ctx, tunnel)
+	backendTLSPolicies, err := r.backendTLSPoliciesForTunnel(ctx, tunnel)
 	if err != nil {
 		return nil, err
 	}
-	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel); err != nil {
+	_, namedPaths, backendTLSPaths, err := r.resolveOriginCAPoolMounts(ctx, tunnel, backendTLSPolicies)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel, backendTLSPolicies); err != nil {
 		return nil, err
 	}
 	return &originRuntime{
@@ -44,7 +49,7 @@ func (r *CloudflareTunnelReconciler) buildOriginRuntime(ctx context.Context, tun
 	}, nil
 }
 
-func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) ([]cloudflared.OriginCAPoolMount, map[string]string, map[types.NamespacedName]string, error) {
+func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel, backendTLSPolicies []gateway.BackendTLSPolicy) ([]cloudflared.OriginCAPoolMount, map[string]string, map[types.NamespacedName]string, error) {
 	var mounts []cloudflared.OriginCAPoolMount
 	namedPaths := make(map[string]string, len(tunnel.Spec.OriginCAPools))
 	backendTLSPaths := map[types.NamespacedName]string{}
@@ -85,11 +90,7 @@ func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Conte
 		namedPaths[pool.Name] = cloudflared.NamedOriginCAPoolPath(pool.Name)
 	}
 
-	var policies gateway.BackendTLSPolicyList
-	if err := r.List(ctx, &policies); err != nil {
-		return nil, nil, nil, fmt.Errorf("list BackendTLSPolicies: %w", err)
-	}
-	for _, policy := range policies.Items {
+	for _, policy := range backendTLSPolicies {
 		if len(policy.Spec.Validation.CACertificateRefs) != 1 {
 			continue
 		}
@@ -122,7 +123,110 @@ func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Conte
 	return mounts, namedPaths, backendTLSPaths, nil
 }
 
-func (r *CloudflareTunnelReconciler) syncGeneratedOriginCASecrets(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
+func (r *CloudflareTunnelReconciler) backendServicesForTunnel(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (map[types.NamespacedName]struct{}, error) {
+	services := map[types.NamespacedName]struct{}{}
+	var gateways gateway.GatewayList
+	if err := r.List(ctx, &gateways); err != nil {
+		return nil, fmt.Errorf("list Gateways: %w", err)
+	}
+	relevantGateways := map[types.NamespacedName]gateway.Gateway{}
+	for _, gw := range gateways.Items {
+		ref := annotations.GetAnnotation(&gw, annotations.AnnotationTunnelRef)
+		if ref == "" {
+			continue
+		}
+		ns, name, err := annotations.ParseNamespacedName(ref, gw.Namespace)
+		if err != nil {
+			continue
+		}
+		if ns == tunnel.Namespace && name == tunnel.Name {
+			relevantGateways[types.NamespacedName{Namespace: gw.Namespace, Name: gw.Name}] = gw
+		}
+	}
+	if len(relevantGateways) == 0 {
+		return services, nil
+	}
+
+	var routes gateway.HTTPRouteList
+	if err := r.List(ctx, &routes); err != nil {
+		return nil, fmt.Errorf("list HTTPRoutes: %w", err)
+	}
+	for _, route := range routes.Items {
+		for _, parentRef := range route.Spec.ParentRefs {
+			if !isGatewayParentRef(parentRef) {
+				continue
+			}
+			parentNS := route.Namespace
+			if parentRef.Namespace != nil {
+				parentNS = string(*parentRef.Namespace)
+			}
+			gw, ok := relevantGateways[types.NamespacedName{Namespace: parentNS, Name: string(parentRef.Name)}]
+			if !ok || len(routeHostnamesForGateway(&route, &gw, parentRef)) == 0 {
+				continue
+			}
+			for _, rule := range route.Spec.Rules {
+				if len(rule.BackendRefs) != 1 {
+					continue
+				}
+				backend := rule.BackendRefs[0]
+				if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
+					continue
+				}
+				if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
+					continue
+				}
+				backendNS := route.Namespace
+				if backend.Namespace != nil && *backend.Namespace != "" {
+					backendNS = string(*backend.Namespace)
+				}
+				services[types.NamespacedName{Namespace: backendNS, Name: string(backend.Name)}] = struct{}{}
+			}
+		}
+	}
+	return services, nil
+}
+
+func (r *CloudflareTunnelReconciler) backendTLSPoliciesForTunnel(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) ([]gateway.BackendTLSPolicy, error) {
+	services, err := r.backendServicesForTunnel(ctx, tunnel)
+	if err != nil {
+		return nil, err
+	}
+	servicesByNamespace := map[string][]string{}
+	for service := range services {
+		servicesByNamespace[service.Namespace] = append(servicesByNamespace[service.Namespace], service.Name)
+	}
+	var selected []gateway.BackendTLSPolicy
+	seen := map[types.NamespacedName]struct{}{}
+	for namespace, serviceNames := range servicesByNamespace {
+		var policies gateway.BackendTLSPolicyList
+		if err := r.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
+			return nil, fmt.Errorf("list BackendTLSPolicies in %s: %w", namespace, err)
+		}
+		sort.Strings(serviceNames)
+		for _, serviceName := range serviceNames {
+			var matches []gateway.BackendTLSPolicy
+			for _, policy := range policies.Items {
+				if backendTLSPolicyTargetsService(policy, serviceName) {
+					matches = append(matches, policy)
+				}
+			}
+			if len(matches) == 0 {
+				continue
+			}
+			sortBackendTLSPolicies(matches)
+			key := types.NamespacedName{Namespace: matches[0].Namespace, Name: matches[0].Name}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			selected = append(selected, matches[0])
+		}
+	}
+	sortBackendTLSPolicies(selected)
+	return selected, nil
+}
+
+func (r *CloudflareTunnelReconciler) syncGeneratedOriginCASecrets(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel, backendTLSPolicies []gateway.BackendTLSPolicy) error {
 	desired := map[string]struct{}{}
 	for _, pool := range tunnel.Spec.OriginCAPools {
 		refNS := tunnel.Namespace
@@ -148,11 +252,7 @@ func (r *CloudflareTunnelReconciler) syncGeneratedOriginCASecrets(ctx context.Co
 		}
 	}
 
-	var policies gateway.BackendTLSPolicyList
-	if err := r.List(ctx, &policies); err != nil {
-		return fmt.Errorf("list BackendTLSPolicies: %w", err)
-	}
-	for _, policy := range policies.Items {
+	for _, policy := range backendTLSPolicies {
 		if len(policy.Spec.Validation.CACertificateRefs) != 1 {
 			continue
 		}
@@ -435,13 +535,17 @@ func (r *CloudflareTunnelReconciler) backendTLSPolicyForBackend(ctx context.Cont
 	if len(matches) == 0 {
 		return nil, nil
 	}
-	sort.SliceStable(matches, func(i, j int) bool {
-		if !matches[i].CreationTimestamp.Equal(&matches[j].CreationTimestamp) {
-			return matches[i].CreationTimestamp.Before(&matches[j].CreationTimestamp)
-		}
-		return matches[i].Namespace+"/"+matches[i].Name < matches[j].Namespace+"/"+matches[j].Name
-	})
+	sortBackendTLSPolicies(matches)
 	return &matches[0], nil
+}
+
+func sortBackendTLSPolicies(policies []gateway.BackendTLSPolicy) {
+	sort.SliceStable(policies, func(i, j int) bool {
+		if !policies[i].CreationTimestamp.Equal(&policies[j].CreationTimestamp) {
+			return policies[i].CreationTimestamp.Before(&policies[j].CreationTimestamp)
+		}
+		return policies[i].Namespace+"/"+policies[i].Name < policies[j].Namespace+"/"+policies[j].Name
+	})
 }
 
 func backendTLSPolicyTargetsService(policy gateway.BackendTLSPolicy, serviceName string) bool {

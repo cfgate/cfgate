@@ -7,15 +7,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	"cfgate.io/cfgate/internal/cloudflared"
 	"cfgate.io/cfgate/internal/controller/annotations"
 )
 
@@ -312,6 +316,156 @@ func TestBackendTLSPolicyListError(t *testing.T) {
 	}
 }
 
+func TestBackendTLSPolicyReconcileLogsErrors(t *testing.T) {
+	scheme := controllerTestScheme(t)
+	policy := backendTLSPolicyForTest("backend", "apps", "app", "backend.example.com", "ca")
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"}}
+
+	t.Run("evaluation error", func(t *testing.T) {
+		k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy.DeepCopy(), svc.DeepCopy()).Build()
+		var logs []string
+		ctx := crlog.IntoContext(context.Background(), logr.New(&recordingLogSink{errors: &logs}))
+		reconciler := &BackendTLSPolicyReconciler{
+			Client: &listErrorClient{
+				Client:  k8sClient,
+				listErr: errors.New("cache unavailable"),
+				failFor: func(list client.ObjectList) bool {
+					_, ok := list.(*gatewayv1.BackendTLSPolicyList)
+					return ok
+				},
+			},
+			Scheme: scheme,
+		}
+
+		result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "backend"))
+		if err != nil {
+			t.Fatalf("Reconcile() error = %v", err)
+		}
+		if result.RequeueAfter != requeueAfterError {
+			t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, requeueAfterError)
+		}
+		if !logMessagesContain(logs, "failed to evaluate BackendTLSPolicy") {
+			t.Fatalf("logs = %#v, want evaluation error log", logs)
+		}
+	})
+
+	t.Run("status update error", func(t *testing.T) {
+		k8sClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithStatusSubresource(&gatewayv1.BackendTLSPolicy{}).
+			WithObjects(policy.DeepCopy(), svc.DeepCopy(), caConfigMapForTest("ca", "apps")).
+			Build()
+		var logs []string
+		ctx := crlog.IntoContext(context.Background(), logr.New(&recordingLogSink{errors: &logs}))
+		reconciler := &BackendTLSPolicyReconciler{
+			Client: &statusUpdateErrorClient{
+				Client:    k8sClient,
+				updateErr: errors.New("status unavailable"),
+			},
+			Scheme: scheme,
+		}
+
+		result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "backend"))
+		if err != nil {
+			t.Fatalf("Reconcile() error = %v", err)
+		}
+		if result.RequeueAfter != requeueAfterError {
+			t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, requeueAfterError)
+		}
+		if !logMessagesContain(logs, "failed to update BackendTLSPolicy status") {
+			t.Fatalf("logs = %#v, want status update error log", logs)
+		}
+	})
+}
+
+func TestBackendTLSPolicyMountsScopedToTunnelBackends(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := tunnelForOriginRuntimeTest()
+	gw := gatewayForTunnelTest()
+	route := routeForBackendTest("app-route", "apps", "app")
+	relevant := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	unrelated := backendTLSPolicyForTest("tls-other", "other", "other", "other.example.com", "ca-other")
+	reconciler := &CloudflareTunnelReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(tunnel, gw, route, relevant, unrelated, caConfigMapForTest("ca-app", "apps"), caConfigMapForTest("ca-other", "other")).
+			Build(),
+		Scheme: scheme,
+	}
+
+	policies, err := reconciler.backendTLSPoliciesForTunnel(ctx, tunnel)
+	if err != nil {
+		t.Fatalf("backendTLSPoliciesForTunnel() error = %v", err)
+	}
+	if len(policies) != 1 || policies[0].Namespace != "apps" || policies[0].Name != "tls-app" {
+		t.Fatalf("backendTLSPoliciesForTunnel() = %#v, want apps/tls-app only", policies)
+	}
+
+	mounts, _, paths, err := reconciler.resolveOriginCAPoolMounts(ctx, tunnel, policies)
+	if err != nil {
+		t.Fatalf("resolveOriginCAPoolMounts() error = %v", err)
+	}
+	if _, ok := paths[types.NamespacedName{Namespace: "apps", Name: "tls-app"}]; !ok {
+		t.Fatalf("paths = %#v, want apps/tls-app", paths)
+	}
+	if _, ok := paths[types.NamespacedName{Namespace: "other", Name: "tls-other"}]; ok {
+		t.Fatalf("paths = %#v, did not want other/tls-other", paths)
+	}
+	if len(mounts) != 1 || mounts[0].Name != cloudflared.OriginCAPoolVolumeNameFor("backendtls", "apps", "tls-app") {
+		t.Fatalf("mounts = %#v, want only relevant backendtls mount", mounts)
+	}
+}
+
+func TestGeneratedOriginCASecretsScopedAndPruned(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := tunnelForOriginRuntimeTest()
+	relevant := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	unrelated := backendTLSPolicyForTest("tls-other", "other", "other", "other.example.com", "ca-other")
+	staleName := generatedOriginCASecretName(tunnel.Name, "backendtls", unrelated.Namespace, unrelated.Name, "ca-other")
+	stale := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      staleName,
+			Namespace: tunnel.Namespace,
+			Labels: map[string]string{
+				generatedOriginCASecretLabel:   "true",
+				"app.kubernetes.io/instance":   tunnel.Name,
+				"app.kubernetes.io/managed-by": "cfgate",
+				"app.kubernetes.io/component":  "origin-ca-pool",
+			},
+		},
+		Data: map[string][]byte{cloudflared.DefaultOriginCAPoolSecretKey: []byte("old")},
+	}
+	reconciler := &CloudflareTunnelReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(tunnel, relevant, unrelated, caConfigMapForTest("ca-app", "apps"), caConfigMapForTest("ca-other", "other"), stale).
+			Build(),
+		Scheme: scheme,
+	}
+
+	if err := reconciler.syncGeneratedOriginCASecrets(ctx, tunnel, []gatewayv1.BackendTLSPolicy{*relevant}); err != nil {
+		t.Fatalf("syncGeneratedOriginCASecrets() error = %v", err)
+	}
+	relevantName := generatedOriginCASecretName(tunnel.Name, "backendtls", relevant.Namespace, relevant.Name, "ca-app")
+	var relevantSecret corev1.Secret
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: relevantName}, &relevantSecret); err != nil {
+		t.Fatalf("get relevant generated secret: %v", err)
+	}
+	if string(relevantSecret.Data[cloudflared.DefaultOriginCAPoolSecretKey]) != "apps-ca" {
+		t.Fatalf("relevant CA data = %q, want apps-ca", relevantSecret.Data[cloudflared.DefaultOriginCAPoolSecretKey])
+	}
+	var unrelatedSecret corev1.Secret
+	if err := reconciler.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: staleName}, &unrelatedSecret); err == nil {
+		t.Fatalf("unrelated generated secret still exists")
+	}
+	unrelatedName := generatedOriginCASecretName(tunnel.Name, "backendtls", unrelated.Namespace, unrelated.Name, "ca-other")
+	if unrelatedName != staleName {
+		t.Fatalf("test setup staleName = %q, unrelatedName = %q", staleName, unrelatedName)
+	}
+}
+
 func originPolicyForTest(name string, ts time.Time) *cfgatev1alpha1.CloudflareOriginPolicy {
 	return &cfgatev1alpha1.CloudflareOriginPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -334,9 +488,113 @@ func ptrWellKnown(v gatewayv1.WellKnownCACertificatesType) *gatewayv1.WellKnownC
 	return &v
 }
 
+func tunnelForOriginRuntimeTest() *cfgatev1alpha1.CloudflareTunnel {
+	return &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "cfgate"},
+	}
+}
+
+func gatewayForTunnelTest() *gatewayv1.Gateway {
+	return &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "cfgate",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "cfgate/tunnel",
+			},
+		},
+	}
+}
+
+func routeForBackendTest(name, namespace, serviceName string) *gatewayv1.HTTPRoute {
+	gatewayNS := gatewayv1.Namespace("cfgate")
+	port := gatewayv1.PortNumber(8443)
+	return &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{
+				ParentRefs: []gatewayv1.ParentReference{{
+					Namespace: &gatewayNS,
+					Name:      "gateway",
+				}},
+			},
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: gatewayv1.ObjectName(serviceName),
+							Port: &port,
+						},
+					},
+				}},
+			}},
+		},
+	}
+}
+
+func backendTLSPolicyForTest(name, namespace, serviceName, hostname, caConfigMap string) *gatewayv1.BackendTLSPolicy {
+	return &gatewayv1.BackendTLSPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: gatewayv1.BackendTLSPolicySpec{
+			TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{
+					Group: "",
+					Kind:  "Service",
+					Name:  gatewayv1.ObjectName(serviceName),
+				},
+			}},
+			Validation: gatewayv1.BackendTLSPolicyValidation{
+				CACertificateRefs: []gatewayv1.LocalObjectReference{{
+					Group: "",
+					Kind:  "ConfigMap",
+					Name:  gatewayv1.ObjectName(caConfigMap),
+				}},
+				Hostname: gatewayv1.PreciseHostname(hostname),
+			},
+		},
+	}
+}
+
+func caConfigMapForTest(name, namespace string) *corev1.ConfigMap {
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Data: map[string]string{
+			cloudflared.DefaultOriginCAPoolSecretKey: namespace + "-ca",
+		},
+	}
+}
+
 func ctrlRequest(namespace, name string) ctrl.Request {
 	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}}
 }
+
+func logMessagesContain(messages []string, want string) bool {
+	for _, message := range messages {
+		if strings.Contains(message, want) {
+			return true
+		}
+	}
+	return false
+}
+
+type recordingLogSink struct {
+	errors *[]string
+}
+
+func (s *recordingLogSink) Init(logr.RuntimeInfo) {}
+
+func (s *recordingLogSink) Enabled(int) bool { return true }
+
+func (s *recordingLogSink) Info(int, string, ...interface{}) {}
+
+func (s *recordingLogSink) Error(err error, msg string, _ ...interface{}) {
+	*s.errors = append(*s.errors, msg+": "+err.Error())
+}
+
+func (s *recordingLogSink) WithValues(...interface{}) logr.LogSink { return s }
+
+func (s *recordingLogSink) WithName(string) logr.LogSink { return s }
 
 type listErrorClient struct {
 	client.Client
@@ -349,4 +607,29 @@ func (c *listErrorClient) List(ctx context.Context, list client.ObjectList, opts
 		return c.listErr
 	}
 	return c.Client.List(ctx, list, opts...)
+}
+
+type statusUpdateErrorClient struct {
+	client.Client
+	updateErr error
+}
+
+func (c *statusUpdateErrorClient) Status() client.SubResourceWriter {
+	return &statusUpdateErrorWriter{
+		SubResourceWriter: c.Client.Status(),
+		updateErr:         c.updateErr,
+	}
+}
+
+type statusUpdateErrorWriter struct {
+	client.SubResourceWriter
+	updateErr error
+}
+
+func (w *statusUpdateErrorWriter) Update(context.Context, client.Object, ...client.SubResourceUpdateOption) error {
+	return w.updateErr
+}
+
+func (w *statusUpdateErrorWriter) Apply(ctx context.Context, obj k8sruntime.ApplyConfiguration, opts ...client.SubResourceApplyOption) error {
+	return w.SubResourceWriter.Apply(ctx, obj, opts...)
 }

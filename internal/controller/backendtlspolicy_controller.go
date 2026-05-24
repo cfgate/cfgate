@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
@@ -33,6 +34,7 @@ type BackendTLSPolicyReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services;configmaps,verbs=get;list;watch
 
 func (r *BackendTLSPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := log.FromContext(ctx).WithName("controller").WithName("backendtlspolicy")
 	var policy gateway.BackendTLSPolicy
 	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -42,6 +44,7 @@ func (r *BackendTLSPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	accepted, acceptedReason, acceptedMessage, resolved, resolvedReason, resolvedMessage, err := r.evaluateBackendTLSPolicy(ctx, &policy)
 	if err != nil {
+		log.Error(err, "failed to evaluate BackendTLSPolicy")
 		return ctrl.Result{RequeueAfter: requeueAfterError}, nil
 	}
 	policy.Status.Ancestors = []gateway.PolicyAncestorStatus{{
@@ -53,6 +56,7 @@ func (r *BackendTLSPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		},
 	}}
 	if err := r.Status().Update(ctx, &policy); err != nil {
+		log.Error(err, "failed to update BackendTLSPolicy status")
 		return ctrl.Result{RequeueAfter: requeueAfterError}, nil
 	}
 	return ctrl.Result{}, nil
