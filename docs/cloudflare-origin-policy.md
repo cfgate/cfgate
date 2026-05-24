@@ -9,18 +9,20 @@
 
 ## Status
 
-Spec-first in `0.3.0-alpha.1`. The CRD defines the API contract; controller reconciliation follows in implementation PRs.
+Runtime-supported in `0.3.0-alpha.1`. The controller resolves targets, writes status, and applies accepted policies to generated Cloudflare Tunnel ingress rules.
 
 ## Precedence
 
-Origin settings resolve in this order:
+Origin settings resolve from lowest to highest precedence:
 
-1. HTTPRoute explicit cfgate annotations
-2. Gateway API `BackendTLSPolicy` on the backend `Service`
-3. `CloudflareOriginPolicy`
-4. `CloudflareTunnel.spec.originDefaults`
+1. `CloudflareTunnel.spec.originDefaults`
+2. `CloudflareOriginPolicy`
+3. Gateway API `BackendTLSPolicy` on the backend `Service`
+4. HTTPRoute explicit cfgate annotations
 
 Annotations remain the alpha-line legacy override. `BackendTLSPolicy` is preferred for standard backend TLS validation when it fits. Use `CloudflareOriginPolicy` for cfgate/cloudflared settings that Gateway API does not standardize.
+
+When both deprecated flat aliases and nested fields are set on a `CloudflareOriginPolicy`, nested fields win. Policies that target the same route section use Gateway API policy precedence: older `creationTimestamp` wins, and ties sort by `namespace/name`.
 
 ## Spec Reference
 
@@ -76,15 +78,28 @@ spec:
 
 ## BackendTLSPolicy Interop
 
-Gateway API `v1.BackendTLSPolicy` is the standard API for backend TLS validation. cfgate's initial contract should support:
+Gateway API `v1.BackendTLSPolicy` is the standard API for backend TLS validation. cfgate supports:
 
 - Target: Kubernetes `Service` referenced by an accepted `HTTPRoute.backendRefs[]`.
 - CA source: one same-namespace `ConfigMap` reference with key `ca.crt`.
 - SNI/certificate hostname: `spec.validation.hostname`.
+- Well-known CA source: `wellKnownCACertificates: System`.
 - Status: `Accepted` and `ResolvedRefs`.
 - Conflict: oldest policy by creation timestamp wins; ties sort by `namespace/name`.
 
-cfgate maps valid `BackendTLSPolicy` CA bundles to managed cloudflared `originRequest.caPool` paths. `WellKnownCACertificates: System` should map to no `caPool` override when supported.
+cfgate maps valid `BackendTLSPolicy` CA bundles to generated, managed cloudflared `originRequest.caPool` paths. `WellKnownCACertificates: System` maps to no `caPool` override.
+
+Unsupported in `0.3.0-alpha.1`: multiple `targetRefs`, non-Service targets, `sectionName`, multiple CA refs, non-ConfigMap CA refs, `subjectAltNames`, and implementation-specific `options`.
+
+## Status Conditions
+
+Top-level conditions:
+
+- `TargetsResolved`
+- `ReferenceGrantValid`
+- `Ready`
+
+Each target also gets an ancestor `Accepted` condition. `Accepted=False` uses `TargetNotFound`, `ReferenceGrantRequired`, `Conflicted`, or `Invalid` when applicable.
 
 ## Unsupported Route Surfaces
 

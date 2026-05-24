@@ -199,6 +199,20 @@ metadata:
 
 Cross-namespace Secret references require a Gateway API `ReferenceGrant` in the Secret namespace permitting `CloudflareTunnel` from the tunnel namespace to reference `Secret`.
 
+Same-namespace named pool Secrets are mounted directly. Cross-namespace named pool Secrets are copied into generated Secrets in the tunnel namespace, owned by the `CloudflareTunnel`, and mounted from there because Kubernetes pods cannot mount Secrets across namespaces. cfgate removes stale generated CA Secrets when the tunnel no longer references them.
+
+Named pools mount at:
+
+```text
+/etc/cfgate/origin-ca-pools/<pool-name>/ca.pem
+```
+
+Gateway API `BackendTLSPolicy` ConfigMap CA bundles are materialized the same way and mounted at:
+
+```text
+/etc/cfgate/backend-tls-policies/<policy-namespace>/<policy-name>/ca.pem
+```
+
 ### `spec.fallbackTarget`
 
 The catch-all service for requests that do not match any ingress rule. Defaults to returning HTTP 404. Can be set to any cloudflared-supported origin format (e.g., `http://fallback-svc.default.svc.cluster.local:8080`).

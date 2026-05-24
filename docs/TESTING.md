@@ -21,6 +21,9 @@ Current tunnel correctness coverage includes:
 - cloudflared metrics default port `44483` and `metrics.enabled: false` omission of args, ports, and HTTP probes
 - `caPoolSecretRef` Secret volume/item/mount generation and global `originRequest.caPool`
 - managed per-route `caPool`, `originServerName`, host header, TLS verify, HTTP/2, and h2c origin request propagation
+- `CloudflareOriginPolicy` target status, conflict handling, and origin request precedence
+- Gateway API `BackendTLSPolicy` validation/status and backend TLS origin request mapping
+- named origin CA pool refs, managed/unmanaged CA path validation, and generated CA Secret materialization
 - `cfgate.io/hostname` override for listener compatibility plus tunnel/DNS route discovery
 - HTTPRoute path translation to anchored cloudflared regexes
 - cross-namespace backend `Service` `ReferenceGrant` enforcement

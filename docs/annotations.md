@@ -144,7 +144,7 @@ Literal in-container path to a CA certificate pool file used to verify the origi
 
 Default `managed` mode accepts only cfgate-owned paths:
 - `/etc/cfgate/origin-ca-pool/ca.pem` when the referenced `CloudflareTunnel` has `spec.originDefaults.caPoolSecretRef` configured.
-- future named pool paths generated from `CloudflareTunnel.spec.originCAPools`.
+- named pool paths generated from `CloudflareTunnel.spec.originCAPools`.
 
 Set `cfgate.io/origin-ca-pool-mode: unmanaged` only when you intentionally run a custom cloudflared image or mount files yourself. In unmanaged mode, cfgate accepts absolute paths and emits a warning event because it does not mount or verify those files.
 
@@ -200,6 +200,8 @@ metadata:
 ```
 
 Do not set `cfgate.io/origin-ca-pool` and `cfgate.io/origin-ca-pool-ref` on the same route.
+
+For migration, prefer `cfgate.io/origin-ca-pool-ref` or `CloudflareOriginPolicy.spec.origin.tls.caPoolRef` over raw paths. Raw managed paths remain for the legacy tunnel default CA pool, while unmanaged paths are an explicit escape hatch.
 
 ---
 

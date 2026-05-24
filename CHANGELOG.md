@@ -5,31 +5,117 @@ All notable changes to cfgate are documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- Add origin policy API contracts
+
+## [0.2.0-alpha.5] - 2026-05-23
+
 ### Bug Fixes
 
-- **(tunnel)** Apply origin CA pool Secret mounts and remote `originRequest.caPool`
-- **(tunnel)** Propagate per-route origin server name and managed CA pool annotations
-- **(tunnel)** Reject route CA pool annotation paths that cfgate does not mount
-- **(tunnel)** Honor route hostname overrides and listener hostname fallback in tunnel/DNS discovery
-- **(tunnel)** Block cloudflared deployment when referenced origin CA Secrets or keys are missing
-- **(cloudflared)** Align metrics fallback port with API/docs and honor metrics disablement
-- **(gateway)** Translate HTTPRoute paths to cloudflared regexes and enforce backend ReferenceGrants
-- **(gateway)** Report unsupported HTTPRoute backendRefs with `ResolvedRefs=False`
-- **(access)** Reject unsupported application types and invalid policy selector combinations
-- **(access)** Restrict Access Application CRD admission to `self_hosted`
+- **(tunnel)** Apply origin CA pool configuration
+- Enforce alpha.5 access and route constraints
+- Address alpha5 review correctness
+
+## [0.2.0-alpha.4] - 2026-05-18
+
+### Bug Fixes
+
+- **(access)** Harden application cleanup diagnostics
+
+### Testing
+
+- Verify h2c remote tunnel config
+
+### Maintenance
+
+- Bump cloudflared h2c image
+
+## [0.2.0-alpha.3] - 2026-05-15
+
+### Features
+
+- **(access)** Split policies from applications
+
+### Bug Fixes
+
+- **(access)** Harden app paths and e2e cleanup
+- **(access)** Address review feedback
+- **(access)** Compare policy links by precedence
+- **(access)** Close migration audit gaps
+- **(access)** Support policy account names
+- **(access)** Address review robustness gaps
+- **(access)** Harden application cleanup
+- **(access)** Polish controller robustness
+- **(access)** Clean up application owner tags
+- **(e2e)** Clean stale access owner tags
+- **(e2e)** Polish access tag cleanup review
+- **(security)** Bump Go to 1.26.3
+- **(cleanup)** Align release readiness docs
+- **(cleanup)** Tighten access app domain matching
+- **(access)** Harden policy token lifecycle
+- **(access)** Address lifecycle review notes
+
+### Documentation
+
+- **(access)** Refresh migration examples
+- **(access)** Update application cleanup guidance
+
+### Maintenance
+
+- Update dependencies
+
+## [0.2.0-alpha.2] - 2026-04-28
+
+### Bug Fixes
+
+- **(cloudflared)** Run tunnel pods with restricted security
+- **(controller)** Preserve recreated tunnel status
+- **(controller)** Mirror config hash after patch
+- **(controller)** Mirror config hash resource version
+
+### Documentation
+
+- Fix remaining DNS contract drift
+
+### Maintenance
+
+- Refresh generated and formatted files
+
+## [0.2.0-alpha.1] - 2026-04-12
+
+### Bug Fixes
+
+- **(controller)** Correct DNS discovery and route reconciles
+- **(dns)** Honor explicit hostname precedence
+- **(controller)** Clear stale route parent status
+
+### Refactoring
+
+- **(controller)** Remove redundant route status guard
+
+## [0.1.0-alpha.21] - 2026-04-12
+
+### Bug Fixes
+
 - **(release)** Drop changelog writeback and tighten latest tags
 - **(release)** Harden e2e preflight and coverage upload
 - Correct assurance score metadata and review notes
 - Harden coverage helper scripts
 - Honor coverage mode in profile merge
 - Fail coverage merge pipelines on awk errors
+- Unblock dns partial-sync cleanup
+- Retry e2e httproute annotation updates
 
 ### Testing
 
 - Add merged coverage tooling and orchestration tests
 - Expand e2e coverage and drop access mtls
-- Cover unsupported HTTPRoute backend status and Access Application type admission
 - Drop unused e2e helper stubs
+
+### Documentation
+
+- Refresh current surface references
 
 ### Refactoring
 

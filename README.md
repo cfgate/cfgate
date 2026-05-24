@@ -158,7 +158,9 @@ cfgate automatically:
 
 **CloudflareOriginPolicy** binds cfgate-specific origin settings to `HTTPRoute` targets. → [Full reference](docs/cloudflare-origin-policy.md)
 
-Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) is set via annotations on Gateway API HTTPRoute resources. → [Full reference](docs/annotations.md)
+Portable backend TLS validation can be expressed with Gateway API `BackendTLSPolicy`; cfgate maps supported policies into cloudflared origin request settings.
+
+Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) can still be set via annotations on Gateway API HTTPRoute resources. Annotations remain the highest-precedence alpha migration override. → [Full reference](docs/annotations.md)
 
 ## Documentation
 

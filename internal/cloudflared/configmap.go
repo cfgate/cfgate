@@ -69,6 +69,7 @@ type OriginRequestConfig struct {
 	CAPool                 string `yaml:"caPool,omitempty"`
 	NoTLSVerify            bool   `yaml:"noTLSVerify,omitempty"`
 	DisableChunkedEncoding bool   `yaml:"disableChunkedEncoding,omitempty"`
+	MatchSNIToHost         bool   `yaml:"matchSNItoHost,omitempty"`
 	BastionMode            bool   `yaml:"bastionMode,omitempty"`
 	ProxyAddress           string `yaml:"proxyAddress,omitempty"`
 	ProxyPort              int    `yaml:"proxyPort,omitempty"`
@@ -254,7 +255,10 @@ func BuildOriginConfig(defaults *cfgatev1alpha1.OriginDefaults, annotations map[
 		config.OriginServerName == "" &&
 		config.CAPool == "" &&
 		!config.HTTP2Origin &&
-		!config.H2cOrigin {
+		!config.H2cOrigin &&
+		!config.DisableChunkedEncoding &&
+		!config.MatchSNIToHost &&
+		config.TLSTimeout == "" {
 		return nil
 	}
 

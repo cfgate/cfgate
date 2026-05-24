@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
@@ -281,7 +282,47 @@ func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForHTTPRoute),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		Watches(
+			&cfgatev1alpha1.CloudflareOriginPolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&gateway.BackendTLSPolicy{},
+			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&gatewayv1beta1.ReferenceGrant{},
+			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
+		).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+		).
 		Complete(r)
+}
+
+func (r *CloudflareTunnelReconciler) findAllTunnels(ctx context.Context, obj client.Object) []reconcile.Request {
+	var tunnels cfgatev1alpha1.CloudflareTunnelList
+	var reader client.Reader = r.Client
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	if err := reader.List(ctx, &tunnels); err != nil {
+		return nil
+	}
+	reqs := make([]reconcile.Request, 0, len(tunnels.Items))
+	for _, tunnel := range tunnels.Items {
+		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: tunnel.Namespace, Name: tunnel.Name}})
+	}
+	return reqs
 }
 
 // findTunnelsForGateway returns reconcile requests for tunnels referenced by a Gateway.
@@ -432,6 +473,13 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	if err := r.validateOriginCAPoolSecretRef(ctx, tunnel); err != nil {
 		return err
 	}
+	originCAPoolMounts, _, _, err := r.resolveOriginCAPoolMounts(ctx, tunnel)
+	if err != nil {
+		return err
+	}
+	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel, originCAPoolMounts); err != nil {
+		return err
+	}
 
 	// Get tunnel token
 	cfClient, err := r.getCloudflareClient(ctx, tunnel)
@@ -487,6 +535,9 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 
 	// Create or update Deployment
 	deployment := builder.BuildDeployment(tunnel, token)
+	if capoolBuilder, ok := builder.(cloudflared.DeploymentOriginCAPoolBuilder); ok {
+		deployment = capoolBuilder.BuildDeploymentWithOriginCAPoolMounts(tunnel, token, originCAPoolMounts)
+	}
 	if err := controllerutil.SetControllerReference(tunnel, deployment, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set deployment owner reference: %w", err)
 	}
@@ -656,6 +707,10 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) ([]cloudflare.IngressRule, int, error) {
 	var rules []cloudflare.IngressRule
 	routeCount := 0
+	originRuntime, err := r.buildOriginRuntime(ctx, tunnel)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	// Find Gateways that reference this tunnel
 	var gateways gateway.GatewayList
@@ -705,7 +760,7 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 						continue
 					}
 
-					routeRules, err := r.buildRulesFromHTTPRouteForHostnames(&route, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil)
+					routeRules, err := r.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, &route, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil, originRuntime)
 					if err != nil {
 						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
 							"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
@@ -740,12 +795,22 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 // multiple backendRefs (Cloudflare tunnel ingress is 1:1) or an unsupported
 // backend group/kind. Rules with zero backendRefs are skipped.
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTPRoute) ([]cloudflare.IngressRule, error) {
-	return r.buildRulesFromHTTPRouteForHostnames(route, effectiveHTTPRouteHostnames(route), false)
+	return r.buildRulesFromHTTPRouteForHostnamesWithRuntime(context.Background(), route, effectiveHTTPRouteHostnames(route), false, &originRuntime{
+		namedCAPoolPaths:      map[string]string{},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+	})
 }
 
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnames(route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool) ([]cloudflare.IngressRule, error) {
+	return r.buildRulesFromHTTPRouteForHostnamesWithRuntime(context.Background(), route, hostnames, originCAPoolMounted, &originRuntime{
+		namedCAPoolPaths:      map[string]string{},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+	})
+}
+
+func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx context.Context, route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool, runtime *originRuntime) ([]cloudflare.IngressRule, error) {
 	var rules []cloudflare.IngressRule
-	if err := validateRouteOriginCAPool(route, originCAPoolMounted); err != nil {
+	if err := validateRouteOriginCAPool(route, originCAPoolMounted, runtime.namedCAPoolPaths); err != nil {
 		return nil, err
 	}
 
@@ -780,17 +845,49 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnames(route *
 				backendNS = string(*backend.Namespace)
 			}
 
-			protocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
-			if protocol != "https" {
-				protocol = "http"
+			protocol := "http"
+			originRequest := &cloudflare.OriginRequestConfig{}
+			originPolicy, err := r.originPolicyForRule(ctx, route, rule)
+			if err != nil {
+				return nil, err
+			}
+			if policyProtocol, err := applyOriginPolicy(originRequest, originPolicy, runtime.namedCAPoolPaths); err != nil {
+				return nil, err
+			} else if policyProtocol != "" {
+				protocol = policyProtocol
+			}
+
+			backendTLSPolicy, err := r.backendTLSPolicyForBackend(ctx, backendNS, string(backend.Name))
+			if err != nil {
+				return nil, err
+			}
+			if usesHTTPS, err := applyBackendTLSPolicy(originRequest, backendTLSPolicy, runtime.backendTLSCAPoolPaths); err != nil {
+				return nil, err
+			} else if usesHTTPS {
+				protocol = "https"
+			}
+
+			annotationProtocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
+			if annotationProtocol == "https" || annotationProtocol == "http" {
+				protocol = annotationProtocol
 			}
 
 			service := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
 				protocol, backend.Name, backendNS, servicePort)
 
-			var originRequest *cloudflare.OriginRequestConfig
 			originConfig := cloudflared.BuildOriginConfig(nil, route.Annotations)
-			originRequest = cloudflaredOriginRequestToCloudflare(originConfig)
+			annotationOriginRequest := cloudflaredOriginRequestToCloudflare(originConfig)
+			if annotationOriginRequest != nil {
+				if capoolRef := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPoolRef); capoolRef != "" {
+					path, ok := runtime.namedCAPoolPaths[capoolRef]
+					if !ok {
+						return nil, fmt.Errorf("route %s/%s: %s references unknown origin CA pool %q",
+							route.Namespace, route.Name, annotations.AnnotationOriginCAPoolRef, capoolRef)
+					}
+					annotationOriginRequest.CAPool = path
+				}
+			}
+			originRequest = mergeOriginRequest(originRequest, annotationOriginRequest)
 
 			if len(rule.Matches) == 0 {
 				rules = append(rules, cloudflare.IngressRule{
@@ -819,20 +916,51 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnames(route *
 	return rules, nil
 }
 
-func validateRouteOriginCAPool(route *gateway.HTTPRoute, originCAPoolMounted bool) error {
+func validateRouteOriginCAPool(route *gateway.HTTPRoute, originCAPoolMounted bool, namedCAPoolPaths map[string]string) error {
+	caPoolRef := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPoolRef)
+	if caPoolRef != "" {
+		if _, ok := namedCAPoolPaths[caPoolRef]; !ok {
+			return fmt.Errorf("route %s/%s: %s references unknown origin CA pool %q",
+				route.Namespace, route.Name, annotations.AnnotationOriginCAPoolRef, caPoolRef)
+		}
+	}
 	caPool := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPool)
 	if caPool == "" {
 		return nil
 	}
-	if caPool != cloudflared.OriginCAPoolPath() {
+	mode := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPoolMode)
+	if mode == "" {
+		mode = "managed"
+	}
+	if mode == "unmanaged" {
+		if !strings.HasPrefix(caPool, "/") {
+			return fmt.Errorf("route %s/%s: unmanaged %s must be an absolute path",
+				route.Namespace, route.Name, annotations.AnnotationOriginCAPool)
+		}
+		return nil
+	}
+	if caPool == cloudflared.OriginCAPoolPath() {
+		if !originCAPoolMounted {
+			return fmt.Errorf("route %s/%s: %s requires CloudflareTunnel spec.originDefaults.caPoolSecretRef",
+				route.Namespace, route.Name, annotations.AnnotationOriginCAPool)
+		}
+		return nil
+	}
+	for _, namedPath := range namedCAPoolPaths {
+		if caPool == namedPath {
+			return nil
+		}
+	}
+	if len(namedCAPoolPaths) > 0 {
 		return fmt.Errorf("route %s/%s: %s must be %q for managed origin CA pools",
 			route.Namespace, route.Name, annotations.AnnotationOriginCAPool, cloudflared.OriginCAPoolPath())
 	}
-	if !originCAPoolMounted {
-		return fmt.Errorf("route %s/%s: %s requires CloudflareTunnel spec.originDefaults.caPoolSecretRef",
-			route.Namespace, route.Name, annotations.AnnotationOriginCAPool)
+	if originCAPoolMounted {
+		return fmt.Errorf("route %s/%s: %s must be %q for managed origin CA pools",
+			route.Namespace, route.Name, annotations.AnnotationOriginCAPool, cloudflared.OriginCAPoolPath())
 	}
-	return nil
+	return fmt.Errorf("route %s/%s: %s must be a managed origin CA pool path",
+		route.Namespace, route.Name, annotations.AnnotationOriginCAPool)
 }
 
 func effectiveHTTPRouteHostnames(route *gateway.HTTPRoute) []gateway.Hostname {
@@ -877,13 +1005,16 @@ func cloudflaredOriginRequestToCloudflare(config *cloudflared.OriginRequestConfi
 		return nil
 	}
 	return &cloudflare.OriginRequestConfig{
-		ConnectTimeout:   config.ConnectTimeout,
-		NoTLSVerify:      config.NoTLSVerify,
-		HTTP2Origin:      config.HTTP2Origin,
-		H2cOrigin:        config.H2cOrigin,
-		HTTPHostHeader:   config.HTTPHostHeader,
-		OriginServerName: config.OriginServerName,
-		CAPool:           config.CAPool,
+		ConnectTimeout:         config.ConnectTimeout,
+		TLSTimeout:             config.TLSTimeout,
+		NoTLSVerify:            config.NoTLSVerify,
+		HTTP2Origin:            config.HTTP2Origin,
+		H2cOrigin:              config.H2cOrigin,
+		HTTPHostHeader:         config.HTTPHostHeader,
+		OriginServerName:       config.OriginServerName,
+		CAPool:                 config.CAPool,
+		DisableChunkedEncoding: config.DisableChunkedEncoding,
+		MatchSNIToHost:         config.MatchSNIToHost,
 	}
 }
 

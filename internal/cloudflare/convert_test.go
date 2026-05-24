@@ -442,25 +442,27 @@ func TestPolicyAndGroupResponseConverters(t *testing.T) {
 func TestOriginRequestConverters(t *testing.T) {
 	config := &OriginRequestConfig{
 		ConnectTimeout:         "45s",
+		TLSTimeout:             "12s",
 		NoHappyEyeballs:        true,
 		KeepAliveConnections:   7,
 		HTTPHostHeader:         "origin.example.com",
 		OriginServerName:       "server.example.com",
+		MatchSNIToHost:         true,
 		CAPool:                 "pool-1",
 		NoTLSVerify:            true,
 		DisableChunkedEncoding: true,
 		HTTP2Origin:            true,
 	}
 	ingress := ingressOriginRequestToAPI(config)
-	if ingress.ConnectTimeout.Value != 45 || !ingress.NoHappyEyeballs.Value || ingress.KeepAliveConnections.Value != 7 ||
+	if ingress.ConnectTimeout.Value != 45 || ingress.TLSTimeout.Value != 12 || !ingress.NoHappyEyeballs.Value || ingress.KeepAliveConnections.Value != 7 ||
 		ingress.HTTPHostHeader.Value != "origin.example.com" || ingress.OriginServerName.Value != "server.example.com" ||
-		ingress.CAPool.Value != "pool-1" || !ingress.NoTLSVerify.Value || !ingress.DisableChunkedEncoding.Value || !ingress.HTTP2Origin.Value {
+		!ingress.MatchSnItoHost.Value || ingress.CAPool.Value != "pool-1" || !ingress.NoTLSVerify.Value || !ingress.DisableChunkedEncoding.Value || !ingress.HTTP2Origin.Value {
 		t.Fatalf("ingressOriginRequestToAPI() = %+v", ingress)
 	}
 	global := globalOriginRequestToAPI(config)
-	if global.ConnectTimeout.Value != 45 || !global.NoHappyEyeballs.Value || global.KeepAliveConnections.Value != 7 ||
+	if global.ConnectTimeout.Value != 45 || global.TLSTimeout.Value != 12 || !global.NoHappyEyeballs.Value || global.KeepAliveConnections.Value != 7 ||
 		global.HTTPHostHeader.Value != "origin.example.com" || global.OriginServerName.Value != "server.example.com" ||
-		global.CAPool.Value != "pool-1" || !global.NoTLSVerify.Value || !global.DisableChunkedEncoding.Value || !global.HTTP2Origin.Value {
+		!global.MatchSnItoHost.Value || global.CAPool.Value != "pool-1" || !global.NoTLSVerify.Value || !global.DisableChunkedEncoding.Value || !global.HTTP2Origin.Value {
 		t.Fatalf("globalOriginRequestToAPI() = %+v", global)
 	}
 	config.ConnectTimeout = "not-a-duration"

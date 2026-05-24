@@ -1103,3 +1103,76 @@ func TestParseDNSConfigFallbacks(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateRouteAnnotationsOriginCAPools(t *testing.T) {
+	tests := []struct {
+		name        string
+		annotations map[string]string
+		wantValid   bool
+		want        string
+	}{
+		{
+			name:        "valid managed mode",
+			annotations: map[string]string{AnnotationOriginCAPoolMode: "managed"},
+			wantValid:   true,
+		},
+		{
+			name:        "valid unmanaged mode",
+			annotations: map[string]string{AnnotationOriginCAPoolMode: "unmanaged"},
+			wantValid:   true,
+		},
+		{
+			name:        "invalid mode",
+			annotations: map[string]string{AnnotationOriginCAPoolMode: "manual"},
+			wantValid:   false,
+			want:        "invalid origin CA pool mode",
+		},
+		{
+			name:        "valid pool ref",
+			annotations: map[string]string{AnnotationOriginCAPoolRef: "internal-ca"},
+			wantValid:   true,
+		},
+		{
+			name:        "invalid pool ref",
+			annotations: map[string]string{AnnotationOriginCAPoolRef: "Internal_CA"},
+			wantValid:   false,
+			want:        "must be a lowercase DNS label",
+		},
+		{
+			name: "raw pool and ref conflict",
+			annotations: map[string]string{
+				AnnotationOriginCAPool:    "/etc/cfgate/origin-ca-pool/ca.pem",
+				AnnotationOriginCAPoolRef: "internal-ca",
+			},
+			wantValid: false,
+			want:      "mutually exclusive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ValidateRouteAnnotations(newFakeObject(tt.annotations), false)
+			if result.Valid != tt.wantValid {
+				t.Fatalf("Valid = %v, want %v; errors=%v", result.Valid, tt.wantValid, result.Errors)
+			}
+			if tt.want != "" && !strings.Contains(strings.Join(result.Errors, "\n"), tt.want) {
+				t.Fatalf("Errors = %v, want containing %q", result.Errors, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseOriginConfigCAPoolModeAndRef(t *testing.T) {
+	config := ParseOriginConfig(newFakeObject(map[string]string{
+		AnnotationOriginCAPoolMode: "unmanaged",
+		AnnotationOriginCAPoolRef:  "internal-ca",
+	}), "http")
+	if config.CAPoolMode != "unmanaged" || config.CAPoolRef != "internal-ca" {
+		t.Fatalf("ParseOriginConfig() CAPoolMode=%q CAPoolRef=%q", config.CAPoolMode, config.CAPoolRef)
+	}
+
+	config = ParseOriginConfig(newFakeObject(nil), "http")
+	if config.CAPoolMode != "managed" {
+		t.Fatalf("default CAPoolMode = %q, want managed", config.CAPoolMode)
+	}
+}

@@ -92,6 +92,8 @@ Use Gateway API `BackendTLSPolicy` for portable backend TLS validation when the 
 
 Use [CloudflareOriginPolicy](cloudflare-origin-policy.md) for cfgate-specific cloudflared origin settings such as host header overrides, connection timeouts, HTTP/2 origin mode, h2c origin mode, and named CA pools.
 
+When both apply to the same backend, cfgate starts with tunnel defaults, applies `CloudflareOriginPolicy`, then applies `BackendTLSPolicy`, then applies route annotations as the final alpha-line override. This lets you migrate annotations to policies without changing behavior until the annotations are removed.
+
 `GRPCRoute`, `TCPRoute`, and `TLSRoute` are not current public-hostname route surfaces for cfgate. Cloudflare Tunnel public hostnames are HTTP-family published applications; gRPC through Tunnel is documented for private subnet routing, and non-HTTP public services require client-side cloudflared or private routing.
 
 ## How cfgate Uses Gateway API

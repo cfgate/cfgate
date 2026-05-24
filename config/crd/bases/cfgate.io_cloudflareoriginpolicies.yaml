@@ -71,6 +71,7 @@ spec:
                         description: Name is the spec.originCAPools name on the CloudflareTunnel.
                         maxLength: 63
                         minLength: 1
+                        pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                         type: string
                     required:
                     - name
@@ -147,6 +148,7 @@ spec:
                               CloudflareTunnel.
                             maxLength: 63
                             minLength: 1
+                            pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                             type: string
                         required:
                         - name
@@ -240,9 +242,6 @@ spec:
             required:
             - targetRefs
             type: object
-            x-kubernetes-validations:
-            - message: targetRefs must contain at least one target
-              rule: has(self.targetRefs) && size(self.targetRefs) > 0
           status:
             description: CloudflareOriginPolicyStatus defines observed origin policy
               state.
