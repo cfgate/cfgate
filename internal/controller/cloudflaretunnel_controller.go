@@ -257,8 +257,10 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 //   - Gateway (via annotation cfgate.io/tunnel-ref)
 //   - HTTPRoute (via parent Gateway reference)
 //
-// Gateway and HTTPRoute watches use GenerationChangedPredicate to prevent
-// reconciliation loops from status-only updates.
+// Gateway and HTTPRoute watches include cfgate.io/* annotation changes because
+// tunnel references and origin settings may change without generation bumps.
+// Secret and ConfigMap watches use ResourceVersion because data updates do not
+// increment metadata.generation.
 func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controller").WithName("tunnel")
 	log.Info("registering controller with manager")
@@ -274,13 +276,13 @@ func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&gateway.Gateway{},
 			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForGateway),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate, GatewayCreateAnnotationFilter),
 		).
 		// Watch HTTPRoute resources that may affect tunnel configuration
 		Watches(
 			&gateway.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForHTTPRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate),
 		).
 		Watches(
 			&cfgatev1alpha1.CloudflareOriginPolicy{},
@@ -299,12 +301,12 @@ func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(DataResourceChangedPredicate),
 		).
 		Watches(
 			&corev1.Secret{},
 			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(DataResourceChangedPredicate),
 		).
 		Complete(r)
 }
@@ -477,7 +479,7 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	if err != nil {
 		return err
 	}
-	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel, originCAPoolMounts); err != nil {
+	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel); err != nil {
 		return err
 	}
 
@@ -877,15 +879,16 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 
 			originConfig := cloudflared.BuildOriginConfig(nil, route.Annotations)
 			annotationOriginRequest := cloudflaredOriginRequestToCloudflare(originConfig)
-			if annotationOriginRequest != nil {
-				if capoolRef := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPoolRef); capoolRef != "" {
-					path, ok := runtime.namedCAPoolPaths[capoolRef]
-					if !ok {
-						return nil, fmt.Errorf("route %s/%s: %s references unknown origin CA pool %q",
-							route.Namespace, route.Name, annotations.AnnotationOriginCAPoolRef, capoolRef)
-					}
-					annotationOriginRequest.CAPool = path
+			if capoolRef := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPoolRef); capoolRef != "" {
+				path, ok := runtime.namedCAPoolPaths[capoolRef]
+				if !ok {
+					return nil, fmt.Errorf("route %s/%s: %s references unknown origin CA pool %q",
+						route.Namespace, route.Name, annotations.AnnotationOriginCAPoolRef, capoolRef)
 				}
+				if annotationOriginRequest == nil {
+					annotationOriginRequest = &cloudflare.OriginRequestConfig{}
+				}
+				annotationOriginRequest.CAPool = path
 			}
 			originRequest = mergeOriginRequest(originRequest, annotationOriginRequest)
 

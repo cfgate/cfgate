@@ -2,6 +2,8 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -122,6 +125,57 @@ func TestBuildRulesAppliesOriginPolicyBackendTLSPolicyAndAnnotations(t *testing.
 	}
 }
 
+func TestBuildRulesFromHTTPRouteOriginCAPoolRefOnly(t *testing.T) {
+	ctx := context.Background()
+	port := gatewayv1.PortNumber(8443)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "apps",
+			Annotations: map[string]string{
+				annotations.AnnotationOriginCAPoolRef: "internal",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "app",
+							Port: &port,
+						},
+					},
+				}},
+			}},
+		},
+	}
+	runtime := &originRuntime{
+		namedCAPoolPaths:      map[string]string{"internal": "/etc/cfgate/origin-ca-pools/internal/ca.pem"},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+	}
+
+	rules, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, []gatewayv1.Hostname{"app.example.com"}, false, runtime)
+	if err != nil {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("len(rules) = %d, want 1", len(rules))
+	}
+	if rules[0].OriginRequest == nil {
+		t.Fatal("OriginRequest is nil")
+	}
+	if rules[0].OriginRequest.CAPool != "/etc/cfgate/origin-ca-pools/internal/ca.pem" {
+		t.Fatalf("CAPool = %q, want named pool path", rules[0].OriginRequest.CAPool)
+	}
+
+	route.Annotations[annotations.AnnotationOriginCAPoolRef] = "missing"
+	_, err = (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, []gatewayv1.Hostname{"app.example.com"}, false, runtime)
+	if err == nil || !strings.Contains(err.Error(), `references unknown origin CA pool "missing"`) {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v, want unknown pool ref error", err)
+	}
+}
+
 func TestCloudflareOriginPolicyReconcilerStatusAndConflict(t *testing.T) {
 	ctx := context.Background()
 	scheme := controllerTestScheme(t)
@@ -163,6 +217,32 @@ func TestCloudflareOriginPolicyReconcilerStatusAndConflict(t *testing.T) {
 	}
 }
 
+func TestCloudflareOriginPolicyListError(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := originPolicyForTest("origin", time.Now())
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build()
+	reconciler := &CloudflareOriginPolicyReconciler{
+		Client: &listErrorClient{
+			Client:  k8sClient,
+			listErr: errors.New("cache unavailable"),
+			failFor: func(list client.ObjectList) bool {
+				_, ok := list.(*cfgatev1alpha1.CloudflareOriginPolicyList)
+				return ok
+			},
+		},
+		Scheme: scheme,
+	}
+
+	ancestors, attached, targetsOK, grantsOK, err := reconciler.evaluateOriginPolicy(ctx, policy)
+	if err == nil || !strings.Contains(err.Error(), "list CloudflareOriginPolicies") {
+		t.Fatalf("evaluateOriginPolicy() error = %v, want list error", err)
+	}
+	if ancestors != nil || attached != 0 || targetsOK || grantsOK {
+		t.Fatalf("evaluateOriginPolicy() = (%#v, %d, %v, %v), want zero values on list error", ancestors, attached, targetsOK, grantsOK)
+	}
+}
+
 func TestBackendTLSPolicyReconcilerRejectsUnsupportedFields(t *testing.T) {
 	ctx := context.Background()
 	scheme := controllerTestScheme(t)
@@ -197,6 +277,41 @@ func TestBackendTLSPolicyReconcilerRejectsUnsupportedFields(t *testing.T) {
 	}
 }
 
+func TestBackendTLSPolicyListError(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := &gatewayv1.BackendTLSPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: "apps"},
+		Spec: gatewayv1.BackendTLSPolicySpec{
+			TargetRefs: []gatewayv1.LocalPolicyTargetReferenceWithSectionName{{
+				LocalPolicyTargetReference: gatewayv1.LocalPolicyTargetReference{Group: "", Kind: "Service", Name: "app"},
+			}},
+			Validation: gatewayv1.BackendTLSPolicyValidation{
+				WellKnownCACertificates: ptrWellKnown(gatewayv1.WellKnownCACertificatesSystem),
+				Hostname:                gatewayv1.PreciseHostname("backend.example.com"),
+			},
+		},
+	}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"}}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, svc).Build()
+	reconciler := &BackendTLSPolicyReconciler{
+		Client: &listErrorClient{
+			Client:  k8sClient,
+			listErr: errors.New("cache unavailable"),
+			failFor: func(list client.ObjectList) bool {
+				_, ok := list.(*gatewayv1.BackendTLSPolicyList)
+				return ok
+			},
+		},
+		Scheme: scheme,
+	}
+
+	_, _, _, _, _, _, err := reconciler.evaluateBackendTLSPolicy(ctx, policy)
+	if err == nil || !strings.Contains(err.Error(), "list BackendTLSPolicies") {
+		t.Fatalf("evaluateBackendTLSPolicy() error = %v, want list error", err)
+	}
+}
+
 func originPolicyForTest(name string, ts time.Time) *cfgatev1alpha1.CloudflareOriginPolicy {
 	return &cfgatev1alpha1.CloudflareOriginPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -221,4 +336,17 @@ func ptrWellKnown(v gatewayv1.WellKnownCACertificatesType) *gatewayv1.WellKnownC
 
 func ctrlRequest(namespace, name string) ctrl.Request {
 	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: namespace, Name: name}}
+}
+
+type listErrorClient struct {
+	client.Client
+	listErr error
+	failFor func(client.ObjectList) bool
+}
+
+func (c *listErrorClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if c.failFor != nil && c.failFor(list) {
+		return c.listErr
+	}
+	return c.Client.List(ctx, list, opts...)
 }

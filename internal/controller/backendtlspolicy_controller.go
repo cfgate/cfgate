@@ -40,7 +40,10 @@ func (r *BackendTLSPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		return ctrl.Result{}, fmt.Errorf("get BackendTLSPolicy: %w", err)
 	}
-	accepted, acceptedReason, acceptedMessage, resolved, resolvedReason, resolvedMessage := r.evaluateBackendTLSPolicy(ctx, &policy)
+	accepted, acceptedReason, acceptedMessage, resolved, resolvedReason, resolvedMessage, err := r.evaluateBackendTLSPolicy(ctx, &policy)
+	if err != nil {
+		return ctrl.Result{RequeueAfter: requeueAfterError}, nil
+	}
 	policy.Status.Ancestors = []gateway.PolicyAncestorStatus{{
 		AncestorRef:    backendTLSPolicyAncestorRef(&policy),
 		ControllerName: gateway.GatewayController(GatewayControllerName),
@@ -55,64 +58,68 @@ func (r *BackendTLSPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return ctrl.Result{}, nil
 }
 
-func (r *BackendTLSPolicyReconciler) evaluateBackendTLSPolicy(ctx context.Context, policy *gateway.BackendTLSPolicy) (bool, gateway.PolicyConditionReason, string, bool, gateway.PolicyConditionReason, string) {
+func (r *BackendTLSPolicyReconciler) evaluateBackendTLSPolicy(ctx context.Context, policy *gateway.BackendTLSPolicy) (bool, gateway.PolicyConditionReason, string, bool, gateway.PolicyConditionReason, string, error) {
 	if len(policy.Spec.TargetRefs) != 1 {
-		return false, gateway.PolicyReasonInvalid, "cfgate supports exactly one BackendTLSPolicy targetRef.", false, gateway.BackendTLSPolicyReasonInvalidKind, "cfgate supports exactly one BackendTLSPolicy targetRef."
+		return false, gateway.PolicyReasonInvalid, "cfgate supports exactly one BackendTLSPolicy targetRef.", false, gateway.BackendTLSPolicyReasonInvalidKind, "cfgate supports exactly one BackendTLSPolicy targetRef.", nil
 	}
 	ref := policy.Spec.TargetRefs[0]
 	if string(ref.Group) != "" && string(ref.Group) != "core" {
-		return false, gateway.PolicyReasonInvalid, "cfgate supports only core Service BackendTLSPolicy targets.", false, gateway.BackendTLSPolicyReasonInvalidKind, "targetRef group must be core."
+		return false, gateway.PolicyReasonInvalid, "cfgate supports only core Service BackendTLSPolicy targets.", false, gateway.BackendTLSPolicyReasonInvalidKind, "targetRef group must be core.", nil
 	}
 	if string(ref.Kind) != "Service" {
-		return false, gateway.PolicyReasonInvalid, "cfgate supports only Service BackendTLSPolicy targets.", false, gateway.BackendTLSPolicyReasonInvalidKind, "targetRef kind must be Service."
+		return false, gateway.PolicyReasonInvalid, "cfgate supports only Service BackendTLSPolicy targets.", false, gateway.BackendTLSPolicyReasonInvalidKind, "targetRef kind must be Service.", nil
 	}
 	if ref.SectionName != nil && *ref.SectionName != "" {
-		return false, gateway.PolicyReasonInvalid, "cfgate does not support BackendTLSPolicy sectionName in v0.3.0-alpha.1.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved."
+		return false, gateway.PolicyReasonInvalid, "cfgate does not support BackendTLSPolicy sectionName in v0.3.0-alpha.1.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 	}
 	var svc corev1.Service
 	if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: string(ref.Name)}, &svc); err != nil {
-		return false, gateway.PolicyReasonTargetNotFound, "target Service was not found.", false, gateway.BackendTLSPolicyReasonInvalidKind, "target Service was not found."
+		return false, gateway.PolicyReasonTargetNotFound, "target Service was not found.", false, gateway.BackendTLSPolicyReasonInvalidKind, "target Service was not found.", nil
 	}
-	if r.backendTLSPolicyConflicted(ctx, policy) {
-		return false, gateway.PolicyReasonConflicted, "An older BackendTLSPolicy targets the same Service.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved."
+	conflicted, err := r.backendTLSPolicyConflicted(ctx, policy)
+	if err != nil {
+		return false, "", "", false, "", "", err
+	}
+	if conflicted {
+		return false, gateway.PolicyReasonConflicted, "An older BackendTLSPolicy targets the same Service.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 	}
 	if len(policy.Spec.Options) > 0 {
-		return false, gateway.PolicyReasonInvalid, "cfgate does not support BackendTLSPolicy options in v0.3.0-alpha.1.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved."
+		return false, gateway.PolicyReasonInvalid, "cfgate does not support BackendTLSPolicy options in v0.3.0-alpha.1.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 	}
 	if len(policy.Spec.Validation.SubjectAltNames) > 0 {
-		return false, gateway.PolicyReasonInvalid, "cfgate does not support BackendTLSPolicy subjectAltNames in v0.3.0-alpha.1.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved."
+		return false, gateway.PolicyReasonInvalid, "cfgate does not support BackendTLSPolicy subjectAltNames in v0.3.0-alpha.1.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 	}
 	if policy.Spec.Validation.WellKnownCACertificates != nil {
 		if *policy.Spec.Validation.WellKnownCACertificates != gateway.WellKnownCACertificatesSystem {
-			return false, gateway.PolicyReasonInvalid, "cfgate supports only wellKnownCACertificates: System.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved."
+			return false, gateway.PolicyReasonInvalid, "cfgate supports only wellKnownCACertificates: System.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 		}
-		return true, gateway.PolicyReasonAccepted, "BackendTLSPolicy accepted.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved."
+		return true, gateway.PolicyReasonAccepted, "BackendTLSPolicy accepted.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 	}
 	if len(policy.Spec.Validation.CACertificateRefs) != 1 {
-		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "cfgate supports exactly one CA ConfigMap ref.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "exactly one CA ConfigMap ref is required."
+		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "cfgate supports exactly one CA ConfigMap ref.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "exactly one CA ConfigMap ref is required.", nil
 	}
 	caRef := policy.Spec.Validation.CACertificateRefs[0]
 	if string(caRef.Group) != "" || string(caRef.Kind) != "ConfigMap" {
-		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ref must be a core ConfigMap.", false, gateway.BackendTLSPolicyReasonInvalidKind, "CA ref must be a core ConfigMap."
+		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ref must be a core ConfigMap.", false, gateway.BackendTLSPolicyReasonInvalidKind, "CA ref must be a core ConfigMap.", nil
 	}
 	var cm corev1.ConfigMap
 	if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: string(caRef.Name)}, &cm); err != nil {
-		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ConfigMap was not found.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "CA ConfigMap was not found."
+		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ConfigMap was not found.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "CA ConfigMap was not found.", nil
 	}
 	if _, ok := cm.Data[cloudflared.DefaultOriginCAPoolSecretKey]; !ok {
-		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ConfigMap missing ca.crt.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "CA ConfigMap missing ca.crt."
+		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ConfigMap missing ca.crt.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "CA ConfigMap missing ca.crt.", nil
 	}
-	return true, gateway.PolicyReasonAccepted, "BackendTLSPolicy accepted.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved."
+	return true, gateway.PolicyReasonAccepted, "BackendTLSPolicy accepted.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 }
 
-func (r *BackendTLSPolicyReconciler) backendTLSPolicyConflicted(ctx context.Context, policy *gateway.BackendTLSPolicy) bool {
+func (r *BackendTLSPolicyReconciler) backendTLSPolicyConflicted(ctx context.Context, policy *gateway.BackendTLSPolicy) (bool, error) {
 	if len(policy.Spec.TargetRefs) != 1 {
-		return false
+		return false, nil
 	}
 	target := policy.Spec.TargetRefs[0]
 	var policies gateway.BackendTLSPolicyList
 	if err := r.List(ctx, &policies, client.InNamespace(policy.Namespace)); err != nil {
-		return false
+		return false, fmt.Errorf("list BackendTLSPolicies in %s: %w", policy.Namespace, err)
 	}
 	var matches []gateway.BackendTLSPolicy
 	for _, candidate := range policies.Items {
@@ -129,7 +136,7 @@ func (r *BackendTLSPolicyReconciler) backendTLSPolicyConflicted(ctx context.Cont
 		}
 	}
 	if len(matches) <= 1 {
-		return false
+		return false, nil
 	}
 	sort.SliceStable(matches, func(i, j int) bool {
 		if !matches[i].CreationTimestamp.Equal(&matches[j].CreationTimestamp) {
@@ -137,7 +144,7 @@ func (r *BackendTLSPolicyReconciler) backendTLSPolicyConflicted(ctx context.Cont
 		}
 		return matches[i].Namespace+"/"+matches[i].Name < matches[j].Namespace+"/"+matches[j].Name
 	})
-	return matches[0].Namespace != policy.Namespace || matches[0].Name != policy.Name
+	return matches[0].Namespace != policy.Namespace || matches[0].Name != policy.Name, nil
 }
 
 func backendTLSPolicyAncestorRef(policy *gateway.BackendTLSPolicy) gateway.ParentReference {
@@ -167,7 +174,7 @@ func (r *BackendTLSPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gateway.BackendTLSPolicy{}, builder.WithPredicates(GenerationOrDeletionPredicate)).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.findBackendTLSPoliciesForService), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.findBackendTLSPoliciesForConfigMap), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(r.findBackendTLSPoliciesForConfigMap), builder.WithPredicates(DataResourceChangedPredicate)).
 		Complete(r)
 }
 

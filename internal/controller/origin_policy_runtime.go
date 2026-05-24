@@ -31,11 +31,11 @@ type originRuntime struct {
 }
 
 func (r *CloudflareTunnelReconciler) buildOriginRuntime(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (*originRuntime, error) {
-	mounts, namedPaths, backendTLSPaths, err := r.resolveOriginCAPoolMounts(ctx, tunnel)
+	_, namedPaths, backendTLSPaths, err := r.resolveOriginCAPoolMounts(ctx, tunnel)
 	if err != nil {
 		return nil, err
 	}
-	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel, mounts); err != nil {
+	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel); err != nil {
 		return nil, err
 	}
 	return &originRuntime{
@@ -122,7 +122,7 @@ func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Conte
 	return mounts, namedPaths, backendTLSPaths, nil
 }
 
-func (r *CloudflareTunnelReconciler) syncGeneratedOriginCASecrets(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel, mounts []cloudflared.OriginCAPoolMount) error {
+func (r *CloudflareTunnelReconciler) syncGeneratedOriginCASecrets(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
 	desired := map[string]struct{}{}
 	for _, pool := range tunnel.Spec.OriginCAPools {
 		refNS := tunnel.Namespace
@@ -193,7 +193,6 @@ func (r *CloudflareTunnelReconciler) syncGeneratedOriginCASecrets(ctx context.Co
 			return fmt.Errorf("delete stale generated origin CA Secret %s/%s: %w", secret.Namespace, secret.Name, err)
 		}
 	}
-	_ = mounts
 	return nil
 }
 

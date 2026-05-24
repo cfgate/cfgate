@@ -42,7 +42,11 @@ func (r *CloudflareOriginPolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, fmt.Errorf("get CloudflareOriginPolicy: %w", err)
 	}
 
-	ancestors, attached, targetsOK, grantsOK := r.evaluateOriginPolicy(ctx, &policy)
+	ancestors, attached, targetsOK, grantsOK, err := r.evaluateOriginPolicy(ctx, &policy)
+	if err != nil {
+		log.Error(err, "failed to evaluate CloudflareOriginPolicy")
+		return ctrl.Result{RequeueAfter: requeueAfterError}, nil
+	}
 	conditions := []metav1.Condition{
 		status.NewCondition(status.ConditionTypeTargetsResolved, conditionStatus(targetsOK), targetReason(targetsOK), targetMessage(targetsOK), policy.Generation),
 		status.NewCondition(status.ConditionTypeReferenceGrantValid, conditionStatus(grantsOK), referenceGrantReason(grantsOK), referenceGrantMessage(grantsOK), policy.Generation),
@@ -61,9 +65,11 @@ func (r *CloudflareOriginPolicyReconciler) Reconcile(ctx context.Context, req ct
 	return ctrl.Result{}, nil
 }
 
-func (r *CloudflareOriginPolicyReconciler) evaluateOriginPolicy(ctx context.Context, policy *cfgatev1alpha1.CloudflareOriginPolicy) ([]cfgatev1alpha1.PolicyAncestorStatus, int, bool, bool) {
+func (r *CloudflareOriginPolicyReconciler) evaluateOriginPolicy(ctx context.Context, policy *cfgatev1alpha1.CloudflareOriginPolicy) ([]cfgatev1alpha1.PolicyAncestorStatus, int, bool, bool, error) {
 	var all cfgatev1alpha1.CloudflareOriginPolicyList
-	_ = r.List(ctx, &all)
+	if err := r.List(ctx, &all); err != nil {
+		return nil, 0, false, false, fmt.Errorf("list CloudflareOriginPolicies: %w", err)
+	}
 	attached := 0
 	targetsOK := true
 	grantsOK := true
@@ -115,7 +121,7 @@ func (r *CloudflareOriginPolicyReconciler) evaluateOriginPolicy(ctx context.Cont
 			},
 		})
 	}
-	return ancestors, attached, targetsOK, grantsOK
+	return ancestors, attached, targetsOK, grantsOK, nil
 }
 
 func originTargetToPolicyTarget(policyNS string, ref cfgatev1alpha1.OriginPolicyTargetReference) cfgatev1alpha1.PolicyTargetReference {

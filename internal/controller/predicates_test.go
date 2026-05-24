@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -428,6 +429,54 @@ func TestAccessPolicyReferenceChangedPredicate(t *testing.T) {
 		new.SetResourceVersion("1")
 
 		got := AccessPolicyReferenceChangedPredicate.Update(event.UpdateEvent{
+			ObjectOld: old, ObjectNew: new,
+		})
+		if got {
+			t.Error("expected false when resource version did not change")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// DataResourceChangedPredicate
+// ---------------------------------------------------------------------------
+
+func TestDataResourceChangedPredicate(t *testing.T) {
+	t.Run("configmap update: resource version changed with same generation", func(t *testing.T) {
+		old := &corev1.ConfigMap{}
+		old.SetResourceVersion("1")
+		new := &corev1.ConfigMap{}
+		new.SetResourceVersion("2")
+
+		got := DataResourceChangedPredicate.Update(event.UpdateEvent{
+			ObjectOld: old, ObjectNew: new,
+		})
+		if !got {
+			t.Error("expected true when ConfigMap resource version changed")
+		}
+	})
+
+	t.Run("secret update: resource version changed with same generation", func(t *testing.T) {
+		old := &corev1.Secret{}
+		old.SetResourceVersion("1")
+		new := &corev1.Secret{}
+		new.SetResourceVersion("2")
+
+		got := DataResourceChangedPredicate.Update(event.UpdateEvent{
+			ObjectOld: old, ObjectNew: new,
+		})
+		if !got {
+			t.Error("expected true when Secret resource version changed")
+		}
+	})
+
+	t.Run("update: resource version unchanged", func(t *testing.T) {
+		old := &corev1.ConfigMap{}
+		old.SetResourceVersion("1")
+		new := &corev1.ConfigMap{}
+		new.SetResourceVersion("1")
+
+		got := DataResourceChangedPredicate.Update(event.UpdateEvent{
 			ObjectOld: old, ObjectNew: new,
 		})
 		if got {
