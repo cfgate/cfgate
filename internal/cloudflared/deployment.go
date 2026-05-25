@@ -19,7 +19,7 @@ import (
 const (
 	// DefaultImage is the default cloudflared container image.
 	// Points to the inherent-design fork which includes h2c origin support.
-	DefaultImage = "ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1"
+	DefaultImage = "ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.1"
 
 	// DefaultMetricsPort is the default port for cloudflared metrics.
 	DefaultMetricsPort = 44483

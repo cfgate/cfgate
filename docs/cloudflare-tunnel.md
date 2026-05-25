@@ -26,7 +26,7 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.cloudflare.secretRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the credentials Secret. Defaults to the tunnel's namespace. Max 63 chars. |
 | `spec.cloudflare.secretKeys.apiToken` | `string` | `CLOUDFLARE_API_TOKEN` | No | Key name within the Secret for the Cloudflare API token. Max 253 chars. |
 | `spec.cloudflared.replicas` | `int32` | `2` | No | Number of cloudflared replicas. Min 1, max 10. Each replica establishes an independent connection for high availability. |
-| `spec.cloudflared.image` | `string` | `ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1` | No | Container image for the cloudflared daemon. See [Image](#image) below. Max 255 chars. |
+| `spec.cloudflared.image` | `string` | `ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.1` | No | Container image for the cloudflared daemon. See [Image](#image) below. Max 255 chars. |
 | `spec.cloudflared.imagePullPolicy` | `string` | `IfNotPresent` | No | Image pull policy. One of: `Always`, `Never`, `IfNotPresent`. |
 | `spec.cloudflared.protocol` | `string` | `auto` | No | Tunnel transport protocol. One of: `auto`, `quic`, `http2`. |
 | `spec.cloudflared.resources` | `corev1.ResourceRequirements` | *none* | No | Resource requests and limits for cloudflared containers. Standard Kubernetes resource spec. |
@@ -139,7 +139,7 @@ spec:
 
 #### Image
 
-The default image is `ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1`, a fork of [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) maintained at [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared). The fork adds `h2cOrigin` support for HTTP/2 cleartext origin connections; upstream cloudflared does not support this feature ([cloudflare/cloudflared#1304](https://github.com/cloudflare/cloudflared/issues/1304)).
+The default image is `ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.1`, a fork of [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) maintained at [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared). The fork adds `h2cOrigin` support for HTTP/2 cleartext origin connections; upstream cloudflared does not support this feature ([cloudflare/cloudflared#1304](https://github.com/cloudflare/cloudflared/issues/1304)).
 
 Users who do not need h2c can override the image to upstream:
 
