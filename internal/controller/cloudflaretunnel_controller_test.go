@@ -606,6 +606,55 @@ func TestBuildRulesFromHTTPRouteValidatesOriginCAPool(t *testing.T) {
 	}
 }
 
+func TestBuildRulesFromHTTPRouteOriginCAPoolErrorListsNamedPools(t *testing.T) {
+	ctx := context.Background()
+	servicePort := gatewayv1.PortNumber(8080)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationOriginCAPool: "/etc/cfgate/wrong-ca.pem",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "app",
+							Port: &servicePort,
+						},
+					},
+				}},
+			}},
+		},
+	}
+	runtime := &originRuntime{
+		namedCAPoolPaths: map[string]string{
+			"internal": cloudflared.NamedOriginCAPoolPath("internal"),
+			"partner":  cloudflared.NamedOriginCAPoolPath("partner"),
+		},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+	}
+
+	_, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, effectiveHTTPRouteHostnames(route), false, runtime)
+	if err == nil {
+		t.Fatal("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = nil, want invalid origin CA pool error")
+	}
+	for _, want := range []string{
+		"must be one of",
+		cloudflared.OriginCAPoolPath(),
+		cloudflared.NamedOriginCAPoolPath("internal"),
+		cloudflared.NamedOriginCAPoolPath("partner"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want containing %q", err, want)
+		}
+	}
+}
+
 func TestRouteHostnamesForGatewayFallsBackToListener(t *testing.T) {
 	section := gatewayv1.SectionName("web")
 	listenerHostname := gatewayv1.Hostname("listener.example.com")

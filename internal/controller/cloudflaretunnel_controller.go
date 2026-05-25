@@ -1287,8 +1287,15 @@ func validateRouteOriginCAPool(route *gateway.HTTPRoute, originCAPoolMounted boo
 		}
 	}
 	if len(namedCAPoolPaths) > 0 {
-		return fmt.Errorf("route %s/%s: %s must be %q for managed origin CA pools",
-			route.Namespace, route.Name, annotations.AnnotationOriginCAPool, cloudflared.OriginCAPoolPath())
+		valid := []string{cloudflared.OriginCAPoolPath()}
+		named := make([]string, 0, len(namedCAPoolPaths))
+		for _, path := range namedCAPoolPaths {
+			named = append(named, path)
+		}
+		sort.Strings(named)
+		valid = append(valid, named...)
+		return fmt.Errorf("route %s/%s: %s must be one of %v for managed origin CA pools",
+			route.Namespace, route.Name, annotations.AnnotationOriginCAPool, valid)
 	}
 	if originCAPoolMounted {
 		return fmt.Errorf("route %s/%s: %s must be %q for managed origin CA pools",

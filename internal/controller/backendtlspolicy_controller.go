@@ -77,8 +77,12 @@ func (r *BackendTLSPolicyReconciler) evaluateBackendTLSPolicy(ctx context.Contex
 		return false, gateway.PolicyReasonInvalid, "cfgate does not support BackendTLSPolicy sectionName in v0.3.0-alpha.1.", true, gateway.BackendTLSPolicyReasonResolvedRefs, "References resolved.", nil
 	}
 	var svc corev1.Service
-	if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: string(ref.Name)}, &svc); err != nil {
-		return false, gateway.PolicyReasonTargetNotFound, "target Service was not found.", false, gateway.BackendTLSPolicyReasonInvalidKind, "target Service was not found.", nil
+	serviceKey := types.NamespacedName{Namespace: policy.Namespace, Name: string(ref.Name)}
+	if err := r.Get(ctx, serviceKey, &svc); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, gateway.PolicyReasonTargetNotFound, "target Service was not found.", false, gateway.BackendTLSPolicyReasonInvalidKind, "target Service was not found.", nil
+		}
+		return false, "", "", false, "", "", fmt.Errorf("get BackendTLSPolicy target Service %s: %w", serviceKey.String(), err)
 	}
 	conflicted, err := r.backendTLSPolicyConflicted(ctx, policy)
 	if err != nil {

@@ -379,6 +379,95 @@ func TestBackendTLSPolicyReconcileLogsErrors(t *testing.T) {
 	})
 }
 
+func TestBackendTLSPolicyServiceGetErrorRequeues(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := backendTLSPolicyForTest("backend", "apps", "app", "backend.example.com", "ca")
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"}}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&gatewayv1.BackendTLSPolicy{}).
+		WithObjects(policy, svc, caConfigMapForTest("ca", "apps")).
+		Build()
+	var logs []string
+	ctx = crlog.IntoContext(ctx, logr.New(&recordingLogSink{errors: &logs}))
+	reconciler := &BackendTLSPolicyReconciler{
+		Client: &getErrorClient{
+			Client: k8sClient,
+			getErr: errors.New("cache unavailable"),
+			failFor: func(name types.NamespacedName, obj client.Object) bool {
+				_, ok := obj.(*corev1.Service)
+				return ok && name.Namespace == "apps" && name.Name == "app"
+			},
+		},
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "backend"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != requeueAfterError {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, requeueAfterError)
+	}
+	var got gatewayv1.BackendTLSPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "backend"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, ancestor := range got.Status.Ancestors {
+		for _, condition := range ancestor.Conditions {
+			if condition.Type == string(gatewayv1.PolicyConditionAccepted) && condition.Reason == string(gatewayv1.PolicyReasonTargetNotFound) {
+				t.Fatalf("status = %#v, want no TargetNotFound status on transient Service get error", got.Status)
+			}
+		}
+	}
+	if !logMessagesContain(logs, "failed to evaluate BackendTLSPolicy") {
+		t.Fatalf("logs = %#v, want evaluation error log", logs)
+	}
+}
+
+func TestBackendTLSPolicyMissingServiceSetsTargetNotFound(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := backendTLSPolicyForTest("backend", "apps", "app", "backend.example.com", "ca")
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&gatewayv1.BackendTLSPolicy{}).
+		WithObjects(policy, caConfigMapForTest("ca", "apps")).
+		Build()
+	reconciler := &BackendTLSPolicyReconciler{Client: k8sClient, Scheme: scheme}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "backend"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.IsZero() {
+		t.Fatalf("result = %#v, want empty result", result)
+	}
+	var got gatewayv1.BackendTLSPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "backend"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.Ancestors) != 1 {
+		t.Fatalf("status = %#v, want one ancestor", got.Status)
+	}
+	conditions := got.Status.Ancestors[0].Conditions
+	if len(conditions) != 2 {
+		t.Fatalf("conditions = %#v, want two conditions", conditions)
+	}
+	accepted := conditions[0]
+	if accepted.Type != string(gatewayv1.PolicyConditionAccepted) ||
+		accepted.Status != metav1.ConditionFalse ||
+		accepted.Reason != string(gatewayv1.PolicyReasonTargetNotFound) {
+		t.Fatalf("Accepted condition = %#v, want Accepted=False/TargetNotFound", accepted)
+	}
+	resolved := conditions[1]
+	if resolved.Type != string(gatewayv1.BackendTLSPolicyConditionResolvedRefs) ||
+		resolved.Status != metav1.ConditionFalse {
+		t.Fatalf("ResolvedRefs condition = %#v, want ResolvedRefs=False", resolved)
+	}
+}
+
 func TestBackendTLSPolicyMountsScopedToTunnelBackends(t *testing.T) {
 	ctx := context.Background()
 	scheme := controllerTestScheme(t)
