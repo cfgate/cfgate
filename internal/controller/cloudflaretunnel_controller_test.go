@@ -5,9 +5,13 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -15,7 +19,9 @@ import (
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
+	"cfgate.io/cfgate/internal/cloudflared"
 	"cfgate.io/cfgate/internal/controller/annotations"
+	"cfgate.io/cfgate/internal/controller/status"
 )
 
 func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
@@ -222,6 +228,191 @@ func TestValidateOriginCAPoolSecretRef(t *testing.T) {
 			t.Fatal("validateOriginCAPoolSecretRef() error = nil, want missing key error")
 		}
 	})
+}
+
+func TestReconcileGuardPathPatchesBackendTLSPolicyMountBeforeConfigSync(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(appsv1) error = %v", err)
+	}
+
+	lastSync := metav1.NewTime(time.Now())
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "tunnel",
+			Namespace:  "cfgate",
+			Generation: 7,
+			Finalizers: []string{tunnelFinalizer},
+		},
+		Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+			Tunnel: cfgatev1alpha1.TunnelIdentity{
+				Name: "tunnel",
+			},
+			Cloudflare: cfgatev1alpha1.CloudflareConfig{
+				AccountID: "account",
+			},
+		},
+		Status: cfgatev1alpha1.CloudflareTunnelStatus{
+			ObservedGeneration: 7,
+			TunnelID:           "tunnel-id",
+			TunnelName:         "tunnel",
+			TunnelDomain:       cloudflare.TunnelDomain("tunnel-id"),
+			AccountID:          "account",
+			LastSyncTime:       &lastSync,
+			Conditions: []metav1.Condition{{
+				Type:               status.ConditionTypeReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             status.ReasonTunnelOperational,
+				Message:            "ready",
+				ObservedGeneration: 7,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	deployment := cloudflared.NewBuilder().BuildDeployment(tunnel, "token")
+	gateway := gatewayForTunnelTest()
+	route := routeForBackendTest("app-route", "apps", "app")
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"},
+	}
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	ca := caConfigMapForTest("ca-app", "apps")
+
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&cfgatev1alpha1.CloudflareTunnel{}).
+		WithObjects(tunnel, deployment, gateway, route, service, policy, ca).
+		Build()
+
+	configUpdated := false
+	mockClient := cloudflare.NewMockClient()
+	mockClient.GetTunnelTokenFunc = func(context.Context, string, string) (string, error) {
+		t.Fatal("GetTunnelToken must not be called in guard path")
+		return "", nil
+	}
+	mockClient.UpdateTunnelConfigurationFunc = func(_ context.Context, accountID, tunnelID string, config cloudflare.TunnelConfiguration) error {
+		configUpdated = true
+		if accountID != "account" || tunnelID != "tunnel-id" {
+			t.Fatalf("UpdateTunnelConfiguration account/tunnel = %s/%s, want account/tunnel-id", accountID, tunnelID)
+		}
+		assertDeploymentHasBackendTLSPolicyMount(t, ctx, baseClient)
+		assertGeneratedBackendTLSSecretExists(t, ctx, baseClient, tunnel, policy)
+
+		var appRule *cloudflare.IngressRule
+		for i := range config.Ingress {
+			if config.Ingress[i].Service == "https://app.apps.svc.cluster.local:8443" {
+				appRule = &config.Ingress[i]
+				break
+			}
+		}
+		if appRule == nil {
+			t.Fatalf("config.Ingress = %#v, want https app service rule", config.Ingress)
+		}
+		if appRule.OriginRequest == nil {
+			t.Fatal("app rule OriginRequest is nil")
+		}
+		if appRule.OriginRequest.CAPool != cloudflared.BackendTLSCAPoolPath("apps", "tls-app") {
+			t.Fatalf("app rule CAPool = %q, want %q", appRule.OriginRequest.CAPool, cloudflared.BackendTLSCAPoolPath("apps", "tls-app"))
+		}
+		return nil
+	}
+
+	reconciler := &CloudflareTunnelReconciler{
+		Client:    baseClient,
+		APIReader: baseClient,
+		Scheme:    scheme,
+		CFClient:  mockClient,
+		Recorder:  &fakeEventRecorder{},
+	}
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("cfgate", "tunnel"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != requeueAfterSuccess {
+		t.Fatalf("Reconcile() RequeueAfter = %v, want %v", result.RequeueAfter, requeueAfterSuccess)
+	}
+	if !configUpdated {
+		t.Fatal("UpdateTunnelConfiguration was not called")
+	}
+	assertDeploymentHasBackendTLSPolicyMount(t, ctx, baseClient)
+}
+
+func TestEnsureCloudflaredOriginCAPoolDeploymentRemovesStaleBackendTLSPolicyMount(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(appsv1) error = %v", err)
+	}
+
+	tunnel := tunnelForOriginRuntimeTest()
+	tunnel.Status.TunnelID = "tunnel-id"
+	deployment := cloudflared.NewBuilder().BuildDeployment(tunnel, "token")
+	staleVolumeName := cloudflared.OriginCAPoolVolumeNameFor("backendtls", "apps", "tls-app")
+	staleSecretName := generatedOriginCASecretName(tunnel.Name, "backendtls", "apps", "tls-app", "ca-app")
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes,
+		corev1.Volume{Name: "custom-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "custom-config"}}}},
+		corev1.Volume{Name: staleVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: staleSecretName}}},
+	)
+	container := cloudflaredContainer(&deployment.Spec.Template.Spec)
+	if container == nil {
+		t.Fatal("test deployment has no cloudflared container")
+	}
+	container.VolumeMounts = append(container.VolumeMounts,
+		corev1.VolumeMount{Name: "custom-config", MountPath: "/etc/custom", ReadOnly: true},
+		corev1.VolumeMount{Name: staleVolumeName, MountPath: strings.TrimSuffix(cloudflared.BackendTLSCAPoolPath("apps", "tls-app"), "/"+cloudflared.OriginCAPoolFileName), ReadOnly: true},
+	)
+	staleSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      staleSecretName,
+			Namespace: tunnel.Namespace,
+			Labels: map[string]string{
+				generatedOriginCASecretLabel:   "true",
+				"app.kubernetes.io/instance":   tunnel.Name,
+				"app.kubernetes.io/managed-by": "cfgate",
+				"app.kubernetes.io/component":  "origin-ca-pool",
+			},
+		},
+		Data: map[string][]byte{cloudflared.DefaultOriginCAPoolSecretKey: []byte("old")},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, deployment, staleSecret).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{
+		Client: baseClient,
+		Scheme: scheme,
+	}
+
+	if err := reconciler.ensureCloudflaredOriginCAPoolDeployment(ctx, tunnel); err != nil {
+		t.Fatalf("ensureCloudflaredOriginCAPoolDeployment() error = %v", err)
+	}
+
+	var got appsv1.Deployment
+	if err := baseClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: deployment.Name}, &got); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if hasVolume(got.Spec.Template.Spec.Volumes, staleVolumeName) {
+		t.Fatalf("stale managed volume %q still exists", staleVolumeName)
+	}
+	gotContainer := cloudflaredContainer(&got.Spec.Template.Spec)
+	if gotContainer == nil {
+		t.Fatal("updated deployment has no cloudflared container")
+	}
+	if hasMount(gotContainer.VolumeMounts, staleVolumeName, "") {
+		t.Fatalf("stale managed mount %q still exists", staleVolumeName)
+	}
+	if !hasVolume(got.Spec.Template.Spec.Volumes, "custom-config") {
+		t.Fatal("non-managed volume was removed")
+	}
+	if !hasMount(gotContainer.VolumeMounts, "custom-config", "/etc/custom") {
+		t.Fatal("non-managed mount was removed")
+	}
+	var gotSecret corev1.Secret
+	err := baseClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: staleSecretName}, &gotSecret)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("stale generated Secret get error = %v, want not found", err)
+	}
 }
 
 func TestFindTunnelsForSecretScopesOriginCAReferences(t *testing.T) {
@@ -514,6 +705,54 @@ func TestCloudflaredPathRegex(t *testing.T) {
 	if !trailingSlashRegex.MatchString("/api/v1/") || !trailingSlashRegex.MatchString("/api/v1/users") || trailingSlashRegex.MatchString("/api/v1") {
 		t.Fatal("trailing slash path prefix regex should match /api/v1/ and /api/v1/users, but not /api/v1")
 	}
+}
+
+func assertDeploymentHasBackendTLSPolicyMount(t *testing.T, ctx context.Context, k8sClient client.Client) {
+	t.Helper()
+	var deployment appsv1.Deployment
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "cfgate", Name: "tunnel-cloudflared"}, &deployment); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	volumeName := cloudflared.OriginCAPoolVolumeNameFor("backendtls", "apps", "tls-app")
+	if !hasVolume(deployment.Spec.Template.Spec.Volumes, volumeName) {
+		t.Fatalf("deployment volumes = %#v, want %q", deployment.Spec.Template.Spec.Volumes, volumeName)
+	}
+	container := cloudflaredContainer(&deployment.Spec.Template.Spec)
+	if container == nil {
+		t.Fatal("deployment has no cloudflared container")
+	}
+	mountPath := strings.TrimSuffix(cloudflared.BackendTLSCAPoolPath("apps", "tls-app"), "/"+cloudflared.OriginCAPoolFileName)
+	if !hasMount(container.VolumeMounts, volumeName, mountPath) {
+		t.Fatalf("cloudflared mounts = %#v, want %s at %s", container.VolumeMounts, volumeName, mountPath)
+	}
+}
+
+func assertGeneratedBackendTLSSecretExists(t *testing.T, ctx context.Context, k8sClient client.Client, tunnel *cfgatev1alpha1.CloudflareTunnel, policy *gatewayv1.BackendTLSPolicy) {
+	t.Helper()
+	secretName := generatedOriginCASecretName(tunnel.Name, "backendtls", policy.Namespace, policy.Name, "ca-app")
+	var secret corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: secretName}, &secret); err != nil {
+		t.Fatalf("generated BackendTLSPolicy Secret missing: %v", err)
+	}
+}
+
+func hasVolume(volumes []corev1.Volume, name string) bool {
+	for _, volume := range volumes {
+		if volume.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMount(mounts []corev1.VolumeMount, name, path string) bool {
+	for _, mount := range mounts {
+		if mount.Name != name {
+			continue
+		}
+		return path == "" || mount.MountPath == path
+	}
+	return false
 }
 
 func assertReconcileRequestKeys(t *testing.T, reqs []reconcile.Request, want []string) {

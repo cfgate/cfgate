@@ -12,6 +12,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -155,6 +156,15 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				tunnel.Status.ReadyReplicas = deployment.Status.ReadyReplicas
 				tunnel.Status.Replicas = deployment.Status.Replicas
 			}
+		}
+
+		if err := r.ensureCloudflaredOriginCAPoolDeployment(ctx, &tunnel); err != nil {
+			log.Error(err, "failed to reconcile cloudflared origin CA mounts in guard path")
+			r.setCondition(&tunnel, status.ConditionTypeCloudflaredDeployed, metav1.ConditionFalse, status.ReasonDeploymentError, err.Error())
+			r.setCondition(&tunnel, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonDeploymentError, "Failed to deploy cloudflared")
+			_ = r.updateStatus(ctx, &tunnel)
+			r.Recorder.Eventf(&tunnel, nil, corev1.EventTypeWarning, "DeploymentError", "Deploy", "%s", err.Error())
+			return ctrl.Result{RequeueAfter: requeueAfterError}, nil
 		}
 
 		syncErr := r.syncConfiguration(ctx, &tunnel)
@@ -696,10 +706,7 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	}
 
 	// Create or update Deployment
-	deployment := builder.BuildDeployment(tunnel, token)
-	if capoolBuilder, ok := builder.(cloudflared.DeploymentOriginCAPoolBuilder); ok {
-		deployment = capoolBuilder.BuildDeploymentWithOriginCAPoolMounts(tunnel, token, originCAPoolMounts)
-	}
+	deployment := r.buildCloudflaredDeploymentWithOriginCAPoolMounts(tunnel, token, originCAPoolMounts)
 	if err := controllerutil.SetControllerReference(tunnel, deployment, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set deployment owner reference: %w", err)
 	}
@@ -738,6 +745,171 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	}
 
 	return nil
+}
+
+func (r *CloudflareTunnelReconciler) ensureCloudflaredOriginCAPoolDeployment(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
+	if tunnel.Status.TunnelID == "" {
+		return fmt.Errorf("tunnel ID not set in status")
+	}
+	if err := r.validateOriginCAPoolSecretRef(ctx, tunnel); err != nil {
+		return err
+	}
+	backendTLSPolicies, err := r.backendTLSPoliciesForTunnel(ctx, tunnel)
+	if err != nil {
+		return err
+	}
+	originCAPoolMounts, _, _, err := r.resolveOriginCAPoolMounts(ctx, tunnel, backendTLSPolicies)
+	if err != nil {
+		return err
+	}
+
+	desired := r.buildCloudflaredDeploymentWithOriginCAPoolMounts(tunnel, "", originCAPoolMounts)
+	existing := &appsv1.Deployment{}
+	err = r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return r.deployCloudflared(ctx, tunnel)
+		}
+		return fmt.Errorf("failed to get deployment: %w", err)
+	}
+
+	changed, ok := replaceManagedOriginCAPoolDeploymentMounts(existing, desired)
+	if !ok {
+		return r.deployCloudflared(ctx, tunnel)
+	}
+	if !changed {
+		tunnel.Status.Replicas = existing.Status.Replicas
+		tunnel.Status.ReadyReplicas = existing.Status.ReadyReplicas
+		return nil
+	}
+	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel, backendTLSPolicies); err != nil {
+		return err
+	}
+	if err := r.Update(ctx, existing); err != nil {
+		return fmt.Errorf("failed to update deployment origin CA mounts: %w", err)
+	}
+	tunnel.Status.Replicas = existing.Status.Replicas
+	tunnel.Status.ReadyReplicas = existing.Status.ReadyReplicas
+	return nil
+}
+
+func (r *CloudflareTunnelReconciler) buildCloudflaredDeploymentWithOriginCAPoolMounts(tunnel *cfgatev1alpha1.CloudflareTunnel, token string, mounts []cloudflared.OriginCAPoolMount) *appsv1.Deployment {
+	builder := r.Builder
+	if builder == nil {
+		builder = cloudflared.NewBuilder()
+	}
+	if capoolBuilder, ok := builder.(cloudflared.DeploymentOriginCAPoolBuilder); ok {
+		return capoolBuilder.BuildDeploymentWithOriginCAPoolMounts(tunnel, token, mounts)
+	}
+	return builder.BuildDeployment(tunnel, token)
+}
+
+func replaceManagedOriginCAPoolDeploymentMounts(existing, desired *appsv1.Deployment) (changed bool, ok bool) {
+	existingContainer := cloudflaredContainer(&existing.Spec.Template.Spec)
+	desiredContainer := cloudflaredContainer(&desired.Spec.Template.Spec)
+	if existingContainer == nil || desiredContainer == nil {
+		return false, false
+	}
+
+	existingVolumes := existing.Spec.Template.Spec.Volumes
+	existingMounts := existingContainer.VolumeMounts
+	nextVolumes := replaceManagedOriginCAPoolVolumes(existingVolumes, desired.Spec.Template.Spec.Volumes)
+	nextMounts := replaceManagedOriginCAPoolMounts(existingMounts, desiredContainer.VolumeMounts)
+
+	volumesChanged := !apiequality.Semantic.DeepEqual(existingVolumes, nextVolumes)
+	mountsChanged := !apiequality.Semantic.DeepEqual(existingMounts, nextMounts)
+	if !volumesChanged && !mountsChanged {
+		return false, true
+	}
+
+	existing.Spec.Template.Spec.Volumes = nextVolumes
+	existingContainer.VolumeMounts = nextMounts
+	return true, true
+}
+
+func cloudflaredContainer(podSpec *corev1.PodSpec) *corev1.Container {
+	for i := range podSpec.Containers {
+		if podSpec.Containers[i].Name == "cloudflared" {
+			return &podSpec.Containers[i]
+		}
+	}
+	return nil
+}
+
+func replaceManagedOriginCAPoolVolumes(existing, desired []corev1.Volume) []corev1.Volume {
+	next := make([]corev1.Volume, 0, len(existing)+len(desired))
+	for _, volume := range existing {
+		if !isManagedOriginCAPoolVolume(volume) {
+			next = append(next, volume)
+		}
+	}
+	managed := managedOriginCAPoolVolumes(desired)
+	sortOriginCAPoolVolumes(managed)
+	next = append(next, managed...)
+	return next
+}
+
+func replaceManagedOriginCAPoolMounts(existing, desired []corev1.VolumeMount) []corev1.VolumeMount {
+	next := make([]corev1.VolumeMount, 0, len(existing)+len(desired))
+	for _, mount := range existing {
+		if !isManagedOriginCAPoolMount(mount) {
+			next = append(next, mount)
+		}
+	}
+	managed := managedOriginCAPoolMounts(desired)
+	sortOriginCAPoolMounts(managed)
+	next = append(next, managed...)
+	return next
+}
+
+func managedOriginCAPoolVolumes(volumes []corev1.Volume) []corev1.Volume {
+	managed := make([]corev1.Volume, 0, len(volumes))
+	for _, volume := range volumes {
+		if isManagedOriginCAPoolVolume(volume) {
+			managed = append(managed, volume)
+		}
+	}
+	return managed
+}
+
+func managedOriginCAPoolMounts(mounts []corev1.VolumeMount) []corev1.VolumeMount {
+	managed := make([]corev1.VolumeMount, 0, len(mounts))
+	for _, mount := range mounts {
+		if isManagedOriginCAPoolMount(mount) {
+			managed = append(managed, mount)
+		}
+	}
+	return managed
+}
+
+func isManagedOriginCAPoolVolume(volume corev1.Volume) bool {
+	return isManagedOriginCAPoolVolumeName(volume.Name)
+}
+
+func isManagedOriginCAPoolMount(mount corev1.VolumeMount) bool {
+	return isManagedOriginCAPoolVolumeName(mount.Name) ||
+		mount.MountPath == cloudflared.OriginCAPoolMountPath ||
+		strings.HasPrefix(mount.MountPath, cloudflared.NamedOriginCAPoolMountBase+"/") ||
+		strings.HasPrefix(mount.MountPath, cloudflared.BackendTLSCAPoolMountBase+"/")
+}
+
+func isManagedOriginCAPoolVolumeName(name string) bool {
+	return name == cloudflared.OriginCAPoolVolumeName ||
+		strings.HasPrefix(name, "origin-ca-pool-") ||
+		strings.HasPrefix(name, "origin-ca-backendtls-")
+}
+
+func sortOriginCAPoolVolumes(volumes []corev1.Volume) {
+	sort.Slice(volumes, func(i, j int) bool { return volumes[i].Name < volumes[j].Name })
+}
+
+func sortOriginCAPoolMounts(mounts []corev1.VolumeMount) {
+	sort.Slice(mounts, func(i, j int) bool {
+		if mounts[i].Name != mounts[j].Name {
+			return mounts[i].Name < mounts[j].Name
+		}
+		return mounts[i].MountPath < mounts[j].MountPath
+	})
 }
 
 func (r *CloudflareTunnelReconciler) validateOriginCAPoolSecretRef(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
