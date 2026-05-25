@@ -406,9 +406,10 @@ func OriginCAPoolVolumeNameFor(parts ...string) string {
 	}
 	sum := sha256.Sum256([]byte(joined))
 	prefix := joined
-	if len(prefix) > 44 {
-		prefix = prefix[:44]
+	if len(prefix) > 42 {
+		prefix = prefix[:42]
 	}
+	prefix = strings.TrimRight(prefix, "-")
 	return fmt.Sprintf("origin-ca-%s-%x", prefix, sum[:5])
 }
 

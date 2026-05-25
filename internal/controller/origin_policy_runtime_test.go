@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -466,6 +467,78 @@ func TestGeneratedOriginCASecretsScopedAndPruned(t *testing.T) {
 	}
 }
 
+func TestSyncGeneratedOriginCASecretsConfigMapGetErrorPreservesExistingSecret(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := tunnelForOriginRuntimeTest()
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	existingName := generatedOriginCASecretName(tunnel.Name, "backendtls", "apps", "tls-app", "ca-app")
+	existing := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      existingName,
+			Namespace: tunnel.Namespace,
+			Labels: map[string]string{
+				generatedOriginCASecretLabel:   "true",
+				"app.kubernetes.io/instance":   tunnel.Name,
+				"app.kubernetes.io/managed-by": "cfgate",
+				"app.kubernetes.io/component":  "origin-ca-pool",
+			},
+		},
+		Data: map[string][]byte{cloudflared.DefaultOriginCAPoolSecretKey: []byte("old-ca")},
+	}
+
+	t.Run("get error preserves existing secret", func(t *testing.T) {
+		baseClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(tunnel.DeepCopy(), policy.DeepCopy(), existing.DeepCopy()).
+			Build()
+		sentinel := errors.New("cache unavailable")
+		reconciler := &CloudflareTunnelReconciler{
+			Client: &getErrorClient{
+				Client: baseClient,
+				getErr: sentinel,
+				failFor: func(name types.NamespacedName, obj client.Object) bool {
+					_, ok := obj.(*corev1.ConfigMap)
+					return ok && name == (types.NamespacedName{Namespace: "apps", Name: "ca-app"})
+				},
+			},
+			Scheme: scheme,
+		}
+
+		err := reconciler.syncGeneratedOriginCASecrets(ctx, tunnel, []gatewayv1.BackendTLSPolicy{*policy})
+		if err == nil || !strings.Contains(err.Error(), "get BackendTLSPolicy CA ConfigMap apps/ca-app") {
+			t.Fatalf("syncGeneratedOriginCASecrets() error = %v, want ConfigMap get error", err)
+		}
+		var got corev1.Secret
+		if err := baseClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: existingName}, &got); err != nil {
+			t.Fatalf("existing generated Secret was not preserved: %v", err)
+		}
+		if string(got.Data[cloudflared.DefaultOriginCAPoolSecretKey]) != "old-ca" {
+			t.Fatalf("existing generated Secret data = %q, want old-ca", got.Data[cloudflared.DefaultOriginCAPoolSecretKey])
+		}
+	})
+
+	t.Run("not found prunes stale secret", func(t *testing.T) {
+		baseClient := fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(tunnel.DeepCopy(), policy.DeepCopy(), existing.DeepCopy()).
+			Build()
+		reconciler := &CloudflareTunnelReconciler{
+			Client: baseClient,
+			Scheme: scheme,
+		}
+
+		if err := reconciler.syncGeneratedOriginCASecrets(ctx, tunnel, []gatewayv1.BackendTLSPolicy{*policy}); err != nil {
+			t.Fatalf("syncGeneratedOriginCASecrets() error = %v", err)
+		}
+		var got corev1.Secret
+		err := baseClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: existingName}, &got)
+		if !apierrors.IsNotFound(err) {
+			t.Fatalf("stale generated Secret get error = %v, want not found", err)
+		}
+	})
+}
+
 func originPolicyForTest(name string, ts time.Time) *cfgatev1alpha1.CloudflareOriginPolicy {
 	return &cfgatev1alpha1.CloudflareOriginPolicy{
 		ObjectMeta: metav1.ObjectMeta{
@@ -607,6 +680,19 @@ func (c *listErrorClient) List(ctx context.Context, list client.ObjectList, opts
 		return c.listErr
 	}
 	return c.Client.List(ctx, list, opts...)
+}
+
+type getErrorClient struct {
+	client.Client
+	getErr  error
+	failFor func(types.NamespacedName, client.Object) bool
+}
+
+func (c *getErrorClient) Get(ctx context.Context, name types.NamespacedName, obj client.Object, opts ...client.GetOption) error {
+	if c.failFor != nil && c.failFor(name, obj) {
+		return c.getErr
+	}
+	return c.Client.Get(ctx, name, obj, opts...)
 }
 
 type statusUpdateErrorClient struct {

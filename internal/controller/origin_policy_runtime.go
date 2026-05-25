@@ -91,14 +91,11 @@ func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Conte
 	}
 
 	for _, policy := range backendTLSPolicies {
-		if len(policy.Spec.Validation.CACertificateRefs) != 1 {
+		configMapName, ok := backendTLSPolicyCAConfigMap(policy)
+		if !ok {
 			continue
 		}
-		ref := policy.Spec.Validation.CACertificateRefs[0]
-		if string(ref.Group) != "" || string(ref.Kind) != "ConfigMap" {
-			continue
-		}
-		source := types.NamespacedName{Namespace: policy.Namespace, Name: string(ref.Name)}
+		source := types.NamespacedName{Namespace: policy.Namespace, Name: configMapName}
 		var cm corev1.ConfigMap
 		if err := r.Get(ctx, source, &cm); err != nil {
 			if apierrors.IsNotFound(err) {
@@ -110,7 +107,7 @@ func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Conte
 			continue
 		}
 		key := types.NamespacedName{Namespace: policy.Namespace, Name: policy.Name}
-		secretName := generatedOriginCASecretName(tunnel.Name, "backendtls", policy.Namespace, policy.Name, string(ref.Name))
+		secretName := generatedOriginCASecretName(tunnel.Name, "backendtls", policy.Namespace, policy.Name, configMapName)
 		mounts = append(mounts, cloudflared.OriginCAPoolMount{
 			Name:       cloudflared.OriginCAPoolVolumeNameFor("backendtls", policy.Namespace, policy.Name),
 			SecretName: secretName,
@@ -165,21 +162,10 @@ func (r *CloudflareTunnelReconciler) backendServicesForTunnel(ctx context.Contex
 				continue
 			}
 			for _, rule := range route.Spec.Rules {
-				if len(rule.BackendRefs) != 1 {
-					continue
+				service, ok := routeRuleBackendService(route.Namespace, rule)
+				if ok {
+					services[service] = struct{}{}
 				}
-				backend := rule.BackendRefs[0]
-				if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
-					continue
-				}
-				if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
-					continue
-				}
-				backendNS := route.Namespace
-				if backend.Namespace != nil && *backend.Namespace != "" {
-					backendNS = string(*backend.Namespace)
-				}
-				services[types.NamespacedName{Namespace: backendNS, Name: string(backend.Name)}] = struct{}{}
 			}
 		}
 	}
@@ -253,22 +239,23 @@ func (r *CloudflareTunnelReconciler) syncGeneratedOriginCASecrets(ctx context.Co
 	}
 
 	for _, policy := range backendTLSPolicies {
-		if len(policy.Spec.Validation.CACertificateRefs) != 1 {
+		configMapName, ok := backendTLSPolicyCAConfigMap(policy)
+		if !ok {
 			continue
 		}
-		ref := policy.Spec.Validation.CACertificateRefs[0]
-		if string(ref.Group) != "" || string(ref.Kind) != "ConfigMap" {
-			continue
-		}
+		source := types.NamespacedName{Namespace: policy.Namespace, Name: configMapName}
 		var cm corev1.ConfigMap
-		if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: string(ref.Name)}, &cm); err != nil {
-			continue
+		if err := r.Get(ctx, source, &cm); err != nil {
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return fmt.Errorf("get BackendTLSPolicy CA ConfigMap %s/%s: %w", source.Namespace, source.Name, err)
 		}
 		data, ok := cm.Data[cloudflared.DefaultOriginCAPoolSecretKey]
 		if !ok {
 			continue
 		}
-		targetName := generatedOriginCASecretName(tunnel.Name, "backendtls", policy.Namespace, policy.Name, string(ref.Name))
+		targetName := generatedOriginCASecretName(tunnel.Name, "backendtls", policy.Namespace, policy.Name, configMapName)
 		desired[targetName] = struct{}{}
 		if err := r.upsertGeneratedOriginCASecret(ctx, tunnel, targetName, []byte(data)); err != nil {
 			return err
@@ -518,6 +505,24 @@ func applyOriginPolicy(config *cloudflare.OriginRequestConfig, policy *cfgatev1a
 	return protocol, nil
 }
 
+func routeRuleBackendService(routeNamespace string, rule gateway.HTTPRouteRule) (types.NamespacedName, bool) {
+	if len(rule.BackendRefs) != 1 {
+		return types.NamespacedName{}, false
+	}
+	backend := rule.BackendRefs[0]
+	if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
+		return types.NamespacedName{}, false
+	}
+	if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
+		return types.NamespacedName{}, false
+	}
+	backendNS := routeNamespace
+	if backend.Namespace != nil && *backend.Namespace != "" {
+		backendNS = string(*backend.Namespace)
+	}
+	return types.NamespacedName{Namespace: backendNS, Name: string(backend.Name)}, true
+}
+
 func (r *CloudflareTunnelReconciler) backendTLSPolicyForBackend(ctx context.Context, backendNS, backendName string) (*gateway.BackendTLSPolicy, error) {
 	if r == nil || r.Client == nil {
 		return nil, nil
@@ -549,17 +554,36 @@ func sortBackendTLSPolicies(policies []gateway.BackendTLSPolicy) {
 }
 
 func backendTLSPolicyTargetsService(policy gateway.BackendTLSPolicy, serviceName string) bool {
+	target, ok := backendTLSPolicyTargetService(policy)
+	return ok && target.Name == serviceName
+}
+
+func backendTLSPolicyTargetService(policy gateway.BackendTLSPolicy) (types.NamespacedName, bool) {
 	if len(policy.Spec.TargetRefs) != 1 {
-		return false
+		return types.NamespacedName{}, false
 	}
 	ref := policy.Spec.TargetRefs[0]
 	if string(ref.Group) != "" && string(ref.Group) != "core" {
-		return false
+		return types.NamespacedName{}, false
 	}
-	if string(ref.Kind) != "Service" || string(ref.Name) != serviceName {
-		return false
+	if string(ref.Kind) != "Service" {
+		return types.NamespacedName{}, false
 	}
-	return ref.SectionName == nil || *ref.SectionName == ""
+	if ref.SectionName != nil && *ref.SectionName != "" {
+		return types.NamespacedName{}, false
+	}
+	return types.NamespacedName{Namespace: policy.Namespace, Name: string(ref.Name)}, true
+}
+
+func backendTLSPolicyCAConfigMap(policy gateway.BackendTLSPolicy) (string, bool) {
+	if len(policy.Spec.Validation.CACertificateRefs) != 1 {
+		return "", false
+	}
+	ref := policy.Spec.Validation.CACertificateRefs[0]
+	if string(ref.Group) != "" || string(ref.Kind) != "ConfigMap" {
+		return "", false
+	}
+	return string(ref.Name), true
 }
 
 func applyBackendTLSPolicy(config *cloudflare.OriginRequestConfig, policy *gateway.BackendTLSPolicy, caPoolPaths map[types.NamespacedName]string) (bool, error) {
@@ -588,8 +612,7 @@ func applyBackendTLSPolicy(config *cloudflare.OriginRequestConfig, policy *gatew
 	if len(policy.Spec.Validation.CACertificateRefs) != 1 {
 		return false, fmt.Errorf("BackendTLSPolicy %s/%s must reference exactly one CA ConfigMap", policy.Namespace, policy.Name)
 	}
-	ref := policy.Spec.Validation.CACertificateRefs[0]
-	if string(ref.Group) != "" || string(ref.Kind) != "ConfigMap" {
+	if _, ok := backendTLSPolicyCAConfigMap(*policy); !ok {
 		return false, fmt.Errorf("BackendTLSPolicy %s/%s CA ref must be a core ConfigMap", policy.Namespace, policy.Name)
 	}
 	path, ok := caPoolPaths[types.NamespacedName{Namespace: policy.Namespace, Name: policy.Name}]

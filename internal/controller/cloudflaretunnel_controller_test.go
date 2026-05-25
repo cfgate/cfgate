@@ -10,6 +10,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
@@ -223,6 +224,96 @@ func TestValidateOriginCAPoolSecretRef(t *testing.T) {
 	})
 }
 
+func TestFindTunnelsForSecretScopesOriginCAReferences(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnels := []client.Object{
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-ca", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginDefaults: cfgatev1alpha1.OriginDefaults{
+					CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"},
+				},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "local-pool", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginCAPools: []cfgatev1alpha1.OriginCAPool{{
+					Name: "local",
+					SecretRef: cfgatev1alpha1.OriginCAPoolSecretRef{
+						Name: "origin-ca",
+					},
+				}},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "cross-pool", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginCAPools: []cfgatev1alpha1.OriginCAPool{{
+					Name: "shared",
+					SecretRef: cfgatev1alpha1.OriginCAPoolSecretRef{
+						Namespace: stringPtr("security"),
+						Name:      "shared-ca",
+					},
+				}},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginDefaults: cfgatev1alpha1.OriginDefaults{
+					CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "different-ca"},
+				},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-ca", Namespace: "other"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginDefaults: cfgatev1alpha1.OriginDefaults{
+					CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"},
+				},
+			},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tunnels...).Build()
+	reconciler := &CloudflareTunnelReconciler{Client: k8sClient, APIReader: k8sClient}
+
+	appsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForSecret(ctx, appsSecret), []string{"apps/default-ca", "apps/local-pool"})
+
+	sharedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "shared-ca", Namespace: "security"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForSecret(ctx, sharedSecret), []string{"apps/cross-pool"})
+
+	unrelatedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForSecret(ctx, unrelatedSecret), nil)
+}
+
+func TestFindTunnelsForConfigMapScopesBackendTLSPolicyCARefs(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := tunnelForOriginRuntimeTest()
+	gw := gatewayForTunnelTest()
+	route := routeForBackendTest("app-route", "apps", "app")
+	relevant := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	unused := backendTLSPolicyForTest("tls-unused", "apps", "unused", "unused.example.com", "ca-app")
+	other := backendTLSPolicyForTest("tls-other", "other", "other", "other.example.com", "ca-other")
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gw, route, relevant, unused, other).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{Client: k8sClient, APIReader: k8sClient}
+
+	appCA := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ca-app", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForConfigMap(ctx, appCA), []string{"cfgate/tunnel"})
+
+	otherCA := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ca-other", Namespace: "other"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForConfigMap(ctx, otherCA), nil)
+
+	notCA := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "not-ca", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForConfigMap(ctx, notCA), nil)
+}
+
 func TestBuildRulesFromHTTPRouteUsesHostnameAnnotation(t *testing.T) {
 	servicePort := gatewayv1.PortNumber(8080)
 	route := &gatewayv1.HTTPRoute{
@@ -422,6 +513,22 @@ func TestCloudflaredPathRegex(t *testing.T) {
 	trailingSlashRegex := regexp.MustCompile("^/api/v1/.*$")
 	if !trailingSlashRegex.MatchString("/api/v1/") || !trailingSlashRegex.MatchString("/api/v1/users") || trailingSlashRegex.MatchString("/api/v1") {
 		t.Fatal("trailing slash path prefix regex should match /api/v1/ and /api/v1/users, but not /api/v1")
+	}
+}
+
+func assertReconcileRequestKeys(t *testing.T, reqs []reconcile.Request, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(reqs))
+	for _, req := range reqs {
+		got = append(got, req.String())
+	}
+	if len(got) != len(want) {
+		t.Fatalf("reconcile requests = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("reconcile requests = %v, want %v", got, want)
+		}
 	}
 }
 

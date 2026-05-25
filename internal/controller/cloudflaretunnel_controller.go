@@ -256,11 +256,14 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 //   - Secret (owned, for tunnel token)
 //   - Gateway (via annotation cfgate.io/tunnel-ref)
 //   - HTTPRoute (via parent Gateway reference)
+//   - Secret (origin default and named origin CA Secret data changes)
+//   - ConfigMap (BackendTLSPolicy CA bundle ConfigMap data changes)
 //
 // Gateway and HTTPRoute watches include cfgate.io/* annotation changes because
 // tunnel references and origin settings may change without generation bumps.
 // Secret and ConfigMap watches use ResourceVersion because data updates do not
-// increment metadata.generation.
+// increment metadata.generation. Their mappers enqueue only tunnels with origin
+// CA inputs affected by the changed object.
 func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controller").WithName("tunnel")
 	log.Info("registering controller with manager")
@@ -300,22 +303,29 @@ func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		Watches(
 			&corev1.ConfigMap{},
-			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
+			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForConfigMap),
 			builder.WithPredicates(DataResourceChangedPredicate),
 		).
 		Watches(
 			&corev1.Secret{},
-			handler.EnqueueRequestsFromMapFunc(r.findAllTunnels),
+			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForSecret),
 			builder.WithPredicates(DataResourceChangedPredicate),
 		).
 		Complete(r)
 }
 
+func (r *CloudflareTunnelReconciler) watchReader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
+}
+
 func (r *CloudflareTunnelReconciler) findAllTunnels(ctx context.Context, obj client.Object) []reconcile.Request {
 	var tunnels cfgatev1alpha1.CloudflareTunnelList
-	var reader client.Reader = r.Client
-	if r.APIReader != nil {
-		reader = r.APIReader
+	reader := r.watchReader()
+	if reader == nil {
+		return nil
 	}
 	if err := reader.List(ctx, &tunnels); err != nil {
 		return nil
@@ -325,6 +335,152 @@ func (r *CloudflareTunnelReconciler) findAllTunnels(ctx context.Context, obj cli
 		reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: tunnel.Namespace, Name: tunnel.Name}})
 	}
 	return reqs
+}
+
+func (r *CloudflareTunnelReconciler) findTunnelsForSecret(ctx context.Context, obj client.Object) []reconcile.Request {
+	secret, ok := obj.(*corev1.Secret)
+	if !ok {
+		return nil
+	}
+	reader := r.watchReader()
+	if reader == nil {
+		return nil
+	}
+	var tunnels cfgatev1alpha1.CloudflareTunnelList
+	if err := reader.List(ctx, &tunnels); err != nil {
+		return nil
+	}
+
+	var reqs []reconcile.Request
+	seen := map[types.NamespacedName]struct{}{}
+	for _, tunnel := range tunnels.Items {
+		if ref := tunnel.Spec.OriginDefaults.CAPoolSecretRef; ref != nil &&
+			tunnel.Namespace == secret.Namespace &&
+			ref.Name == secret.Name {
+			appendTunnelRequest(&reqs, seen, tunnel.Namespace, tunnel.Name)
+		}
+		for _, pool := range tunnel.Spec.OriginCAPools {
+			refNS := tunnel.Namespace
+			if pool.SecretRef.Namespace != nil && *pool.SecretRef.Namespace != "" {
+				refNS = *pool.SecretRef.Namespace
+			}
+			if refNS == secret.Namespace && pool.SecretRef.Name == secret.Name {
+				appendTunnelRequest(&reqs, seen, tunnel.Namespace, tunnel.Name)
+			}
+		}
+	}
+	sortReconcileRequests(reqs)
+	return reqs
+}
+
+func (r *CloudflareTunnelReconciler) findTunnelsForConfigMap(ctx context.Context, obj client.Object) []reconcile.Request {
+	configMap, ok := obj.(*corev1.ConfigMap)
+	if !ok {
+		return nil
+	}
+	reader := r.watchReader()
+	if reader == nil {
+		return nil
+	}
+
+	var policies gateway.BackendTLSPolicyList
+	if err := reader.List(ctx, &policies, client.InNamespace(configMap.Namespace)); err != nil {
+		return nil
+	}
+	targetServices := map[types.NamespacedName]struct{}{}
+	for _, policy := range policies.Items {
+		configMapName, ok := backendTLSPolicyCAConfigMap(policy)
+		if !ok || configMapName != configMap.Name {
+			continue
+		}
+		service, ok := backendTLSPolicyTargetService(policy)
+		if ok {
+			targetServices[service] = struct{}{}
+		}
+	}
+	if len(targetServices) == 0 {
+		return nil
+	}
+
+	var routes gateway.HTTPRouteList
+	if err := reader.List(ctx, &routes); err != nil {
+		return nil
+	}
+	var reqs []reconcile.Request
+	seen := map[types.NamespacedName]struct{}{}
+	gatewayCache := map[types.NamespacedName]*gateway.Gateway{}
+	for _, route := range routes.Items {
+		routeTargetsService := false
+		for _, rule := range route.Spec.Rules {
+			service, ok := routeRuleBackendService(route.Namespace, rule)
+			if !ok {
+				continue
+			}
+			if _, ok := targetServices[service]; ok {
+				routeTargetsService = true
+				break
+			}
+		}
+		if !routeTargetsService {
+			continue
+		}
+
+		for _, parentRef := range route.Spec.ParentRefs {
+			if !isGatewayParentRef(parentRef) {
+				continue
+			}
+			gwNamespace := route.Namespace
+			if parentRef.Namespace != nil {
+				gwNamespace = string(*parentRef.Namespace)
+			}
+			gwName := types.NamespacedName{Namespace: gwNamespace, Name: string(parentRef.Name)}
+			gw := gatewayCache[gwName]
+			if gw == nil {
+				var fetched gateway.Gateway
+				if err := reader.Get(ctx, gwName, &fetched); err != nil {
+					continue
+				}
+				gw = &fetched
+				gatewayCache[gwName] = gw
+			}
+			if len(routeHostnamesForGateway(&route, gw, parentRef)) == 0 {
+				continue
+			}
+			ref := annotations.GetAnnotation(gw, annotations.AnnotationTunnelRef)
+			if ref == "" {
+				continue
+			}
+			ns, name, err := annotations.ParseNamespacedName(ref, gw.Namespace)
+			if err != nil {
+				continue
+			}
+			appendTunnelRequest(&reqs, seen, ns, name)
+		}
+	}
+	sortReconcileRequests(reqs)
+	return reqs
+}
+
+func appendTunnelRequest(reqs *[]reconcile.Request, seen map[types.NamespacedName]struct{}, namespace, name string) {
+	key := types.NamespacedName{Namespace: namespace, Name: name}
+	if key.Namespace == "" || key.Name == "" {
+		return
+	}
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+	*reqs = append(*reqs, reconcile.Request{NamespacedName: key})
+}
+
+func sortReconcileRequests(reqs []reconcile.Request) {
+	sort.SliceStable(reqs, func(i, j int) bool {
+		left, right := reqs[i].NamespacedName, reqs[j].NamespacedName
+		if left.Namespace != right.Namespace {
+			return left.Namespace < right.Namespace
+		}
+		return left.Name < right.Name
+	})
 }
 
 // findTunnelsForGateway returns reconcile requests for tunnels referenced by a Gateway.
