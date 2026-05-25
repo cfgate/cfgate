@@ -85,14 +85,22 @@ func (r *CloudflareOriginPolicyReconciler) evaluateOriginPolicy(ctx context.Cont
 			targetNS = policy.Namespace
 		}
 		var route gateway.HTTPRoute
-		if err := r.Get(ctx, types.NamespacedName{Namespace: targetNS, Name: ref.Name}, &route); err != nil {
-			accepted = false
-			targetsOK = false
-			reason = status.PolicyReasonTargetNotFound
-			message = fmt.Sprintf("HTTPRoute %s/%s was not found.", targetNS, ref.Name)
+		routeKey := types.NamespacedName{Namespace: targetNS, Name: ref.Name}
+		if err := r.Get(ctx, routeKey, &route); err != nil {
+			if apierrors.IsNotFound(err) {
+				accepted = false
+				targetsOK = false
+				reason = status.PolicyReasonTargetNotFound
+				message = fmt.Sprintf("HTTPRoute %s/%s was not found.", targetNS, ref.Name)
+			} else {
+				return nil, 0, false, false, fmt.Errorf("get CloudflareOriginPolicy target HTTPRoute %s: %w", routeKey.String(), err)
+			}
 		} else if targetNS != policy.Namespace {
 			ok, err := (&CloudflareTunnelReconciler{Client: r.Client}).referenceGrantPermits(ctx, policy.Namespace, targetNS, cfgatev1alpha1.GroupVersion.Group, "CloudflareOriginPolicy", gateway.GroupName, "HTTPRoute", ref.Name)
-			if err != nil || !ok {
+			if err != nil {
+				return nil, 0, false, false, fmt.Errorf("checking CloudflareOriginPolicy ReferenceGrant for HTTPRoute %s/%s: %w", targetNS, ref.Name, err)
+			}
+			if !ok {
 				accepted = false
 				grantsOK = false
 				reason = status.ReasonReferenceGrantRequired

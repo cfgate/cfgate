@@ -18,10 +18,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	crlog "sigs.k8s.io/controller-runtime/pkg/log"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflared"
 	"cfgate.io/cfgate/internal/controller/annotations"
+	"cfgate.io/cfgate/internal/controller/status"
 )
 
 func TestBuildRulesAppliesOriginPolicyBackendTLSPolicyAndAnnotations(t *testing.T) {
@@ -468,6 +470,289 @@ func TestBackendTLSPolicyMissingServiceSetsTargetNotFound(t *testing.T) {
 	}
 }
 
+func TestBackendTLSPolicyCAConfigMapGetErrorRequeues(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := backendTLSPolicyForTest("backend", "apps", "app", "backend.example.com", "ca")
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"}}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&gatewayv1.BackendTLSPolicy{}).
+		WithObjects(policy, svc, caConfigMapForTest("ca", "apps")).
+		Build()
+	var logs []string
+	ctx = crlog.IntoContext(ctx, logr.New(&recordingLogSink{errors: &logs}))
+	reconciler := &BackendTLSPolicyReconciler{
+		Client: &getErrorClient{
+			Client: k8sClient,
+			getErr: errors.New("cache unavailable"),
+			failFor: func(name types.NamespacedName, obj client.Object) bool {
+				_, ok := obj.(*corev1.ConfigMap)
+				return ok && name.Namespace == "apps" && name.Name == "ca"
+			},
+		},
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "backend"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != requeueAfterError {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, requeueAfterError)
+	}
+	var got gatewayv1.BackendTLSPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "backend"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, ancestor := range got.Status.Ancestors {
+		for _, condition := range ancestor.Conditions {
+			if condition.Type == string(gatewayv1.PolicyConditionAccepted) &&
+				condition.Reason == string(gatewayv1.BackendTLSPolicyReasonNoValidCACertificate) {
+				t.Fatalf("status = %#v, want no NoValidCACertificate status on transient ConfigMap get error", got.Status)
+			}
+		}
+	}
+	if !logMessagesContain(logs, "failed to evaluate BackendTLSPolicy") {
+		t.Fatalf("logs = %#v, want evaluation error log", logs)
+	}
+}
+
+func TestBackendTLSPolicyMissingCAConfigMapSetsNoValidCACertificate(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := backendTLSPolicyForTest("backend", "apps", "app", "backend.example.com", "ca")
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"}}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&gatewayv1.BackendTLSPolicy{}).
+		WithObjects(policy, svc).
+		Build()
+	reconciler := &BackendTLSPolicyReconciler{Client: k8sClient, Scheme: scheme}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "backend"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.IsZero() {
+		t.Fatalf("result = %#v, want empty result", result)
+	}
+	var got gatewayv1.BackendTLSPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "backend"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Status.Ancestors) != 1 {
+		t.Fatalf("status = %#v, want one ancestor", got.Status)
+	}
+	conditions := got.Status.Ancestors[0].Conditions
+	if len(conditions) != 2 {
+		t.Fatalf("conditions = %#v, want two conditions", conditions)
+	}
+	accepted := conditions[0]
+	if accepted.Type != string(gatewayv1.PolicyConditionAccepted) ||
+		accepted.Status != metav1.ConditionFalse ||
+		accepted.Reason != string(gatewayv1.BackendTLSPolicyReasonNoValidCACertificate) {
+		t.Fatalf("Accepted condition = %#v, want Accepted=False/NoValidCACertificate", accepted)
+	}
+	resolved := conditions[1]
+	if resolved.Type != string(gatewayv1.BackendTLSPolicyConditionResolvedRefs) ||
+		resolved.Status != metav1.ConditionFalse ||
+		resolved.Reason != string(gatewayv1.BackendTLSPolicyReasonInvalidCACertificateRef) {
+		t.Fatalf("ResolvedRefs condition = %#v, want ResolvedRefs=False/InvalidCACertificateRef", resolved)
+	}
+}
+
+func TestCloudflareOriginPolicyHTTPRouteGetErrorRequeues(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := originPolicyForTest("origin", time.Now())
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "apps"}}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&cfgatev1alpha1.CloudflareOriginPolicy{}).
+		WithObjects(policy, route).
+		Build()
+	var logs []string
+	ctx = crlog.IntoContext(ctx, logr.New(&recordingLogSink{errors: &logs}))
+	reconciler := &CloudflareOriginPolicyReconciler{
+		Client: &getErrorClient{
+			Client: k8sClient,
+			getErr: errors.New("cache unavailable"),
+			failFor: func(name types.NamespacedName, obj client.Object) bool {
+				_, ok := obj.(*gatewayv1.HTTPRoute)
+				return ok && name.Namespace == "apps" && name.Name == "route"
+			},
+		},
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "origin"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != requeueAfterError {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, requeueAfterError)
+	}
+	var got cfgatev1alpha1.CloudflareOriginPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "origin"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if condition, ok := conditionByType(got.Status.Conditions, status.ConditionTypeTargetsResolved); ok &&
+		condition.Reason == status.ReasonTargetNotFound {
+		t.Fatalf("status = %#v, want no TargetNotFound status on transient HTTPRoute get error", got.Status)
+	}
+	if !logMessagesContain(logs, "failed to evaluate CloudflareOriginPolicy") {
+		t.Fatalf("logs = %#v, want evaluation error log", logs)
+	}
+}
+
+func TestCloudflareOriginPolicyMissingHTTPRouteSetsTargetNotFound(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := originPolicyForTest("origin", time.Now())
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&cfgatev1alpha1.CloudflareOriginPolicy{}).
+		WithObjects(policy).
+		Build()
+	reconciler := &CloudflareOriginPolicyReconciler{Client: k8sClient, Scheme: scheme}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "origin"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.IsZero() {
+		t.Fatalf("result = %#v, want empty result", result)
+	}
+	var got cfgatev1alpha1.CloudflareOriginPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "origin"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.AttachedTargets != 0 {
+		t.Fatalf("AttachedTargets = %d, want 0", got.Status.AttachedTargets)
+	}
+	if len(got.Status.Ancestors) != 1 {
+		t.Fatalf("status = %#v, want one ancestor", got.Status)
+	}
+	accepted := got.Status.Ancestors[0].Conditions[0]
+	if accepted.Status != metav1.ConditionFalse || accepted.Reason != status.PolicyReasonTargetNotFound {
+		t.Fatalf("Accepted condition = %#v, want Accepted=False/TargetNotFound", accepted)
+	}
+	targets, ok := conditionByType(got.Status.Conditions, status.ConditionTypeTargetsResolved)
+	if !ok || targets.Status != metav1.ConditionFalse || targets.Reason != status.ReasonTargetNotFound {
+		t.Fatalf("TargetsResolved condition = %#v, want False/TargetNotFound", targets)
+	}
+	grants, ok := conditionByType(got.Status.Conditions, status.ConditionTypeReferenceGrantValid)
+	if !ok || grants.Status != metav1.ConditionTrue {
+		t.Fatalf("ReferenceGrantValid condition = %#v, want True", grants)
+	}
+	ready, ok := conditionByType(got.Status.Conditions, status.ConditionTypeReady)
+	if !ok || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %#v, want False", ready)
+	}
+}
+
+func TestCloudflareOriginPolicyReferenceGrantListErrorRequeues(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	if err := gatewayv1beta1.Install(scheme); err != nil {
+		t.Fatalf("Install(gateway/v1beta1) error = %v", err)
+	}
+	policy := originPolicyForTest("origin", time.Now())
+	policy.Spec.TargetRefs[0].Namespace = "shared"
+	policy.Spec.TargetRefs[0].SectionName = ""
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "shared"}}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&cfgatev1alpha1.CloudflareOriginPolicy{}).
+		WithObjects(policy, route).
+		Build()
+	var logs []string
+	ctx = crlog.IntoContext(ctx, logr.New(&recordingLogSink{errors: &logs}))
+	reconciler := &CloudflareOriginPolicyReconciler{
+		Client: &listErrorClient{
+			Client:  k8sClient,
+			listErr: errors.New("cache unavailable"),
+			failFor: func(list client.ObjectList) bool {
+				_, ok := list.(*gatewayv1beta1.ReferenceGrantList)
+				return ok
+			},
+		},
+		Scheme: scheme,
+	}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "origin"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != requeueAfterError {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, requeueAfterError)
+	}
+	var got cfgatev1alpha1.CloudflareOriginPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "origin"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if condition, ok := conditionByType(got.Status.Conditions, status.ConditionTypeReferenceGrantValid); ok &&
+		condition.Reason == status.ReasonReferenceGrantRequired {
+		t.Fatalf("status = %#v, want no ReferenceGrantRequired status on transient ReferenceGrant list error", got.Status)
+	}
+	if !logMessagesContain(logs, "failed to evaluate CloudflareOriginPolicy") {
+		t.Fatalf("logs = %#v, want evaluation error log", logs)
+	}
+}
+
+func TestCloudflareOriginPolicyMissingReferenceGrantSetsRequired(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	if err := gatewayv1beta1.Install(scheme); err != nil {
+		t.Fatalf("Install(gateway/v1beta1) error = %v", err)
+	}
+	policy := originPolicyForTest("origin", time.Now())
+	policy.Spec.TargetRefs[0].Namespace = "shared"
+	policy.Spec.TargetRefs[0].SectionName = ""
+	route := &gatewayv1.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "shared"}}
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&cfgatev1alpha1.CloudflareOriginPolicy{}).
+		WithObjects(policy, route).
+		Build()
+	reconciler := &CloudflareOriginPolicyReconciler{Client: k8sClient, Scheme: scheme}
+
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("apps", "origin"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.IsZero() {
+		t.Fatalf("result = %#v, want empty result", result)
+	}
+	var got cfgatev1alpha1.CloudflareOriginPolicy
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "apps", Name: "origin"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.AttachedTargets != 0 {
+		t.Fatalf("AttachedTargets = %d, want 0", got.Status.AttachedTargets)
+	}
+	if len(got.Status.Ancestors) != 1 {
+		t.Fatalf("status = %#v, want one ancestor", got.Status)
+	}
+	accepted := got.Status.Ancestors[0].Conditions[0]
+	if accepted.Status != metav1.ConditionFalse || accepted.Reason != status.ReasonReferenceGrantRequired {
+		t.Fatalf("Accepted condition = %#v, want Accepted=False/ReferenceGrantRequired", accepted)
+	}
+	grants, ok := conditionByType(got.Status.Conditions, status.ConditionTypeReferenceGrantValid)
+	if !ok || grants.Status != metav1.ConditionFalse || grants.Reason != status.ReasonReferenceGrantRequired {
+		t.Fatalf("ReferenceGrantValid condition = %#v, want False/ReferenceGrantRequired", grants)
+	}
+	targets, ok := conditionByType(got.Status.Conditions, status.ConditionTypeTargetsResolved)
+	if !ok || targets.Status != metav1.ConditionTrue {
+		t.Fatalf("TargetsResolved condition = %#v, want True", targets)
+	}
+	ready, ok := conditionByType(got.Status.Conditions, status.ConditionTypeReady)
+	if !ok || ready.Status != metav1.ConditionFalse {
+		t.Fatalf("Ready condition = %#v, want False", ready)
+	}
+}
+
 func TestBackendTLSPolicyMountsScopedToTunnelBackends(t *testing.T) {
 	ctx := context.Background()
 	scheme := controllerTestScheme(t)
@@ -738,6 +1023,15 @@ func logMessagesContain(messages []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func conditionByType(conditions []metav1.Condition, conditionType string) (metav1.Condition, bool) {
+	for _, condition := range conditions {
+		if condition.Type == conditionType {
+			return condition, true
+		}
+	}
+	return metav1.Condition{}, false
 }
 
 type recordingLogSink struct {

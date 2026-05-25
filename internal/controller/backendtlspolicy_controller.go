@@ -111,8 +111,12 @@ func (r *BackendTLSPolicyReconciler) evaluateBackendTLSPolicy(ctx context.Contex
 		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ref must be a core ConfigMap.", false, gateway.BackendTLSPolicyReasonInvalidKind, "CA ref must be a core ConfigMap.", nil
 	}
 	var cm corev1.ConfigMap
-	if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: string(caRef.Name)}, &cm); err != nil {
-		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ConfigMap was not found.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "CA ConfigMap was not found.", nil
+	caKey := types.NamespacedName{Namespace: policy.Namespace, Name: string(caRef.Name)}
+	if err := r.Get(ctx, caKey, &cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ConfigMap was not found.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "CA ConfigMap was not found.", nil
+		}
+		return false, "", "", false, "", "", fmt.Errorf("get BackendTLSPolicy CA ConfigMap %s: %w", caKey.String(), err)
 	}
 	if _, ok := cm.Data[cloudflared.DefaultOriginCAPoolSecretKey]; !ok {
 		return false, gateway.BackendTLSPolicyReasonNoValidCACertificate, "CA ConfigMap missing ca.crt.", false, gateway.BackendTLSPolicyReasonInvalidCACertificateRef, "CA ConfigMap missing ca.crt.", nil
