@@ -37,6 +37,37 @@ mise run test          # unit tests
 mise run test:cover    # unit tests with coverage (out/coverage/unit.coverprofile)
 ```
 
+## v0.3.0-alpha.1 Test Matrix
+
+Phase 3 adds coverage for the OriginPolicy, BackendTLSPolicy, Gateway API, and cloudflared-h2c contracts documented for `v0.3.0-alpha.1`.
+
+Unit test targets:
+
+- accepted and rejected route emission into Cloudflare Tunnel config
+- Gateway `attachedRoutes` accepted-only counting
+- backend Service existence checks
+- cross-namespace backend Service `ReferenceGrant` checks
+- h2c invalid combinations with HTTP/2, HTTPS protocol, HTTPS service URLs, WSS service URLs, and BackendTLSPolicy
+- annotation bool override parsing for `true`, `false`, `1`, `0`, `yes`, and `no`
+- explicit annotation false overriding inherited true
+- Cloudflare raw JSON payload preserving global and per-rule `h2cOrigin`
+- origin CA pool materialization from tunnel defaults, named pools, annotations, CloudflareOriginPolicy, and BackendTLSPolicy
+
+Optional local contract test:
+
+- Env var: `CLOUDFLARED_H2C_BIN`
+- Generate cfgate-style ingress config.
+- Run `cloudflared tunnel ingress validate --config <file> --json`.
+- Positive fixture: h2c HTTP origin validates.
+- Negative fixture: h2c HTTPS origin fails.
+
+E2E boundary:
+
+- Live Cloudflare e2e is user-run only unless explicitly requested.
+- h2c data-plane smoke is opt-in and release-gated.
+- h2c data-plane smoke must prove the backend observed cleartext `HTTP/2.0`.
+- Agent validation should stop at unit tests and optional non-live contract tests by default.
+
 ## E2E Tests
 
 E2E specs run against a real kind cluster with the controller in-process, hitting the live Cloudflare API.
@@ -300,6 +331,8 @@ The E2E suite includes release-critical checks for behavior that is easy to regr
 - CloudflareTunnel deployment tests assert the default cloudflared image points at the inherent-design h2c fork.
 
 These checks cover control-plane config propagation. A public data-plane h2c smoke test is intentionally separate because it depends on DNS propagation and an externally reachable h2c backend.
+
+The intended h2c data-plane smoke deploys an in-cluster h2c backend, publishes it through a CloudflareTunnel using the inherent-design fork image, sends a public request through Cloudflare, and asserts the backend observed cleartext `HTTP/2.0`. Keep this smoke focused and user-run because it depends on live DNS, Cloudflare edge routing, and a reachable test zone.
 
 #### Resource Creators
 

@@ -9,7 +9,7 @@
 
 ## Status
 
-Runtime-supported in `0.3.0-alpha.1`. The controller resolves targets, writes status, and applies accepted policies to generated Cloudflare Tunnel ingress rules.
+Runtime-supported in `0.3.0-alpha.1`. The controller resolves `HTTPRoute` targets, writes status, and applies accepted policies to generated Cloudflare Tunnel ingress rules. `HTTPRoute` is the only target kind in this release. Cross-namespace target references require a Gateway API `ReferenceGrant` in the target namespace.
 
 ## Precedence
 
@@ -23,6 +23,24 @@ Origin settings resolve from lowest to highest precedence:
 Annotations remain the alpha-line legacy override. `BackendTLSPolicy` is preferred for standard backend TLS validation when it fits. Use `CloudflareOriginPolicy` for cfgate/cloudflared settings that Gateway API does not standardize.
 
 When both deprecated flat aliases and nested fields are set on a `CloudflareOriginPolicy`, nested fields win. Policies that target the same route section use Gateway API policy precedence: older `creationTimestamp` wins, and ties sort by `namespace/name`.
+
+## Origin Transport Constraints
+
+Origin transport settings must produce a cloudflared-valid origin service. cfgate validates the effective origin request after tunnel defaults, policy, BackendTLSPolicy, and annotations are composed.
+
+- `http2Origin` and `h2cOrigin` are mutually exclusive.
+- `http2Origin` is for HTTPS origins.
+- `h2cOrigin` is for cleartext HTTP/2 origins.
+- `h2cOrigin` requires HTTP origin protocol.
+- `h2cOrigin` is invalid with `spec.origin.protocol: https`.
+- `h2cOrigin` is invalid when BackendTLSPolicy applies to the same backend, because BackendTLSPolicy forces HTTPS origin service generation.
+- `h2cOrigin` is invalid for generated service URLs that use `https://` or `wss://`.
+
+## Boolean Override Semantics
+
+v1alpha1 CRD bool fields are enable-only for inheritance. Kubernetes stores omitted and explicit false as the same value, so `CloudflareOriginPolicy` and `CloudflareTunnel.spec.originDefaults` bool fields cannot express an explicit false override.
+
+HTTPRoute annotations preserve field presence. Route annotations can explicitly disable inherited booleans with `false`, `0`, or `no`. This allows annotations to remain the final alpha-line override while policies replace annotation sprawl over time.
 
 ## Spec Reference
 
@@ -90,6 +108,18 @@ Gateway API `v1.BackendTLSPolicy` is the standard API for backend TLS validation
 cfgate maps valid `BackendTLSPolicy` CA bundles to generated, managed cloudflared `originRequest.caPool` paths. `WellKnownCACertificates: System` maps to no `caPool` override.
 
 Unsupported in `0.3.0-alpha.1`: multiple `targetRefs`, non-Service targets, `sectionName`, multiple CA refs, non-ConfigMap CA refs, `subjectAltNames`, and implementation-specific `options`.
+
+## BackendTLSPolicy Interop Details
+
+BackendTLSPolicy targets Kubernetes `Service` resources only. When accepted for a backend Service, cfgate:
+
+- Changes the generated origin service scheme to HTTPS.
+- Sets `originRequest.originServerName` from `spec.validation.hostname`.
+- Maps one supported ConfigMap CA reference to a managed cloudflared `originRequest.caPool` path.
+- Uses system trust and no `caPool` override for `wellKnownCACertificates: System`.
+- Rejects unsupported BackendTLSPolicy fields in status and gives them no runtime effect.
+
+Because BackendTLSPolicy forces HTTPS origin service generation, it conflicts with effective `h2cOrigin` on the same backend.
 
 ## Status Conditions
 

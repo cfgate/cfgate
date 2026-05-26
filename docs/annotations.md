@@ -16,14 +16,16 @@ Per-route configuration applied to Gateway API HTTPRoute resources.
 | `cfgate.io/origin-ca-pool` | Managed file path | *none* | CA certificate pool path |
 | `cfgate.io/origin-ca-pool-mode` | `managed`, `unmanaged` | `managed` | CA pool path safety mode |
 | `cfgate.io/origin-ca-pool-ref` | Named pool | *none* | Named CA pool from `CloudflareTunnel.spec.originCAPools` |
-| `cfgate.io/origin-http2` | `true`, `false` | `false` | HTTP/2 to origin |
-| `cfgate.io/origin-h2c` | `true`, `false` | `false` | HTTP/2 cleartext (h2c) to origin |
+| `cfgate.io/origin-http2` | `true`, `false`, `1`, `0`, `yes`, `no` | `false` | HTTP/2 to HTTPS origin |
+| `cfgate.io/origin-h2c` | `true`, `false`, `1`, `0`, `yes`, `no` | `false` | HTTP/2 cleartext (h2c) to HTTP origin |
 | `cfgate.io/ttl` | `1`-`86400` | `1` (auto) | DNS record TTL in seconds |
 | `cfgate.io/cloudflare-proxied` | `true`, `false` | `true` | Cloudflare proxy (orange cloud) |
 | `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | Deprecated: resolves a policy reference for status only |
 | `cfgate.io/hostname` | RFC 1123 hostname | *none* | Override the route hostname |
 
 **Default for `cfgate.io/origin-protocol`:** `http`
+
+Boolean annotations accept `true`, `false`, `1`, `0`, `yes`, and `no` case-insensitively. Annotation presence matters: `false`, `0`, and `no` explicitly disable an inherited true value from tunnel defaults or policy.
 
 ### Detailed Annotation Documentation
 
@@ -40,6 +42,8 @@ Specifies the protocol used to connect from cloudflared to the backend service.
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
 When set to `https`, cloudflared opens a TLS connection to the origin. Combine with `origin-ssl-verify: "false"` if the origin uses a self-signed certificate.
+
+`origin-protocol: https` is invalid with effective `cfgate.io/origin-h2c: "true"`. h2c is cleartext HTTP/2 and requires HTTP origin protocol.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -179,7 +183,7 @@ metadata:
     cfgate.io/origin-ca-pool-mode: "unmanaged"
 ```
 
-`unmanaged` is an escape hatch. cfgate requires an absolute path, writes it to Cloudflare as `originRequest.caPool`, and does not mount or verify that path.
+`unmanaged` is an escape hatch. cfgate requires an absolute path, writes it to Cloudflare as `originRequest.caPool`, and does not mount or verify that path. You must provide the file through a custom image, projected volume, or other cloudflared pod customization.
 
 ---
 
@@ -207,13 +211,15 @@ For migration, prefer `cfgate.io/origin-ca-pool-ref` or `CloudflareOriginPolicy.
 
 #### `cfgate.io/origin-http2`
 
-Enables HTTP/2 for the connection between cloudflared and the origin server.
+Enables HTTP/2 for the connection between cloudflared and an HTTPS origin server.
 
 **Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
 
 **Default:** `false`
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
+
+Mutually exclusive with `cfgate.io/origin-h2c`. Use this for TLS origin services that should be reached with HTTP/2.
 
 ```yaml
 metadata:
@@ -234,6 +240,8 @@ Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the or
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
 Mutually exclusive with `cfgate.io/origin-http2`. Requires the [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared) fork image (the default). Upstream cloudflared silently ignores this field. See [Image](cloudflare-tunnel.md#image).
+
+`origin-h2c` requires HTTP origin protocol. It is invalid with `cfgate.io/origin-protocol: "https"` and invalid when Gateway API `BackendTLSPolicy` applies to the same backend, because BackendTLSPolicy makes cfgate generate an HTTPS origin service.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1

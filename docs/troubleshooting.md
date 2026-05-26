@@ -276,6 +276,99 @@ If pod creation fails with `violates PodSecurity "restricted:latest"` and mentio
 
 ---
 
+## Route Not Published To Cloudflare
+
+### Symptoms
+- HTTPRoute has `Accepted: False`
+- Cloudflare Tunnel config does not include the expected hostname
+- DNS may exist, but requests return the fallback response
+
+### Common Causes
+
+| Cause | Check | Fix |
+|---|---|---|
+| Listener hostname mismatch | `kubectl get httproute <route> -n <ns> -o jsonpath='{.status.parents}'` | Make the route hostname match the Gateway listener hostname, or update the listener hostname. |
+| `allowedRoutes` namespace rejection | `kubectl get gateway <gateway> -n <ns> -o yaml` | Set `allowedRoutes.namespaces.from: All`, move the route into the Gateway namespace, or configure a matching namespace selector. |
+| Missing backend ReferenceGrant | `kubectl get referencegrant -n <backend-ns>` | Create a ReferenceGrant in the backend Service namespace allowing the HTTPRoute namespace to reference Service. |
+| Backend Service missing | `kubectl get service <service> -n <service-ns>` | Create the Service or fix the backendRef name and namespace. |
+
+Rejected routes are skipped from Cloudflare config and do not block valid sibling routes.
+
+---
+
+## h2c Origin Config Rejected
+
+### Symptoms
+- CloudflareTunnel condition `ConfigurationSynced` is `False`
+- Events or logs mention h2c, HTTP/2, HTTPS, or invalid origin transport
+- cloudflared ingress validation fails for generated config
+
+### Common Causes
+
+| Cause | Check | Fix |
+|---|---|---|
+| h2c with HTTPS origin protocol | `kubectl get httproute <route> -n <ns> -o jsonpath='{.metadata.annotations.cfgate\.io/origin-protocol}'` | Use `origin-protocol: http` for h2c, or disable h2c and use `origin-http2` for HTTPS origins. |
+| h2c with BackendTLSPolicy | `kubectl get backendtlspolicy -A` | Remove h2c for that backend, or remove BackendTLSPolicy if the backend is cleartext h2c. |
+| h2c with `origin-http2` | `kubectl get httproute <route> -n <ns> -o yaml` | Set only one of `cfgate.io/origin-h2c` or `cfgate.io/origin-http2`. |
+| Upstream cloudflared image with h2c configured | `kubectl get cloudflaretunnel <tunnel> -n <ns> -o jsonpath='{.spec.cloudflared.image}'` | Use the default inherent-design fork image or remove h2c settings. |
+
+Use `cfgate.io/origin-h2c: "false"` on a route to explicitly disable inherited h2c when tunnel defaults or policy enable it.
+
+---
+
+## Origin CA Pool Not Mounted Or Not Found
+
+### Symptoms
+- CloudflareTunnel is not Ready
+- `CloudflaredDeployed` is `False`
+- Events mention missing Secret, missing key, unknown origin CA pool, or invalid `origin-ca-pool`
+
+### Common Causes
+
+| Cause | Check | Fix |
+|---|---|---|
+| Named pool Secret missing | `kubectl get secret <secret> -n <secret-ns>` | Create the Secret or fix `spec.originCAPools[].secretRef`. |
+| Secret key missing | `kubectl get secret <secret> -n <secret-ns> -o yaml` | Add the configured key, or set `secretRef.key` to the existing PEM key. |
+| Cross-namespace Secret lacks ReferenceGrant | `kubectl get referencegrant -n <secret-ns>` | Create a ReferenceGrant in the Secret namespace allowing CloudflareTunnel to reference Secret. |
+| Route sets both CA pool annotations | `kubectl get httproute <route> -n <ns> -o yaml` | Keep only `cfgate.io/origin-ca-pool-ref` or `cfgate.io/origin-ca-pool`. |
+| Unmanaged path is not mounted | `kubectl get deploy -n <tunnel-ns> -l app.kubernetes.io/managed-by=cfgate -o yaml` | Use a managed pool, or provide the file through a custom image or mount. |
+
+---
+
+## BackendTLSPolicy Has No Runtime Effect
+
+### Symptoms
+- BackendTLSPolicy shows `Accepted: False` or `ResolvedRefs: False`
+- Origin still uses HTTP instead of HTTPS
+- Expected CA pool path is absent from Cloudflare Tunnel config
+
+### Common Causes
+
+| Cause | Check | Fix |
+|---|---|---|
+| Unsupported target kind | `kubectl get backendtlspolicy <policy> -n <ns> -o yaml` | Target a Kubernetes Service. |
+| Multiple targetRefs configured | `kubectl get backendtlspolicy <policy> -n <ns> -o yaml` | Use exactly one targetRef in `v0.3.0-alpha.1`. |
+| Unsupported CA reference | `kubectl get backendtlspolicy <policy> -n <ns> -o yaml` | Use one same-namespace ConfigMap CA reference with key `ca.crt`, or use `wellKnownCACertificates: System`. |
+| h2c also enabled | `kubectl get httproute <route> -n <ns> -o yaml` | Disable h2c for that route or remove BackendTLSPolicy. BackendTLSPolicy forces HTTPS. |
+
+---
+
+## gRPC Trailers Missing With h2c
+
+### Symptoms
+- h2c backend receives traffic, but gRPC trailer-sensitive behavior fails
+- Logs from cloudflared mention trailer support or QUIC
+
+### Common Causes
+
+| Cause | Check | Fix |
+|---|---|---|
+| Tunnel transport is `auto` or QUIC | `kubectl get cloudflaretunnel <tunnel> -n <ns> -o jsonpath='{.spec.cloudflared.protocol}'` | Set `spec.cloudflared.protocol: http2` for trailer-sensitive gRPC-like h2c origins. |
+
+h2c is origin transport only. It does not make `GRPCRoute` a supported cfgate public-hostname route surface.
+
+---
+
 ## Stuck Finalizers
 
 ### Symptoms
