@@ -330,46 +330,8 @@ func (r *HTTPRouteReconciler) isCfgateParentRef(
 	route *gwapiv1.HTTPRoute,
 	ref gwapiv1.ParentReference,
 ) (bool, error) {
-	// Validate Group defaults to gateway.networking.k8s.io
-	if ref.Group != nil && string(*ref.Group) != gwapiv1.GroupName {
-		return false, nil
-	}
-
-	// Validate Kind defaults to "Gateway"
-	if ref.Kind != nil && string(*ref.Kind) != "Gateway" {
-		return false, nil
-	}
-
-	// Resolve Gateway namespace
-	gwNamespace := route.Namespace
-	if ref.Namespace != nil {
-		gwNamespace = string(*ref.Namespace)
-	}
-
-	// Look up the Gateway
-	var gateway gwapiv1.Gateway
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      string(ref.Name),
-		Namespace: gwNamespace,
-	}, &gateway); err != nil {
-		if apierrors.IsNotFound(err) {
-			// Gateway not found, cannot determine ownership, skip gracefully
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to get Gateway %s/%s: %w", gwNamespace, ref.Name, err)
-	}
-
-	// Look up the GatewayClass
-	var gc gwapiv1.GatewayClass
-	if err := r.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gc); err != nil {
-		if apierrors.IsNotFound(err) {
-			// GatewayClass not found, cannot determine ownership, skip gracefully
-			return false, nil
-		}
-		return false, fmt.Errorf("failed to get GatewayClass %s: %w", gateway.Spec.GatewayClassName, err)
-	}
-
-	return string(gc.Spec.ControllerName) == GatewayControllerName, nil
+	eval, err := evaluateHTTPRouteParentRef(ctx, r.Client, route, ref, httpRouteParentEvaluationOptions{})
+	return eval.IsCfgateParent, err
 }
 
 // validateParentRef validates that the parent Gateway accepts this route.
@@ -379,119 +341,14 @@ func (r *HTTPRouteReconciler) validateParentRef(
 	route *gwapiv1.HTTPRoute,
 	ref gwapiv1.ParentReference,
 ) gwapiv1.RouteParentStatus {
-	log := log.FromContext(ctx)
-
-	// Build base status
-	parentNS := gwapiv1.Namespace(route.Namespace)
-	if ref.Namespace != nil {
-		parentNS = *ref.Namespace
+	eval, err := evaluateHTTPRouteParentRef(ctx, r.Client, route, ref, httpRouteParentEvaluationOptions{
+		requireTunnelRef:    true,
+		validatePathMatches: true,
+	})
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to evaluate parentRef")
 	}
-
-	parentStatus := gwapiv1.RouteParentStatus{
-		ParentRef: gwapiv1.ParentReference{
-			Group:       ref.Group,
-			Kind:        ref.Kind,
-			Namespace:   &parentNS,
-			Name:        ref.Name,
-			SectionName: ref.SectionName,
-		},
-		ControllerName: GatewayControllerName,
-		Conditions: []metav1.Condition{
-			status.NewCondition(
-				string(gwapiv1.RouteConditionAccepted),
-				metav1.ConditionTrue,
-				"Accepted",
-				"Route accepted by Gateway",
-				route.Generation,
-			),
-		},
-	}
-
-	// Get the Gateway
-	gwNamespace := route.Namespace
-	if ref.Namespace != nil {
-		gwNamespace = string(*ref.Namespace)
-	}
-
-	var gateway gwapiv1.Gateway
-	if err := r.Get(ctx, types.NamespacedName{
-		Name:      string(ref.Name),
-		Namespace: gwNamespace,
-	}, &gateway); err != nil {
-		if apierrors.IsNotFound(err) {
-			parentStatus.Conditions[0] = status.NewCondition(
-				string(gwapiv1.RouteConditionAccepted),
-				metav1.ConditionFalse,
-				status.ReasonNoMatchingParent,
-				fmt.Sprintf("Gateway %s/%s not found", gwNamespace, ref.Name),
-				route.Generation,
-			)
-			return parentStatus
-		}
-		log.Error(err, "failed to get Gateway")
-		return parentStatus
-	}
-
-	// Check if Gateway's GatewayClass is ours
-	var gc gwapiv1.GatewayClass
-	if err := r.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &gc); err != nil {
-		parentStatus.Conditions[0] = status.NewCondition(
-			string(gwapiv1.RouteConditionAccepted),
-			metav1.ConditionFalse,
-			status.ReasonNoMatchingParent,
-			fmt.Sprintf("GatewayClass %s not found", gateway.Spec.GatewayClassName),
-			route.Generation,
-		)
-		return parentStatus
-	}
-
-	if string(gc.Spec.ControllerName) != GatewayControllerName {
-		parentStatus.Conditions[0] = status.NewCondition(
-			string(gwapiv1.RouteConditionAccepted),
-			metav1.ConditionFalse,
-			status.ReasonNoMatchingParent,
-			"Gateway is not managed by cfgate",
-			route.Generation,
-		)
-		return parentStatus
-	}
-
-	// Check if Gateway has tunnel reference
-	if annotations.GetAnnotation(&gateway, annotations.AnnotationTunnelRef) == "" {
-		parentStatus.Conditions[0] = status.NewCondition(
-			string(gwapiv1.RouteConditionAccepted),
-			metav1.ConditionFalse,
-			status.ReasonNoTunnelRef,
-			"Gateway has no tunnel reference annotation",
-			route.Generation,
-		)
-		return parentStatus
-	}
-
-	listenerOK, reason, message := r.routeAllowedByListeners(ctx, route, &gateway, ref)
-	if !listenerOK {
-		parentStatus.Conditions[0] = status.NewCondition(
-			string(gwapiv1.RouteConditionAccepted),
-			metav1.ConditionFalse,
-			reason,
-			message,
-			route.Generation,
-		)
-		return parentStatus
-	}
-
-	if err := validateCloudflaredPathMatches(route); err != nil {
-		parentStatus.Conditions[0] = status.NewCondition(
-			string(gwapiv1.RouteConditionAccepted),
-			metav1.ConditionFalse,
-			status.ReasonUnsupportedValue,
-			err.Error(),
-			route.Generation,
-		)
-		return parentStatus
-	}
-
-	return parentStatus
+	return eval.Status
 }
 
 // resolveBackends resolves backend Service references.
@@ -500,104 +357,7 @@ func (r *HTTPRouteReconciler) resolveBackends(
 	ctx context.Context,
 	route *gwapiv1.HTTPRoute,
 ) metav1.Condition {
-	log := log.FromContext(ctx)
-
-	for _, rule := range route.Spec.Rules {
-		if len(rule.BackendRefs) > 1 {
-			return status.NewCondition(
-				string(gwapiv1.RouteConditionResolvedRefs),
-				metav1.ConditionFalse,
-				status.ReasonUnsupportedValue,
-				"multiple backendRefs are not supported by cfgate tunnel ingress",
-				route.Generation,
-			)
-		}
-
-		for _, backend := range rule.BackendRefs {
-			if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
-				return status.NewCondition(
-					string(gwapiv1.RouteConditionResolvedRefs),
-					metav1.ConditionFalse,
-					status.ReasonUnsupportedValue,
-					fmt.Sprintf("unsupported backend group %q: only core Service backends are supported by cfgate tunnel ingress", *backend.Group),
-					route.Generation,
-				)
-			}
-			if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
-				return status.NewCondition(
-					string(gwapiv1.RouteConditionResolvedRefs),
-					metav1.ConditionFalse,
-					status.ReasonUnsupportedValue,
-					fmt.Sprintf("unsupported backend kind %q: only Service backends are supported by cfgate tunnel ingress", *backend.Kind),
-					route.Generation,
-				)
-			}
-
-			// Get the Service
-			namespace := route.Namespace
-			if backend.Namespace != nil {
-				namespace = string(*backend.Namespace)
-			}
-
-			if namespace != route.Namespace {
-				permitted, err := r.backendReferencePermitted(ctx, route.Namespace, namespace, string(backend.Name))
-				if err != nil {
-					return status.NewCondition(
-						string(gwapiv1.RouteConditionResolvedRefs),
-						metav1.ConditionFalse,
-						status.ReasonRefNotPermitted,
-						fmt.Sprintf("Failed to check ReferenceGrant for Service %s/%s: %v", namespace, backend.Name, err),
-						route.Generation,
-					)
-				}
-				if !permitted {
-					return status.NewCondition(
-						string(gwapiv1.RouteConditionResolvedRefs),
-						metav1.ConditionFalse,
-						status.ReasonRefNotPermitted,
-						fmt.Sprintf("Service %s/%s is not permitted by ReferenceGrant", namespace, backend.Name),
-						route.Generation,
-					)
-				}
-			}
-
-			var svc corev1.Service
-			if err := r.Get(ctx, types.NamespacedName{
-				Name:      string(backend.Name),
-				Namespace: namespace,
-			}, &svc); err != nil {
-				if apierrors.IsNotFound(err) {
-					log.Info("backend Service not found",
-						"service", backend.Name,
-						"namespace", namespace,
-					)
-					return status.NewCondition(
-						string(gwapiv1.RouteConditionResolvedRefs),
-						metav1.ConditionFalse,
-						status.ReasonBackendNotFound,
-						fmt.Sprintf("Service %s/%s not found", namespace, backend.Name),
-						route.Generation,
-					)
-				}
-				log.Error(err, "failed to get Service")
-				return status.NewCondition(
-					string(gwapiv1.RouteConditionResolvedRefs),
-					metav1.ConditionFalse,
-					status.ReasonBackendNotFound,
-					fmt.Sprintf("Failed to get Service %s/%s: %v", namespace, backend.Name, err),
-					route.Generation,
-				)
-			}
-		}
-	}
-
-	return status.NewCondition(
-		string(gwapiv1.RouteConditionResolvedRefs),
-		metav1.ConditionTrue,
-		"ResolvedRefs",
-		"All backend references resolved",
-		route.Generation,
-	)
+	return validateHTTPRouteBackendRefs(ctx, r.Client, route)
 }
 
 // resolveAccessPolicy resolves the referenced CloudflareAccessPolicy.

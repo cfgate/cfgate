@@ -474,6 +474,37 @@ func TestOriginRequestConverters(t *testing.T) {
 	}
 }
 
+func TestOriginRequestExplicitFalseConvertersAndJSON(t *testing.T) {
+	config := &OriginRequestConfig{
+		NoTLSVerifySet: true,
+		HTTP2OriginSet: true,
+		H2cOriginSet:   true,
+	}
+	ingress := ingressOriginRequestToAPI(config)
+	if ingress.NoTLSVerify.Value || ingress.HTTP2Origin.Value {
+		t.Fatalf("ingressOriginRequestToAPI() = %+v, want explicit false values", ingress)
+	}
+	global := globalOriginRequestToAPI(config)
+	if global.NoTLSVerify.Value || global.HTTP2Origin.Value {
+		t.Fatalf("globalOriginRequestToAPI() = %+v, want explicit false values", global)
+	}
+
+	data, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("MarshalJSON() error = %v", err)
+	}
+	var raw map[string]bool
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal(%s) error = %v", data, err)
+	}
+	for _, key := range []string{"noTLSVerify", "http2Origin", "h2cOrigin"} {
+		value, ok := raw[key]
+		if !ok || value {
+			t.Fatalf("MarshalJSON() = %s, want %s:false", data, key)
+		}
+	}
+}
+
 func sdkAccessRule(t *testing.T, raw string) zero_trust.AccessRule {
 	t.Helper()
 	var rule zero_trust.AccessRule

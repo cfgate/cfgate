@@ -96,7 +96,7 @@ func (r *CloudflareOriginPolicyReconciler) evaluateOriginPolicy(ctx context.Cont
 				return nil, 0, false, false, fmt.Errorf("get CloudflareOriginPolicy target HTTPRoute %s: %w", routeKey.String(), err)
 			}
 		} else if targetNS != policy.Namespace {
-			ok, err := (&CloudflareTunnelReconciler{Client: r.Client}).referenceGrantPermits(ctx, policy.Namespace, targetNS, cfgatev1alpha1.GroupVersion.Group, "CloudflareOriginPolicy", gateway.GroupName, "HTTPRoute", ref.Name)
+			ok, err := referenceGrantPermits(ctx, r.Client, policy.Namespace, targetNS, cfgatev1alpha1.GroupVersion.Group, "CloudflareOriginPolicy", gateway.GroupName, "HTTPRoute", ref.Name)
 			if err != nil {
 				return nil, 0, false, false, fmt.Errorf("checking CloudflareOriginPolicy ReferenceGrant for HTTPRoute %s/%s: %w", targetNS, ref.Name, err)
 			}

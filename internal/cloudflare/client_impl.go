@@ -233,12 +233,12 @@ func (c *clientImpl) UpdateTunnelConfiguration(ctx context.Context, accountID, t
 	// The CF API stores the full config JSON — cloudflared parses it directly,
 	// so undocumented fields are preserved and returned.
 	var opts []option.RequestOption
-	if config.OriginRequest != nil && config.OriginRequest.H2cOrigin {
-		opts = append(opts, option.WithJSONSet("config.originRequest.h2cOrigin", true))
+	if config.OriginRequest != nil && (config.OriginRequest.H2cOrigin || config.OriginRequest.H2cOriginSet) {
+		opts = append(opts, option.WithJSONSet("config.originRequest.h2cOrigin", config.OriginRequest.H2cOrigin))
 	}
 	for i, rule := range config.Ingress {
-		if rule.OriginRequest != nil && rule.OriginRequest.H2cOrigin {
-			opts = append(opts, option.WithJSONSet(fmt.Sprintf("config.ingress.%d.originRequest.h2cOrigin", i), true))
+		if rule.OriginRequest != nil && (rule.OriginRequest.H2cOrigin || rule.OriginRequest.H2cOriginSet) {
+			opts = append(opts, option.WithJSONSet(fmt.Sprintf("config.ingress.%d.originRequest.h2cOrigin", i), rule.OriginRequest.H2cOrigin))
 		}
 	}
 

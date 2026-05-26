@@ -156,6 +156,47 @@ func TestDNSHelperFunctions(t *testing.T) {
 	})
 }
 
+func TestGatewayCountAttachedRoutesUsesListenerAcceptance(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	all := gatewayv1.NamespacesFromAll
+	listenerHostname := gatewayv1.Hostname("app.example.com")
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "edge"},
+		Spec: gatewayv1.GatewaySpec{
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+				Hostname: &listenerHostname,
+				AllowedRoutes: &gatewayv1.AllowedRoutes{
+					Namespaces: &gatewayv1.RouteNamespaces{From: &all},
+				},
+			}},
+		},
+	}
+	gatewayNS := gatewayv1.Namespace("edge")
+	accepted := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: "accepted", Namespace: "apps"},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{
+				Namespace: &gatewayNS,
+				Name:      "gateway",
+			}}},
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+		},
+	}
+	rejected := accepted.DeepCopy()
+	rejected.Name = "rejected"
+	rejected.Spec.Hostnames = []gatewayv1.Hostname{"other.example.com"}
+
+	r := &GatewayReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(accepted, rejected).Build(),
+	}
+	if got := r.countAttachedRoutes(ctx, gateway, gateway.Spec.Listeners[0]); got != 1 {
+		t.Fatalf("countAttachedRoutes() = %d, want 1", got)
+	}
+}
+
 func TestCloudflareDNSCollectHostnames(t *testing.T) {
 	t.Run("explicit hostnames override colliding route-discovered config while route discovery stays additive", func(t *testing.T) {
 		scheme := controllerTestScheme(t)

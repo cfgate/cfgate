@@ -132,6 +132,46 @@ func TestBuildRulesAppliesOriginPolicyBackendTLSPolicyAndAnnotations(t *testing.
 	}
 }
 
+func TestBuildRulesRejectsCrossLayerHTTP2H2cConflict(t *testing.T) {
+	route := originTransportConflictRoute(map[string]string{
+		annotations.AnnotationOriginHTTP2: "true",
+	})
+	policy := originTransportConflictPolicy(cfgatev1alpha1.OriginSettings{
+		H2cOrigin: true,
+	})
+
+	err := buildOriginTransportConflictRule(t, route, policy)
+	if err == nil || !strings.Contains(err.Error(), "http2Origin and h2cOrigin are mutually exclusive") {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v, want HTTP2/H2C conflict", err)
+	}
+}
+
+func TestBuildRulesRejectsReverseCrossLayerHTTP2H2cConflict(t *testing.T) {
+	route := originTransportConflictRoute(map[string]string{
+		annotations.AnnotationOriginH2c: "true",
+	})
+	policy := originTransportConflictPolicy(cfgatev1alpha1.OriginSettings{
+		HTTP2Origin: true,
+	})
+
+	err := buildOriginTransportConflictRule(t, route, policy)
+	if err == nil || !strings.Contains(err.Error(), "http2Origin and h2cOrigin are mutually exclusive") {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v, want HTTP2/H2C conflict", err)
+	}
+}
+
+func TestBuildRulesRejectsAnnotationHTTP2H2cConflictWithoutWebhook(t *testing.T) {
+	route := originTransportConflictRoute(map[string]string{
+		annotations.AnnotationOriginHTTP2: "true",
+		annotations.AnnotationOriginH2c:   "true",
+	})
+
+	err := buildOriginTransportConflictRule(t, route, nil)
+	if err == nil || !strings.Contains(err.Error(), "http2Origin and h2cOrigin are mutually exclusive") {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v, want HTTP2/H2C conflict", err)
+	}
+}
+
 func TestBuildRulesFromHTTPRouteOriginCAPoolRefOnly(t *testing.T) {
 	ctx := context.Background()
 	port := gatewayv1.PortNumber(8443)
@@ -181,6 +221,62 @@ func TestBuildRulesFromHTTPRouteOriginCAPoolRefOnly(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `references unknown origin CA pool "missing"`) {
 		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v, want unknown pool ref error", err)
 	}
+}
+
+func originTransportConflictRoute(routeAnnotations map[string]string) *gatewayv1.HTTPRoute {
+	port := gatewayv1.PortNumber(8080)
+	return &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "route",
+			Namespace:   "apps",
+			Annotations: routeAnnotations,
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "app",
+							Port: &port,
+						},
+					},
+				}},
+			}},
+		},
+	}
+}
+
+func originTransportConflictPolicy(origin cfgatev1alpha1.OriginSettings) *cfgatev1alpha1.CloudflareOriginPolicy {
+	return &cfgatev1alpha1.CloudflareOriginPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "origin", Namespace: "apps"},
+		Spec: cfgatev1alpha1.CloudflareOriginPolicySpec{
+			TargetRefs: []cfgatev1alpha1.OriginPolicyTargetReference{{
+				Group: gatewayv1.GroupName,
+				Kind:  "HTTPRoute",
+				Name:  "route",
+			}},
+			Origin: origin,
+		},
+	}
+}
+
+func buildOriginTransportConflictRule(t *testing.T, route *gatewayv1.HTTPRoute, policy *cfgatev1alpha1.CloudflareOriginPolicy) error {
+	t.Helper()
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	objects := []client.Object{}
+	if policy != nil {
+		objects = append(objects, policy)
+	}
+	reconciler := &CloudflareTunnelReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(),
+	}
+	_, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+		namedCAPoolPaths:      map[string]string{},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+	})
+	return err
 }
 
 func TestCloudflareOriginPolicyReconcilerStatusAndConflict(t *testing.T) {
@@ -758,13 +854,14 @@ func TestBackendTLSPolicyMountsScopedToTunnelBackends(t *testing.T) {
 	scheme := controllerTestScheme(t)
 	tunnel := tunnelForOriginRuntimeTest()
 	gw := gatewayForTunnelTest()
+	gatewayClass := cfgateGatewayClassForTunnelTest()
 	route := routeForBackendTest("app-route", "apps", "app")
 	relevant := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
 	unrelated := backendTLSPolicyForTest("tls-other", "other", "other", "other.example.com", "ca-other")
 	reconciler := &CloudflareTunnelReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(tunnel, gw, route, relevant, unrelated, caConfigMapForTest("ca-app", "apps"), caConfigMapForTest("ca-other", "other")).
+			WithObjects(tunnel, gw, gatewayClass, route, relevant, unrelated, caConfigMapForTest("ca-app", "apps"), caConfigMapForTest("ca-other", "other")).
 			Build(),
 		Scheme: scheme,
 	}
@@ -797,13 +894,14 @@ func TestBuildOriginRuntimeDoesNotWriteGeneratedSecrets(t *testing.T) {
 	scheme := controllerTestScheme(t)
 	tunnel := tunnelForOriginRuntimeTest()
 	gw := gatewayForTunnelTest()
+	gatewayClass := cfgateGatewayClassForTunnelTest()
 	route := routeForBackendTest("app-route", "apps", "app")
 	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
 	ca := caConfigMapForTest("ca-app", "apps")
 	reconciler := &CloudflareTunnelReconciler{
 		Client: fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(tunnel, gw, route, policy, ca).
+			WithObjects(tunnel, gw, gatewayClass, route, policy, ca).
 			Build(),
 		Scheme: scheme,
 	}
@@ -967,6 +1065,89 @@ func ptrWellKnown(v gatewayv1.WellKnownCACertificatesType) *gatewayv1.WellKnownC
 	return &v
 }
 
+func TestRouteAnnotationBoolFalseOverridesInheritedH2c(t *testing.T) {
+	ctx := context.Background()
+	route := routeForBackendTest("route", "apps", "app")
+	route.Annotations = map[string]string{
+		annotations.AnnotationOriginH2c: "no",
+	}
+	reconciler := &CloudflareTunnelReconciler{}
+	rules, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+		namedCAPoolPaths:      map[string]string{},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+		originDefaults:        &cfgatev1alpha1.OriginDefaults{H2cOrigin: true},
+	})
+	if err != nil {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].OriginRequest == nil {
+		t.Fatalf("rules = %#v, want one rule with OriginRequest", rules)
+	}
+	if rules[0].OriginRequest.H2cOrigin || !rules[0].OriginRequest.H2cOriginSet {
+		t.Fatalf("OriginRequest = %#v, want explicit h2cOrigin false override", rules[0].OriginRequest)
+	}
+}
+
+func TestRouteH2cValidationRejectsNonCleartextEffectiveOrigin(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	port := gatewayv1.PortNumber(8443)
+
+	t.Run("https annotation", func(t *testing.T) {
+		route := routeForBackendTest("route", "apps", "app")
+		route.Annotations = map[string]string{
+			annotations.AnnotationOriginH2c:      "true",
+			annotations.AnnotationOriginProtocol: "https",
+		}
+		reconciler := &CloudflareTunnelReconciler{}
+		_, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+			namedCAPoolPaths:      map[string]string{},
+			backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+		})
+		if err == nil || !strings.Contains(err.Error(), "h2cOrigin requires cleartext HTTP") {
+			t.Fatalf("error = %v, want cleartext HTTP rejection", err)
+		}
+	})
+
+	t.Run("http2 effective true", func(t *testing.T) {
+		route := routeForBackendTest("route", "apps", "app")
+		route.Annotations = map[string]string{
+			annotations.AnnotationOriginH2c: "true",
+		}
+		reconciler := &CloudflareTunnelReconciler{}
+		_, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+			namedCAPoolPaths:      map[string]string{},
+			backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+			originDefaults:        &cfgatev1alpha1.OriginDefaults{HTTP2Origin: true},
+		})
+		if err == nil || !strings.Contains(err.Error(), "http2Origin and h2cOrigin are mutually exclusive") {
+			t.Fatalf("error = %v, want http2/h2c rejection", err)
+		}
+	})
+
+	t.Run("BackendTLSPolicy", func(t *testing.T) {
+		route := routeForBackendTest("route", "apps", "app")
+		route.Annotations = map[string]string{
+			annotations.AnnotationOriginH2c:      "true",
+			annotations.AnnotationOriginProtocol: "http",
+		}
+		route.Spec.Rules[0].BackendRefs[0].Port = &port
+		policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+		reconciler := &CloudflareTunnelReconciler{
+			Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build(),
+		}
+		_, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+			namedCAPoolPaths: map[string]string{},
+			backendTLSCAPoolPaths: map[types.NamespacedName]string{
+				{Namespace: "apps", Name: "tls-app"}: cloudflared.BackendTLSCAPoolPath("apps", "tls-app"),
+			},
+		})
+		if err == nil || !strings.Contains(err.Error(), "BackendTLSPolicy") {
+			t.Fatalf("error = %v, want BackendTLSPolicy h2c rejection", err)
+		}
+	})
+}
+
 func tunnelForOriginRuntimeTest() *cfgatev1alpha1.CloudflareTunnel {
 	return &cfgatev1alpha1.CloudflareTunnel{
 		ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "cfgate"},
@@ -974,6 +1155,7 @@ func tunnelForOriginRuntimeTest() *cfgatev1alpha1.CloudflareTunnel {
 }
 
 func gatewayForTunnelTest() *gatewayv1.Gateway {
+	all := gatewayv1.NamespacesFromAll
 	return &gatewayv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "gateway",
@@ -981,6 +1163,25 @@ func gatewayForTunnelTest() *gatewayv1.Gateway {
 			Annotations: map[string]string{
 				annotations.AnnotationTunnelRef: "cfgate/tunnel",
 			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+				AllowedRoutes: &gatewayv1.AllowedRoutes{
+					Namespaces: &gatewayv1.RouteNamespaces{From: &all},
+				},
+			}},
+		},
+	}
+}
+
+func cfgateGatewayClassForTunnelTest() *gatewayv1.GatewayClass {
+	return &gatewayv1.GatewayClass{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfgate"},
+		Spec: gatewayv1.GatewayClassSpec{
+			ControllerName: gatewayv1.GatewayController(GatewayControllerName),
 		},
 	}
 }

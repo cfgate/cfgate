@@ -29,6 +29,7 @@ const (
 type originRuntime struct {
 	namedCAPoolPaths      map[string]string
 	backendTLSCAPoolPaths map[types.NamespacedName]string
+	originDefaults        *cfgatev1alpha1.OriginDefaults
 }
 
 type originRuntimeState struct {
@@ -85,7 +86,7 @@ func (r *CloudflareTunnelReconciler) resolveOriginCAPoolMounts(ctx context.Conte
 		secretName := pool.SecretRef.Name
 		mountKey := key
 		if refNS != tunnel.Namespace {
-			ok, err := r.referenceGrantPermits(ctx, tunnel.Namespace, refNS, cfgatev1alpha1.GroupVersion.Group, "CloudflareTunnel", "", "Secret", pool.SecretRef.Name)
+			ok, err := referenceGrantPermits(ctx, r.Client, tunnel.Namespace, refNS, cfgatev1alpha1.GroupVersion.Group, "CloudflareTunnel", "", "Secret", pool.SecretRef.Name)
 			if err != nil {
 				return nil, nil, nil, fmt.Errorf("checking ReferenceGrant for origin CA pool %q: %w", pool.Name, err)
 			}
@@ -351,12 +352,12 @@ func generatedOriginCASecretName(parts ...string) string {
 	return fmt.Sprintf("cfgate-origin-ca-%x", sum[:8])
 }
 
-func (r *CloudflareTunnelReconciler) referenceGrantPermits(ctx context.Context, fromNamespace, toNamespace, fromGroup, fromKind, toGroup, toKind, toName string) (bool, error) {
+func referenceGrantPermits(ctx context.Context, reader client.Reader, fromNamespace, toNamespace, fromGroup, fromKind, toGroup, toKind, toName string) (bool, error) {
 	if fromNamespace == toNamespace {
 		return true, nil
 	}
 	var grants gatewayv1beta1.ReferenceGrantList
-	if err := r.List(ctx, &grants, client.InNamespace(toNamespace)); err != nil {
+	if err := reader.List(ctx, &grants, client.InNamespace(toNamespace)); err != nil {
 		return false, err
 	}
 	for _, grant := range grants.Items {
@@ -396,7 +397,7 @@ func (r *CloudflareTunnelReconciler) originPolicyForRule(ctx context.Context, ro
 			continue
 		}
 		if policy.Namespace != route.Namespace {
-			ok, err := r.referenceGrantPermits(ctx, policy.Namespace, route.Namespace, cfgatev1alpha1.GroupVersion.Group, "CloudflareOriginPolicy", gateway.GroupName, "HTTPRoute", route.Name)
+			ok, err := referenceGrantPermits(ctx, r.Client, policy.Namespace, route.Namespace, cfgatev1alpha1.GroupVersion.Group, "CloudflareOriginPolicy", gateway.GroupName, "HTTPRoute", route.Name)
 			if err != nil {
 				return nil, fmt.Errorf("checking CloudflareOriginPolicy ReferenceGrant: %w", err)
 			}
@@ -663,10 +664,25 @@ func mergeOriginRequest(base, override *cloudflare.OriginRequestConfig) *cloudfl
 	if override.CAPool != "" {
 		base.CAPool = override.CAPool
 	}
-	base.NoTLSVerify = base.NoTLSVerify || override.NoTLSVerify
+	if override.NoTLSVerifySet {
+		base.NoTLSVerify = override.NoTLSVerify
+		base.NoTLSVerifySet = true
+	} else {
+		base.NoTLSVerify = base.NoTLSVerify || override.NoTLSVerify
+	}
 	base.DisableChunkedEncoding = base.DisableChunkedEncoding || override.DisableChunkedEncoding
-	base.HTTP2Origin = base.HTTP2Origin || override.HTTP2Origin
-	base.H2cOrigin = base.H2cOrigin || override.H2cOrigin
+	if override.HTTP2OriginSet {
+		base.HTTP2Origin = override.HTTP2Origin
+		base.HTTP2OriginSet = true
+	} else {
+		base.HTTP2Origin = base.HTTP2Origin || override.HTTP2Origin
+	}
+	if override.H2cOriginSet {
+		base.H2cOrigin = override.H2cOrigin
+		base.H2cOriginSet = true
+	} else {
+		base.H2cOrigin = base.H2cOrigin || override.H2cOrigin
+	}
 	base.MatchSNIToHost = base.MatchSNIToHost || override.MatchSNIToHost
 	if originRequestEmpty(base) {
 		return nil
@@ -682,8 +698,11 @@ func originRequestEmpty(config *cloudflare.OriginRequestConfig) bool {
 			config.OriginServerName == "" &&
 			config.CAPool == "" &&
 			!config.NoTLSVerify &&
+			!config.NoTLSVerifySet &&
 			!config.DisableChunkedEncoding &&
 			!config.HTTP2Origin &&
+			!config.HTTP2OriginSet &&
 			!config.H2cOrigin &&
+			!config.H2cOriginSet &&
 			!config.MatchSNIToHost)
 }

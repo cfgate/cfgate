@@ -344,6 +344,33 @@ func TestValidateParentRefStatusReasons(t *testing.T) {
 	}
 }
 
+func TestAcceptedHTTPRouteHostnamesFiltersByAcceptedListeners(t *testing.T) {
+	route := &gatewayv1.HTTPRoute{
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com", "other.example.com"},
+		},
+	}
+	listenerHostname := gatewayv1.Hostname("app.example.com")
+	got := acceptedHTTPRouteHostnames(route, []gatewayv1.Listener{{
+		Name:     "http",
+		Protocol: gatewayv1.HTTPProtocolType,
+		Hostname: &listenerHostname,
+	}})
+	if len(got) != 1 || got[0] != "app.example.com" {
+		t.Fatalf("acceptedHTTPRouteHostnames() = %#v, want app.example.com only", got)
+	}
+
+	route.Spec.Hostnames = nil
+	got = acceptedHTTPRouteHostnames(route, []gatewayv1.Listener{{
+		Name:     "http",
+		Protocol: gatewayv1.HTTPProtocolType,
+		Hostname: &listenerHostname,
+	}})
+	if len(got) != 1 || got[0] != listenerHostname {
+		t.Fatalf("acceptedHTTPRouteHostnames() listener fallback = %#v, want %s", got, listenerHostname)
+	}
+}
+
 func TestValidateParentRefPathSupport(t *testing.T) {
 	scheme := controllerTestScheme(t)
 	listenerName := gatewayv1.SectionName("https")

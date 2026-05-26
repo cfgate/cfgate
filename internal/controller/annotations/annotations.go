@@ -184,18 +184,28 @@ func GetAnnotation(obj client.Object, key string) string {
 // Returns defaultValue if annotation not present or not a valid boolean.
 // Accepts: "true", "false", "1", "0", "yes", "no" (case-insensitive)
 func GetAnnotationBool(obj client.Object, key string, defaultValue bool) bool {
+	value, present := GetAnnotationBoolValue(obj, key)
+	if !present {
+		return defaultValue
+	}
+	return value
+}
+
+// GetAnnotationBoolValue parses a boolean annotation value and reports whether
+// a valid annotation was present.
+func GetAnnotationBoolValue(obj client.Object, key string) (bool, bool) {
 	value := GetAnnotation(obj, key)
 	if value == "" {
-		return defaultValue
+		return false, false
 	}
 
 	switch strings.ToLower(value) {
 	case "true", "1", "yes":
-		return true
+		return true, true
 	case "false", "0", "no":
-		return false
+		return false, true
 	default:
-		return defaultValue
+		return false, false
 	}
 }
 

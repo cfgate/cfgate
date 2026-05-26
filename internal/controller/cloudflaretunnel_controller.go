@@ -1078,6 +1078,7 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 			backendTLSCAPoolPaths: map[types.NamespacedName]string{},
 		}
 	}
+	runtime.originDefaults = &tunnel.Spec.OriginDefaults
 
 	// Find Gateways that reference this tunnel
 	var gateways gateway.GatewayList
@@ -1085,9 +1086,13 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 		return nil, 0, fmt.Errorf("failed to list gateways: %w", err)
 	}
 
-	var relevantGateways []gateway.Gateway
+	relevantGateways := map[types.NamespacedName]gateway.Gateway{}
 
 	for _, gw := range gateways.Items {
+		managed, err := gatewayClassManagedByCfgate(ctx, r.Client, &gw)
+		if err != nil || !managed {
+			continue
+		}
 		ref := annotations.GetAnnotation(&gw, annotations.AnnotationTunnelRef)
 		if ref == "" {
 			continue
@@ -1097,7 +1102,7 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 			continue
 		}
 		if name == tunnel.Name && ns == tunnel.Namespace {
-			relevantGateways = append(relevantGateways, gw)
+			relevantGateways[types.NamespacedName{Namespace: gw.Namespace, Name: gw.Name}] = gw
 		}
 	}
 
@@ -1107,36 +1112,48 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 		return nil, 0, fmt.Errorf("failed to list httproutes: %w", err)
 	}
 
-	for _, gw := range relevantGateways {
-		for _, route := range routes.Items {
-			for _, parentRef := range route.Spec.ParentRefs {
-				if !isGatewayParentRef(parentRef) {
-					continue
-				}
-
-				parentNS := route.Namespace
-				if parentRef.Namespace != nil {
-					parentNS = string(*parentRef.Namespace)
-				}
-
-				if string(parentRef.Name) == gw.Name && parentNS == gw.Namespace {
-					hostnames := routeHostnamesForGateway(&route, &gw, parentRef)
-					if len(hostnames) == 0 {
-						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
-							"skipping HTTPRoute %s/%s: no route hostnames and no matching listener hostname", route.Namespace, route.Name)
-						continue
-					}
-
-					routeRules, err := r.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, &route, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil, runtime)
-					if err != nil {
-						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
-							"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
-						break
-					}
-					rules = append(rules, routeRules...)
-					routeCount++
-				}
+	for _, route := range routes.Items {
+		for _, parentRef := range route.Spec.ParentRefs {
+			parentNS := route.Namespace
+			if parentRef.Namespace != nil {
+				parentNS = string(*parentRef.Namespace)
 			}
+			_, ok := relevantGateways[types.NamespacedName{Namespace: parentNS, Name: string(parentRef.Name)}]
+			if !ok {
+				continue
+			}
+
+			eval, err := evaluateHTTPRouteParentRef(ctx, r.Client, &route, parentRef, httpRouteParentEvaluationOptions{})
+			if err != nil {
+				return nil, 0, err
+			}
+			if !eval.Accepted {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
+					"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, eval.Message)
+				continue
+			}
+			hostnames := acceptedHTTPRouteHostnames(&route, eval.AcceptedListeners)
+			if len(hostnames) == 0 {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
+					"skipping HTTPRoute %s/%s: no route hostnames and no matching listener hostname", route.Namespace, route.Name)
+				continue
+			}
+
+			backendCondition := validateHTTPRouteBackendRefs(ctx, r.Client, &route)
+			if backendCondition.Status == metav1.ConditionFalse {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
+					"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, backendCondition.Message)
+				continue
+			}
+
+			routeRules, err := r.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, &route, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil, runtime)
+			if err != nil {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
+					"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
+				continue
+			}
+			rules = append(rules, routeRules...)
+			routeCount += len(routeRules)
 		}
 	}
 
@@ -1214,6 +1231,10 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 
 			protocol := "http"
 			originRequest := &cloudflare.OriginRequestConfig{}
+			effectiveOriginRequest := cloudflareOriginRequestFromTunnelDefaults(runtime.originDefaults)
+			if effectiveOriginRequest == nil {
+				effectiveOriginRequest = &cloudflare.OriginRequestConfig{}
+			}
 			originPolicy, err := r.originPolicyForRule(ctx, route, rule)
 			if err != nil {
 				return nil, err
@@ -1223,15 +1244,25 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 			} else if policyProtocol != "" {
 				protocol = policyProtocol
 			}
+			if _, err := applyOriginPolicy(effectiveOriginRequest, originPolicy, runtime.namedCAPoolPaths); err != nil {
+				return nil, err
+			}
 
 			backendTLSPolicy, err := r.backendTLSPolicyForBackend(ctx, backendNS, string(backend.Name))
 			if err != nil {
 				return nil, err
 			}
+			backendTLSForcesHTTPS := false
 			if usesHTTPS, err := applyBackendTLSPolicy(originRequest, backendTLSPolicy, runtime.backendTLSCAPoolPaths); err != nil {
 				return nil, err
 			} else if usesHTTPS {
+				backendTLSForcesHTTPS = true
 				protocol = "https"
+			}
+			if usesHTTPS, err := applyBackendTLSPolicy(effectiveOriginRequest, backendTLSPolicy, runtime.backendTLSCAPoolPaths); err != nil {
+				return nil, err
+			} else if usesHTTPS {
+				backendTLSForcesHTTPS = true
 			}
 
 			annotationProtocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
@@ -1242,8 +1273,7 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 			service := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
 				protocol, backend.Name, backendNS, servicePort)
 
-			originConfig := cloudflared.BuildOriginConfig(nil, route.Annotations)
-			annotationOriginRequest := cloudflaredOriginRequestToCloudflare(originConfig)
+			annotationOriginRequest := cloudflareOriginRequestFromRouteAnnotations(route)
 			if capoolRef := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPoolRef); capoolRef != "" {
 				path, ok := runtime.namedCAPoolPaths[capoolRef]
 				if !ok {
@@ -1256,6 +1286,10 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 				annotationOriginRequest.CAPool = path
 			}
 			originRequest = mergeOriginRequest(originRequest, annotationOriginRequest)
+			effectiveOriginRequest = mergeOriginRequest(effectiveOriginRequest, annotationOriginRequest)
+			if err := validateRouteOriginRequest(route, effectiveOriginRequest, service, backendTLSForcesHTTPS); err != nil {
+				return nil, err
+			}
 
 			if len(rule.Matches) == 0 {
 				rules = append(rules, cloudflare.IngressRule{
@@ -1286,13 +1320,17 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 
 func validateRouteOriginCAPool(route *gateway.HTTPRoute, originCAPoolMounted bool, namedCAPoolPaths map[string]string) error {
 	caPoolRef := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPoolRef)
+	caPool := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPool)
+	if caPoolRef != "" && caPool != "" {
+		return fmt.Errorf("route %s/%s: %s and %s are mutually exclusive",
+			route.Namespace, route.Name, annotations.AnnotationOriginCAPool, annotations.AnnotationOriginCAPoolRef)
+	}
 	if caPoolRef != "" {
 		if _, ok := namedCAPoolPaths[caPoolRef]; !ok {
 			return fmt.Errorf("route %s/%s: %s references unknown origin CA pool %q",
 				route.Namespace, route.Name, annotations.AnnotationOriginCAPoolRef, caPoolRef)
 		}
 	}
-	caPool := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPool)
 	if caPool == "" {
 		return nil
 	}
@@ -1338,6 +1376,78 @@ func validateRouteOriginCAPool(route *gateway.HTTPRoute, originCAPoolMounted boo
 		route.Namespace, route.Name, annotations.AnnotationOriginCAPool)
 }
 
+func cloudflareOriginRequestFromTunnelDefaults(defaults *cfgatev1alpha1.OriginDefaults) *cloudflare.OriginRequestConfig {
+	if defaults == nil {
+		return nil
+	}
+	if defaults.ConnectTimeout == "" &&
+		!defaults.NoTLSVerify &&
+		!defaults.HTTP2Origin &&
+		!defaults.H2cOrigin &&
+		defaults.CAPoolSecretRef == nil {
+		return nil
+	}
+	config := &cloudflare.OriginRequestConfig{
+		ConnectTimeout: defaults.ConnectTimeout,
+		NoTLSVerify:    defaults.NoTLSVerify,
+		HTTP2Origin:    defaults.HTTP2Origin,
+		H2cOrigin:      defaults.H2cOrigin,
+	}
+	if defaults.CAPoolSecretRef != nil {
+		config.CAPool = cloudflared.OriginCAPoolPath()
+	}
+	return config
+}
+
+func cloudflareOriginRequestFromRouteAnnotations(route *gateway.HTTPRoute) *cloudflare.OriginRequestConfig {
+	config := &cloudflare.OriginRequestConfig{}
+	if value := annotations.GetAnnotation(route, annotations.AnnotationOriginConnectTimeout); value != "" {
+		config.ConnectTimeout = value
+	}
+	if value := annotations.GetAnnotation(route, annotations.AnnotationOriginHTTPHostHeader); value != "" {
+		config.HTTPHostHeader = value
+	}
+	if value := annotations.GetAnnotation(route, annotations.AnnotationOriginServerName); value != "" {
+		config.OriginServerName = value
+	}
+	if value := annotations.GetAnnotation(route, annotations.AnnotationOriginCAPool); value != "" {
+		config.CAPool = value
+	}
+	if value, present := annotations.GetAnnotationBoolValue(route, annotations.AnnotationOriginSSLVerify); present {
+		config.NoTLSVerify = !value
+		config.NoTLSVerifySet = true
+	}
+	if value, present := annotations.GetAnnotationBoolValue(route, annotations.AnnotationOriginHTTP2); present {
+		config.HTTP2Origin = value
+		config.HTTP2OriginSet = true
+	}
+	if value, present := annotations.GetAnnotationBoolValue(route, annotations.AnnotationOriginH2c); present {
+		config.H2cOrigin = value
+		config.H2cOriginSet = true
+	}
+	if originRequestEmpty(config) {
+		return nil
+	}
+	return config
+}
+
+func validateRouteOriginRequest(route *gateway.HTTPRoute, config *cloudflare.OriginRequestConfig, service string, backendTLSForcesHTTPS bool) error {
+	if config != nil && config.HTTP2Origin && config.H2cOrigin {
+		return fmt.Errorf("route %s/%s: http2Origin and h2cOrigin are mutually exclusive", route.Namespace, route.Name)
+	}
+	if config != nil && config.H2cOrigin {
+		switch {
+		case config.HTTP2Origin:
+			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP and cannot be combined with http2Origin", route.Namespace, route.Name)
+		case strings.HasPrefix(service, "https://") || strings.HasPrefix(service, "wss://"):
+			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP origin service", route.Namespace, route.Name)
+		case backendTLSForcesHTTPS:
+			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP origin service and is incompatible with BackendTLSPolicy", route.Namespace, route.Name)
+		}
+	}
+	return nil
+}
+
 func effectiveHTTPRouteHostnames(route *gateway.HTTPRoute) []gateway.Hostname {
 	if host := annotations.GetAnnotation(route, annotations.AnnotationHostname); host != "" {
 		return []gateway.Hostname{gateway.Hostname(host)}
@@ -1373,24 +1483,6 @@ func routeHostnamesForGateway(route *gateway.HTTPRoute, gw *gateway.Gateway, par
 		hostnames = append(hostnames, *listener.Hostname)
 	}
 	return hostnames
-}
-
-func cloudflaredOriginRequestToCloudflare(config *cloudflared.OriginRequestConfig) *cloudflare.OriginRequestConfig {
-	if config == nil {
-		return nil
-	}
-	return &cloudflare.OriginRequestConfig{
-		ConnectTimeout:         config.ConnectTimeout,
-		TLSTimeout:             config.TLSTimeout,
-		NoTLSVerify:            config.NoTLSVerify,
-		HTTP2Origin:            config.HTTP2Origin,
-		H2cOrigin:              config.H2cOrigin,
-		HTTPHostHeader:         config.HTTPHostHeader,
-		OriginServerName:       config.OriginServerName,
-		CAPool:                 config.CAPool,
-		DisableChunkedEncoding: config.DisableChunkedEncoding,
-		MatchSNIToHost:         config.MatchSNIToHost,
-	}
 }
 
 func cloudflaredPathRegex(match gateway.HTTPRouteMatch) (string, error) {
