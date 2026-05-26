@@ -134,7 +134,7 @@ spec:
                     maxItems: 20
                     type: array
                   image:
-                    default: ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.1
+                    default: ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2
                     description: Image is the cloudflared container image.
                     maxLength: 255
                     type: string

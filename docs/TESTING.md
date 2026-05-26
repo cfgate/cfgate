@@ -30,7 +30,7 @@ Current tunnel correctness coverage includes:
 - HTTPRoute unsupported backend status for multiple backendRefs and non-Service backend group/kind values
 - CloudflareAccessApplication runtime validation for stale non-`self_hosted` application types
 
-E2E image assumptions use the cfgate cloudflared fork. h2c-specific E2E assertions require `ghcr.io/inherent-design/cloudflared:*‑h2c.*`; upstream cloudflared image overrides are no-h2c mode only.
+E2E image assumptions use the cfgate cloudflared fork. h2c-specific E2E assertions require `ghcr.io/inherent-design/cloudflared:*-h2c.*`; upstream cloudflared image overrides are no-h2c mode only.
 
 ```bash
 mise run test          # unit tests

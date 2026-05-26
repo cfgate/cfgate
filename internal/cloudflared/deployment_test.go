@@ -2,6 +2,8 @@ package cloudflared
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -34,6 +36,41 @@ func newDeploymentTestTunnel(name string, opts ...func(*cfgatev1alpha1.Cloudflar
 		opt(tunnel)
 	}
 	return tunnel
+}
+
+func TestDefaultImageContract(t *testing.T) {
+	expected := "ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2"
+	if DefaultImage != expected {
+		t.Fatalf("DefaultImage = %q, want %q", DefaultImage, expected)
+	}
+
+	files := map[string]string{
+		"api":  filepath.Join("..", "..", "api", "v1alpha1", "cloudflaretunnel_types.go"),
+		"crd":  filepath.Join("..", "..", "config", "crd", "bases", "cfgate.io_cloudflaretunnels.yaml"),
+		"docs": filepath.Join("..", "..", "docs", "cloudflare-tunnel.md"),
+	}
+	contents := make(map[string]string, len(files))
+	for name, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s default image source %s: %v", name, path, err)
+		}
+		contents[name] = string(data)
+	}
+
+	if want := `+kubebuilder:default="` + expected + `"`; !strings.Contains(contents["api"], want) {
+		t.Fatalf("api default image missing %q", want)
+	}
+	if want := "default: " + expected; !strings.Contains(contents["crd"], want) {
+		t.Fatalf("crd default image missing %q", want)
+	}
+	if !strings.Contains(contents["docs"], expected) {
+		t.Fatalf("docs default image missing %q", expected)
+	}
+	oldTag := strings.TrimSuffix(expected, "2") + "1"
+	if strings.Contains(contents["docs"], oldTag) {
+		t.Fatalf("docs still reference %s", oldTag)
+	}
 }
 
 func TestOriginCAPoolVolumeNameFor(t *testing.T) {
