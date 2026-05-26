@@ -31,21 +31,36 @@ type originRuntime struct {
 	backendTLSCAPoolPaths map[types.NamespacedName]string
 }
 
+type originRuntimeState struct {
+	backendTLSPolicies []gateway.BackendTLSPolicy
+	originCAPoolMounts []cloudflared.OriginCAPoolMount
+	runtime            *originRuntime
+}
+
 func (r *CloudflareTunnelReconciler) buildOriginRuntime(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (*originRuntime, error) {
+	state, err := r.resolveOriginRuntimeState(ctx, tunnel)
+	if err != nil {
+		return nil, err
+	}
+	return state.runtime, nil
+}
+
+func (r *CloudflareTunnelReconciler) resolveOriginRuntimeState(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (*originRuntimeState, error) {
 	backendTLSPolicies, err := r.backendTLSPoliciesForTunnel(ctx, tunnel)
 	if err != nil {
 		return nil, err
 	}
-	_, namedPaths, backendTLSPaths, err := r.resolveOriginCAPoolMounts(ctx, tunnel, backendTLSPolicies)
+	originCAPoolMounts, namedPaths, backendTLSPaths, err := r.resolveOriginCAPoolMounts(ctx, tunnel, backendTLSPolicies)
 	if err != nil {
 		return nil, err
 	}
-	if err := r.syncGeneratedOriginCASecrets(ctx, tunnel, backendTLSPolicies); err != nil {
-		return nil, err
-	}
-	return &originRuntime{
-		namedCAPoolPaths:      namedPaths,
-		backendTLSCAPoolPaths: backendTLSPaths,
+	return &originRuntimeState{
+		backendTLSPolicies: backendTLSPolicies,
+		originCAPoolMounts: originCAPoolMounts,
+		runtime: &originRuntime{
+			namedCAPoolPaths:      namedPaths,
+			backendTLSCAPoolPaths: backendTLSPaths,
+		},
 	}, nil
 }
 

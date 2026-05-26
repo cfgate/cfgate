@@ -792,6 +792,38 @@ func TestBackendTLSPolicyMountsScopedToTunnelBackends(t *testing.T) {
 	}
 }
 
+func TestBuildOriginRuntimeDoesNotWriteGeneratedSecrets(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := tunnelForOriginRuntimeTest()
+	gw := gatewayForTunnelTest()
+	route := routeForBackendTest("app-route", "apps", "app")
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	ca := caConfigMapForTest("ca-app", "apps")
+	reconciler := &CloudflareTunnelReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(tunnel, gw, route, policy, ca).
+			Build(),
+		Scheme: scheme,
+	}
+
+	runtime, err := reconciler.buildOriginRuntime(ctx, tunnel)
+	if err != nil {
+		t.Fatalf("buildOriginRuntime() error = %v", err)
+	}
+	if _, ok := runtime.backendTLSCAPoolPaths[types.NamespacedName{Namespace: "apps", Name: "tls-app"}]; !ok {
+		t.Fatalf("backendTLSCAPoolPaths = %#v, want apps/tls-app", runtime.backendTLSCAPoolPaths)
+	}
+
+	secretName := generatedOriginCASecretName(tunnel.Name, "backendtls", "apps", "tls-app", "ca-app")
+	var generated corev1.Secret
+	err = reconciler.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: secretName}, &generated)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("generated Secret get error = %v, want not found", err)
+	}
+}
+
 func TestGeneratedOriginCASecretsScopedAndPruned(t *testing.T) {
 	ctx := context.Background()
 	scheme := controllerTestScheme(t)
