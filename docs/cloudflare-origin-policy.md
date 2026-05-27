@@ -20,7 +20,7 @@ Origin settings resolve from lowest to highest precedence:
 3. Gateway API `BackendTLSPolicy` on the backend `Service`
 4. HTTPRoute explicit cfgate annotations
 
-Annotations remain the alpha-line legacy override. `BackendTLSPolicy` is preferred for standard backend TLS validation when it fits. Use `CloudflareOriginPolicy` for cfgate/cloudflared settings that Gateway API does not standardize.
+Annotations remain the alpha-line legacy override for overrideable fields. They cannot violate transport invariants. `BackendTLSPolicy` is preferred for standard backend TLS validation when it fits. Use `CloudflareOriginPolicy` for cfgate/cloudflared settings that Gateway API does not standardize.
 
 When both deprecated flat aliases and nested fields are set on a `CloudflareOriginPolicy`, nested fields win. Policies that target the same route section use Gateway API policy precedence: older `creationTimestamp` wins, and ties sort by `namespace/name`.
 
@@ -35,6 +35,8 @@ Origin transport settings must produce a cloudflared-valid origin service. cfgat
 - `h2cOrigin` is invalid with `spec.origin.protocol: https`.
 - `h2cOrigin` is invalid when BackendTLSPolicy applies to the same backend, because BackendTLSPolicy forces HTTPS origin service generation.
 - `h2cOrigin` is invalid for generated service URLs that use `https://` or `wss://`.
+- `cfgate.io/origin-protocol: http` conflicts with BackendTLSPolicy on the same backend, because BackendTLSPolicy requires HTTPS origin service generation.
+- `cfgate.io/origin-protocol: https` is allowed with BackendTLSPolicy but is redundant.
 
 ## Boolean Override Semantics
 
@@ -119,7 +121,7 @@ BackendTLSPolicy targets Kubernetes `Service` resources only. When accepted for 
 - Uses system trust and no `caPool` override for `wellKnownCACertificates: System`.
 - Rejects unsupported BackendTLSPolicy fields in status and gives them no runtime effect.
 
-Because BackendTLSPolicy forces HTTPS origin service generation, it conflicts with effective `h2cOrigin` on the same backend.
+Because BackendTLSPolicy forces HTTPS origin service generation, it conflicts with effective `h2cOrigin` on the same backend. It also conflicts with `cfgate.io/origin-protocol: http`; cfgate skips that route and emits a warning/error. `cfgate.io/origin-protocol: https` is valid but redundant because the policy already forces HTTPS.
 
 ## Status Conditions
 

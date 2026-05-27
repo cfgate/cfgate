@@ -17,9 +17,8 @@ import (
 )
 
 type httpRouteParentEvaluationOptions struct {
-	requireTunnelRef      bool
-	validatePathMatches   bool
-	includeForeignParents bool
+	requireTunnelRef    bool
+	validatePathMatches bool
 }
 
 type httpRouteParentEvaluation struct {

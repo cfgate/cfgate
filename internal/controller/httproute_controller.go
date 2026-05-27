@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -22,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/controller/annotations"
@@ -465,52 +463,6 @@ func parsePolicyRef(ref string, defaultNS string) (string, string, error) {
 	return annotations.ParseNamespacedName(ref, defaultNS)
 }
 
-func (r *HTTPRouteReconciler) routeAllowedByListeners(
-	ctx context.Context,
-	route *gwapiv1.HTTPRoute,
-	gateway *gwapiv1.Gateway,
-	ref gwapiv1.ParentReference,
-) (bool, string, string) {
-	foundListener := false
-	hostnameMismatch := false
-	for _, listener := range gateway.Spec.Listeners {
-		if ref.SectionName != nil && listener.Name != *ref.SectionName {
-			continue
-		}
-		foundListener = true
-		if listener.Protocol != gwapiv1.HTTPProtocolType && listener.Protocol != gwapiv1.HTTPSProtocolType {
-			continue
-		}
-		if !listenerAllowsHTTPRouteKind(listener) {
-			continue
-		}
-		if !r.listenerAllowsRouteNamespace(ctx, route, gateway, listener) {
-			continue
-		}
-		if !listenerHostnameCompatible(route, listener) {
-			hostnameMismatch = true
-			continue
-		}
-		return true, "Accepted", "Route accepted by Gateway"
-	}
-
-	if hostnameMismatch {
-		if ref.SectionName != nil {
-			return false, status.ReasonNoMatchingListenerHostname,
-				fmt.Sprintf("Route hostnames are not compatible with listener %s", *ref.SectionName)
-		}
-		return false, status.ReasonNoMatchingListenerHostname, "No matching listener hostname found"
-	}
-
-	if !foundListener {
-		if ref.SectionName != nil {
-			return false, status.ReasonNoMatchingListenerHostname, fmt.Sprintf("Listener %s not found", *ref.SectionName)
-		}
-		return false, status.ReasonNoMatchingListenerHostname, "No compatible listener found"
-	}
-	return false, status.ReasonNotAllowedByListeners, "Route is not allowed by Gateway listeners"
-}
-
 func validateCloudflaredPathMatches(route *gwapiv1.HTTPRoute) error {
 	for _, rule := range route.Spec.Rules {
 		for _, match := range rule.Matches {
@@ -535,42 +487,6 @@ func listenerAllowsHTTPRouteKind(listener gwapiv1.Listener) bool {
 		}
 	}
 	return false
-}
-
-func (r *HTTPRouteReconciler) listenerAllowsRouteNamespace(
-	ctx context.Context,
-	route *gwapiv1.HTTPRoute,
-	gateway *gwapiv1.Gateway,
-	listener gwapiv1.Listener,
-) bool {
-	from := gwapiv1.NamespacesFromSame
-	var selector *metav1.LabelSelector
-	if listener.AllowedRoutes != nil && listener.AllowedRoutes.Namespaces != nil {
-		if listener.AllowedRoutes.Namespaces.From != nil {
-			from = *listener.AllowedRoutes.Namespaces.From
-		}
-		selector = listener.AllowedRoutes.Namespaces.Selector
-	}
-
-	switch from {
-	case gwapiv1.NamespacesFromAll:
-		return true
-	case gwapiv1.NamespacesFromSelector:
-		if selector == nil {
-			return false
-		}
-		labelSelector, err := metav1.LabelSelectorAsSelector(selector)
-		if err != nil {
-			return false
-		}
-		var ns corev1.Namespace
-		if err := r.Get(ctx, types.NamespacedName{Name: route.Namespace}, &ns); err != nil {
-			return false
-		}
-		return labelSelector.Matches(labels.Set(ns.Labels))
-	default:
-		return route.Namespace == gateway.Namespace
-	}
 }
 
 func listenerHostnameCompatible(route *gwapiv1.HTTPRoute, listener gwapiv1.Listener) bool {
@@ -629,33 +545,4 @@ func validateCloudflaredPathMatch(match gwapiv1.HTTPRouteMatch) error {
 	default:
 		return fmt.Errorf("unsupported path match type %q", matchType)
 	}
-}
-
-func (r *HTTPRouteReconciler) backendReferencePermitted(ctx context.Context, fromNamespace, toNamespace, serviceName string) (bool, error) {
-	var grants gwapiv1b1.ReferenceGrantList
-	if err := r.List(ctx, &grants, client.InNamespace(toNamespace)); err != nil {
-		return false, err
-	}
-
-	for _, grant := range grants.Items {
-		fromOK := false
-		for _, from := range grant.Spec.From {
-			if from.Group == gwapiv1.GroupName && from.Kind == "HTTPRoute" && string(from.Namespace) == fromNamespace {
-				fromOK = true
-				break
-			}
-		}
-		if !fromOK {
-			continue
-		}
-		for _, to := range grant.Spec.To {
-			if to.Group != "" || to.Kind != "Service" {
-				continue
-			}
-			if to.Name == nil || string(*to.Name) == serviceName {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
 }

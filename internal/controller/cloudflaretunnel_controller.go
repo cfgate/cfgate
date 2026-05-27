@@ -1112,6 +1112,11 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 		return nil, 0, fmt.Errorf("failed to list httproutes: %w", err)
 	}
 
+	lookups, err := r.loadOriginRulePolicyLookups(ctx, candidateHTTPRoutesForGateways(routes.Items, relevantGateways))
+	if err != nil {
+		return nil, 0, err
+	}
+
 	for _, route := range routes.Items {
 		for _, parentRef := range route.Spec.ParentRefs {
 			parentNS := route.Namespace
@@ -1146,7 +1151,7 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 				continue
 			}
 
-			routeRules, err := r.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, &route, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil, runtime)
+			routeRules, err := r.buildRulesFromHTTPRouteForHostnamesWithRuntimeAndLookups(ctx, &route, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil, runtime, lookups)
 			if err != nil {
 				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
 					"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
@@ -1174,6 +1179,23 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 	return rules, routeCount, nil
 }
 
+func candidateHTTPRoutesForGateways(routes []gateway.HTTPRoute, gateways map[types.NamespacedName]gateway.Gateway) []gateway.HTTPRoute {
+	candidates := make([]gateway.HTTPRoute, 0, len(routes))
+	for _, route := range routes {
+		for _, parentRef := range route.Spec.ParentRefs {
+			parentNS := route.Namespace
+			if parentRef.Namespace != nil {
+				parentNS = string(*parentRef.Namespace)
+			}
+			if _, ok := gateways[types.NamespacedName{Namespace: parentNS, Name: string(parentRef.Name)}]; ok {
+				candidates = append(candidates, route)
+				break
+			}
+		}
+	}
+	return candidates
+}
+
 // buildRulesFromHTTPRoute builds ingress rules from an HTTPRoute by iterating
 // all hostnames and all matches per rule. Returns an error if a rule has
 // multiple backendRefs (Cloudflare tunnel ingress is 1:1) or an unsupported
@@ -1193,6 +1215,14 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnames(route *
 }
 
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx context.Context, route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool, runtime *originRuntime) ([]cloudflare.IngressRule, error) {
+	lookups, err := r.loadOriginRulePolicyLookups(ctx, []gateway.HTTPRoute{*route})
+	if err != nil {
+		return nil, err
+	}
+	return r.buildRulesFromHTTPRouteForHostnamesWithRuntimeAndLookups(ctx, route, hostnames, originCAPoolMounted, runtime, lookups)
+}
+
+func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRuntimeAndLookups(ctx context.Context, route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool, runtime *originRuntime, lookups originRulePolicyLookups) ([]cloudflare.IngressRule, error) {
 	var rules []cloudflare.IngressRule
 	if err := validateRouteOriginCAPool(route, originCAPoolMounted, runtime.namedCAPoolPaths); err != nil {
 		return nil, err
@@ -1235,7 +1265,7 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 			if effectiveOriginRequest == nil {
 				effectiveOriginRequest = &cloudflare.OriginRequestConfig{}
 			}
-			originPolicy, err := r.originPolicyForRule(ctx, route, rule)
+			originPolicy, err := r.originPolicyForRule(ctx, lookups.originPolicies, route, rule)
 			if err != nil {
 				return nil, err
 			}
@@ -1248,10 +1278,7 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 				return nil, err
 			}
 
-			backendTLSPolicy, err := r.backendTLSPolicyForBackend(ctx, backendNS, string(backend.Name))
-			if err != nil {
-				return nil, err
-			}
+			backendTLSPolicy := backendTLSPolicyForBackend(lookups.backendTLSPoliciesByNamespace[backendNS], string(backend.Name))
 			backendTLSForcesHTTPS := false
 			if usesHTTPS, err := applyBackendTLSPolicy(originRequest, backendTLSPolicy, runtime.backendTLSCAPoolPaths); err != nil {
 				return nil, err
@@ -1266,6 +1293,10 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 			}
 
 			annotationProtocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
+			if backendTLSForcesHTTPS && annotationProtocol == "http" {
+				return nil, fmt.Errorf("route %s/%s: %s=http conflicts with BackendTLSPolicy %s/%s requiring HTTPS origin service",
+					route.Namespace, route.Name, annotations.AnnotationOriginProtocol, backendTLSPolicy.Namespace, backendTLSPolicy.Name)
+			}
 			if annotationProtocol == "https" || annotationProtocol == "http" {
 				protocol = annotationProtocol
 			}
@@ -1439,10 +1470,10 @@ func validateRouteOriginRequest(route *gateway.HTTPRoute, config *cloudflare.Ori
 		switch {
 		case config.HTTP2Origin:
 			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP and cannot be combined with http2Origin", route.Namespace, route.Name)
-		case strings.HasPrefix(service, "https://") || strings.HasPrefix(service, "wss://"):
-			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP origin service", route.Namespace, route.Name)
 		case backendTLSForcesHTTPS:
 			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP origin service and is incompatible with BackendTLSPolicy", route.Namespace, route.Name)
+		case strings.HasPrefix(service, "https://") || strings.HasPrefix(service, "wss://"):
+			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP origin service", route.Namespace, route.Name)
 		}
 	}
 	return nil

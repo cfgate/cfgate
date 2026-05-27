@@ -8,7 +8,7 @@ Per-route configuration applied to Gateway API HTTPRoute resources.
 
 | Annotation | Values | Default | Description |
 |---|---|---|---|
-| `cfgate.io/origin-protocol` | `http`, `https` | `http` | Backend protocol |
+| `cfgate.io/origin-protocol` | `http`, `https` | `http` | Backend protocol; cannot downgrade BackendTLSPolicy |
 | `cfgate.io/origin-ssl-verify` | `true`, `false` | `true` | TLS certificate verification |
 | `cfgate.io/origin-connect-timeout` | Duration string (`30s`, `1m`) | `30s` | Origin connection timeout |
 | `cfgate.io/origin-http-host-header` | Hostname string | *none* | Host header override sent to origin |
@@ -44,6 +44,8 @@ Specifies the protocol used to connect from cloudflared to the backend service.
 When set to `https`, cloudflared opens a TLS connection to the origin. Combine with `origin-ssl-verify: "false"` if the origin uses a self-signed certificate.
 
 `origin-protocol: https` is invalid with effective `cfgate.io/origin-h2c: "true"`. h2c is cleartext HTTP/2 and requires HTTP origin protocol.
+
+Annotations have highest precedence for overrideable origin fields, but they cannot violate transport invariants. Gateway API `BackendTLSPolicy` forces HTTPS origin service generation. `origin-protocol: http` conflicts with BackendTLSPolicy on the same backend, so cfgate skips the route and emits a warning/error. `origin-protocol: https` is allowed with BackendTLSPolicy but redundant.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1

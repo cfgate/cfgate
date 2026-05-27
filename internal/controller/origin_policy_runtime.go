@@ -38,6 +38,11 @@ type originRuntimeState struct {
 	runtime            *originRuntime
 }
 
+type originRulePolicyLookups struct {
+	originPolicies                []cfgatev1alpha1.CloudflareOriginPolicy
+	backendTLSPoliciesByNamespace map[string][]gateway.BackendTLSPolicy
+}
+
 func (r *CloudflareTunnelReconciler) buildOriginRuntime(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (*originRuntime, error) {
 	state, err := r.resolveOriginRuntimeState(ctx, tunnel)
 	if err != nil {
@@ -383,20 +388,58 @@ func referenceGrantPermits(ctx context.Context, reader client.Reader, fromNamesp
 	return false, nil
 }
 
-func (r *CloudflareTunnelReconciler) originPolicyForRule(ctx context.Context, route *gateway.HTTPRoute, rule gateway.HTTPRouteRule) (*cfgatev1alpha1.CloudflareOriginPolicy, error) {
+func (r *CloudflareTunnelReconciler) loadOriginRulePolicyLookups(ctx context.Context, routes []gateway.HTTPRoute) (originRulePolicyLookups, error) {
+	lookups := originRulePolicyLookups{
+		backendTLSPoliciesByNamespace: map[string][]gateway.BackendTLSPolicy{},
+	}
 	if r == nil || r.Client == nil {
+		return lookups, nil
+	}
+
+	var originPolicies cfgatev1alpha1.CloudflareOriginPolicyList
+	if err := r.List(ctx, &originPolicies); err != nil {
+		return lookups, fmt.Errorf("list CloudflareOriginPolicies: %w", err)
+	}
+	lookups.originPolicies = originPolicies.Items
+
+	namespaces := map[string]struct{}{}
+	for _, route := range routes {
+		for _, rule := range route.Spec.Rules {
+			service, ok := routeRuleBackendService(route.Namespace, rule)
+			if ok {
+				namespaces[service.Namespace] = struct{}{}
+			}
+		}
+	}
+	namespaceList := make([]string, 0, len(namespaces))
+	for namespace := range namespaces {
+		namespaceList = append(namespaceList, namespace)
+	}
+	sort.Strings(namespaceList)
+	for _, namespace := range namespaceList {
+		var policies gateway.BackendTLSPolicyList
+		if err := r.List(ctx, &policies, client.InNamespace(namespace)); err != nil {
+			return lookups, fmt.Errorf("list BackendTLSPolicies in %s: %w", namespace, err)
+		}
+		sortBackendTLSPolicies(policies.Items)
+		lookups.backendTLSPoliciesByNamespace[namespace] = policies.Items
+	}
+	return lookups, nil
+}
+
+func (r *CloudflareTunnelReconciler) originPolicyForRule(ctx context.Context, policies []cfgatev1alpha1.CloudflareOriginPolicy, route *gateway.HTTPRoute, rule gateway.HTTPRouteRule) (*cfgatev1alpha1.CloudflareOriginPolicy, error) {
+	if len(policies) == 0 {
 		return nil, nil
 	}
-	var policies cfgatev1alpha1.CloudflareOriginPolicyList
-	if err := r.List(ctx, &policies); err != nil {
-		return nil, fmt.Errorf("list CloudflareOriginPolicies: %w", err)
-	}
 	var matches []cfgatev1alpha1.CloudflareOriginPolicy
-	for _, policy := range policies.Items {
+	for _, policy := range policies {
 		if !originPolicyTargetsRoute(policy, route, rule) {
 			continue
 		}
 		if policy.Namespace != route.Namespace {
+			if r == nil || r.Client == nil {
+				continue
+			}
 			ok, err := referenceGrantPermits(ctx, r.Client, policy.Namespace, route.Namespace, cfgatev1alpha1.GroupVersion.Group, "CloudflareOriginPolicy", gateway.GroupName, "HTTPRoute", route.Name)
 			if err != nil {
 				return nil, fmt.Errorf("checking CloudflareOriginPolicy ReferenceGrant: %w", err)
@@ -452,12 +495,13 @@ func sortOriginPolicies(policies []cfgatev1alpha1.CloudflareOriginPolicy) {
 	})
 }
 
+// applyOriginPolicy mutates config in place. config must be non-nil when policy is non-nil.
 func applyOriginPolicy(config *cloudflare.OriginRequestConfig, policy *cfgatev1alpha1.CloudflareOriginPolicy, namedPaths map[string]string) (string, error) {
 	if policy == nil {
 		return "", nil
 	}
 	if config == nil {
-		config = &cloudflare.OriginRequestConfig{}
+		return "", fmt.Errorf("CloudflareOriginPolicy %s/%s requires non-nil origin request config", policy.Namespace, policy.Name)
 	}
 	origin := policy.Spec.Origin
 	protocol := string(origin.Protocol)
@@ -539,25 +583,18 @@ func routeRuleBackendService(routeNamespace string, rule gateway.HTTPRouteRule) 
 	return types.NamespacedName{Namespace: backendNS, Name: string(backend.Name)}, true
 }
 
-func (r *CloudflareTunnelReconciler) backendTLSPolicyForBackend(ctx context.Context, backendNS, backendName string) (*gateway.BackendTLSPolicy, error) {
-	if r == nil || r.Client == nil {
-		return nil, nil
-	}
-	var policies gateway.BackendTLSPolicyList
-	if err := r.List(ctx, &policies, client.InNamespace(backendNS)); err != nil {
-		return nil, fmt.Errorf("list BackendTLSPolicies in %s: %w", backendNS, err)
-	}
+func backendTLSPolicyForBackend(policies []gateway.BackendTLSPolicy, backendName string) *gateway.BackendTLSPolicy {
 	var matches []gateway.BackendTLSPolicy
-	for _, policy := range policies.Items {
+	for _, policy := range policies {
 		if backendTLSPolicyTargetsService(policy, backendName) {
 			matches = append(matches, policy)
 		}
 	}
 	if len(matches) == 0 {
-		return nil, nil
+		return nil
 	}
 	sortBackendTLSPolicies(matches)
-	return &matches[0], nil
+	return &matches[0]
 }
 
 func sortBackendTLSPolicies(policies []gateway.BackendTLSPolicy) {
@@ -602,9 +639,13 @@ func backendTLSPolicyCAConfigMap(policy gateway.BackendTLSPolicy) (string, bool)
 	return string(ref.Name), true
 }
 
+// applyBackendTLSPolicy mutates config in place. config must be non-nil when policy is non-nil.
 func applyBackendTLSPolicy(config *cloudflare.OriginRequestConfig, policy *gateway.BackendTLSPolicy, caPoolPaths map[types.NamespacedName]string) (bool, error) {
 	if policy == nil {
 		return false, nil
+	}
+	if config == nil {
+		return false, fmt.Errorf("BackendTLSPolicy %s/%s requires non-nil origin request config", policy.Namespace, policy.Name)
 	}
 	if len(policy.Spec.TargetRefs) != 1 {
 		return false, fmt.Errorf("BackendTLSPolicy %s/%s must have exactly one targetRef", policy.Namespace, policy.Name)
@@ -614,9 +655,6 @@ func applyBackendTLSPolicy(config *cloudflare.OriginRequestConfig, policy *gatew
 	}
 	if len(policy.Spec.Validation.SubjectAltNames) > 0 {
 		return false, fmt.Errorf("BackendTLSPolicy %s/%s subjectAltNames are not supported", policy.Namespace, policy.Name)
-	}
-	if config == nil {
-		config = &cloudflare.OriginRequestConfig{}
 	}
 	config.OriginServerName = string(policy.Spec.Validation.Hostname)
 	if policy.Spec.Validation.WellKnownCACertificates != nil {
