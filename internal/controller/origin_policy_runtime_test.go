@@ -21,6 +21,7 @@ import (
 	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	"cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/cloudflared"
 	"cfgate.io/cfgate/internal/controller/annotations"
 	"cfgate.io/cfgate/internal/controller/status"
@@ -129,152 +130,6 @@ func TestBuildRulesAppliesOriginPolicyBackendTLSPolicyAndAnnotations(t *testing.
 	}
 	if origin.CAPool != "/etc/cfgate/origin-ca-pools/internal/ca.pem" {
 		t.Fatalf("CAPool = %q, want annotation pool ref path", origin.CAPool)
-	}
-}
-
-func TestBuildRulesRejectsBackendTLSPolicyProtocolDowngrade(t *testing.T) {
-	ctx := context.Background()
-	scheme := controllerTestScheme(t)
-	route := routeForBackendTest("route", "apps", "app")
-	route.Annotations = map[string]string{
-		annotations.AnnotationOriginProtocol: "http",
-	}
-	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
-	reconciler := &CloudflareTunnelReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build(),
-	}
-
-	_, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, backendTLSRuntimeForTest(policy))
-	if err == nil ||
-		!strings.Contains(err.Error(), "origin-protocol") ||
-		!strings.Contains(err.Error(), "BackendTLSPolicy") ||
-		!strings.Contains(err.Error(), "HTTPS") {
-		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v, want BackendTLSPolicy protocol conflict", err)
-	}
-}
-
-func TestBuildRulesAllowsBackendTLSPolicyWithHTTPSAnnotation(t *testing.T) {
-	ctx := context.Background()
-	scheme := controllerTestScheme(t)
-	route := routeForBackendTest("route", "apps", "app")
-	route.Annotations = map[string]string{
-		annotations.AnnotationOriginProtocol: "https",
-	}
-	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
-	reconciler := &CloudflareTunnelReconciler{
-		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build(),
-	}
-
-	rules, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, backendTLSRuntimeForTest(policy))
-	if err != nil {
-		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v", err)
-	}
-	if len(rules) != 1 {
-		t.Fatalf("len(rules) = %d, want 1", len(rules))
-	}
-	if rules[0].Service != "https://app.apps.svc.cluster.local:8443" {
-		t.Fatalf("service = %q, want https service", rules[0].Service)
-	}
-}
-
-func TestBuildRulesAllowsHTTPProtocolAnnotationWithoutBackendTLSPolicy(t *testing.T) {
-	ctx := context.Background()
-	route := routeForBackendTest("route", "apps", "app")
-	route.Annotations = map[string]string{
-		annotations.AnnotationOriginProtocol: "http",
-	}
-
-	rules, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
-		namedCAPoolPaths:      map[string]string{},
-		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
-	})
-	if err != nil {
-		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v", err)
-	}
-	if len(rules) != 1 {
-		t.Fatalf("len(rules) = %d, want 1", len(rules))
-	}
-	if rules[0].Service != "http://app.apps.svc.cluster.local:8443" {
-		t.Fatalf("service = %q, want http service", rules[0].Service)
-	}
-}
-
-func TestCollectIngressRulesLoadsPolicyListsOncePerNamespace(t *testing.T) {
-	ctx := context.Background()
-	scheme := controllerTestScheme(t)
-	tunnel := tunnelForOriginRuntimeTest()
-	gw := gatewayForTunnelTest()
-	gatewayClass := cfgateGatewayClassForTunnelTest()
-	route := routeForBackendTest("route", "apps", "app")
-	port := gatewayv1.PortNumber(8443)
-	route.Spec.Rules = []gatewayv1.HTTPRouteRule{
-		{
-			BackendRefs: []gatewayv1.HTTPBackendRef{{
-				BackendRef: gatewayv1.BackendRef{
-					BackendObjectReference: gatewayv1.BackendObjectReference{
-						Name: "app",
-						Port: &port,
-					},
-				},
-			}},
-		},
-		{
-			BackendRefs: []gatewayv1.HTTPBackendRef{{
-				BackendRef: gatewayv1.BackendRef{
-					BackendObjectReference: gatewayv1.BackendObjectReference{
-						Name: "api",
-						Port: &port,
-					},
-				},
-			}},
-		},
-	}
-	appSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"}}
-	apiSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "api", Namespace: "apps"}}
-	baseClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(tunnel, gw, gatewayClass, route, appSvc, apiSvc).
-		Build()
-	countedClient := &originLookupCountingClient{Client: baseClient}
-	reconciler := &CloudflareTunnelReconciler{
-		Client:   countedClient,
-		Scheme:   scheme,
-		Recorder: &fakeEventRecorder{},
-	}
-
-	rules, count, err := reconciler.collectIngressRulesWithRuntime(ctx, tunnel, &originRuntime{
-		namedCAPoolPaths:      map[string]string{},
-		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
-	})
-	if err != nil {
-		t.Fatalf("collectIngressRulesWithRuntime() error = %v", err)
-	}
-	if len(rules) != 2 || count != 2 {
-		t.Fatalf("rules/count = %d/%d, want 2/2", len(rules), count)
-	}
-	if countedClient.originPolicyLists != 1 {
-		t.Fatalf("CloudflareOriginPolicy list calls = %d, want 1", countedClient.originPolicyLists)
-	}
-	if countedClient.backendTLSPolicyLists != 1 {
-		t.Fatalf("BackendTLSPolicy list calls = %d, want 1", countedClient.backendTLSPolicyLists)
-	}
-}
-
-func TestApplyOriginPolicyRequiresNonNilConfig(t *testing.T) {
-	policy := originPolicyForTest("origin", time.Now())
-
-	_, err := applyOriginPolicy(nil, policy, map[string]string{})
-	if err == nil || !strings.Contains(err.Error(), "requires non-nil origin request config") {
-		t.Fatalf("applyOriginPolicy() error = %v, want non-nil config contract error", err)
-	}
-}
-
-func TestApplyBackendTLSPolicyRequiresNonNilConfig(t *testing.T) {
-	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
-
-	_, err := applyBackendTLSPolicy(nil, policy, map[types.NamespacedName]string{})
-	if err == nil || !strings.Contains(err.Error(), "requires non-nil origin request config") {
-		t.Fatalf("applyBackendTLSPolicy() error = %v, want non-nil config contract error", err)
 	}
 }
 
@@ -1293,6 +1148,108 @@ func TestRouteH2cValidationRejectsNonCleartextEffectiveOrigin(t *testing.T) {
 	})
 }
 
+func TestBuildRulesRejectsBackendTLSOriginProtocolHTTPAnnotation(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	route := routeForBackendTest("route", "apps", "app")
+	route.Annotations = map[string]string{
+		annotations.AnnotationOriginProtocol: "http",
+	}
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	reconciler := &CloudflareTunnelReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build(),
+	}
+
+	_, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+		namedCAPoolPaths: map[string]string{},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{
+			{Namespace: "apps", Name: "tls-app"}: cloudflared.BackendTLSCAPoolPath("apps", "tls-app"),
+		},
+	})
+	if err == nil {
+		t.Fatal("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = nil, want BackendTLSPolicy invariant error")
+	}
+	for _, want := range []string{"apps/route", annotations.AnnotationOriginProtocol + "=http", "apps/tls-app", "HTTPS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want containing %q", err, want)
+		}
+	}
+}
+
+func TestBuildRulesAllowsBackendTLSOriginProtocolHTTPSAnnotation(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	route := routeForBackendTest("route", "apps", "app")
+	route.Annotations = map[string]string{
+		annotations.AnnotationOriginProtocol: "https",
+	}
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	reconciler := &CloudflareTunnelReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy).Build(),
+	}
+
+	rules, err := reconciler.buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+		namedCAPoolPaths: map[string]string{},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{
+			{Namespace: "apps", Name: "tls-app"}: cloudflared.BackendTLSCAPoolPath("apps", "tls-app"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].Service != "https://app.apps.svc.cluster.local:8443" {
+		t.Fatalf("rules = %#v, want one HTTPS BackendTLSPolicy rule", rules)
+	}
+}
+
+func TestBuildRulesAllowsOriginProtocolHTTPAnnotationWithoutBackendTLS(t *testing.T) {
+	ctx := context.Background()
+	route := routeForBackendTest("route", "apps", "app")
+	route.Annotations = map[string]string{
+		annotations.AnnotationOriginProtocol: "http",
+	}
+
+	rules, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, route.Spec.Hostnames, false, &originRuntime{
+		namedCAPoolPaths:      map[string]string{},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+	})
+	if err != nil {
+		t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].Service != "http://app.apps.svc.cluster.local:8443" {
+		t.Fatalf("rules = %#v, want one HTTP rule", rules)
+	}
+}
+
+func TestRouteH2cValidationRejectsServiceScheme(t *testing.T) {
+	route := routeForBackendTest("route", "apps", "app")
+	config := &cloudflare.OriginRequestConfig{H2cOrigin: true}
+	for _, service := range []string{
+		"https://app.apps.svc.cluster.local:8443",
+		"wss://app.apps.svc.cluster.local:8443",
+	} {
+		if err := validateRouteOriginRequest(route, config, service, false); err == nil || !strings.Contains(err.Error(), "h2cOrigin requires cleartext HTTP origin service") {
+			t.Fatalf("validateRouteOriginRequest(%q) error = %v, want service scheme rejection", service, err)
+		}
+	}
+}
+
+func TestApplyOriginPolicyRequiresConfigWhenPolicyExists(t *testing.T) {
+	policy := originPolicyForTest("origin", time.Now())
+	_, err := applyOriginPolicy(nil, policy, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires non-nil origin request config") {
+		t.Fatalf("applyOriginPolicy() error = %v, want nil config contract error", err)
+	}
+}
+
+func TestApplyBackendTLSPolicyRequiresConfigWhenPolicyExists(t *testing.T) {
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	_, err := applyBackendTLSPolicy(nil, policy, nil)
+	if err == nil || !strings.Contains(err.Error(), "requires non-nil origin request config") {
+		t.Fatalf("applyBackendTLSPolicy() error = %v, want nil config contract error", err)
+	}
+}
+
 func tunnelForOriginRuntimeTest() *cfgatev1alpha1.CloudflareTunnel {
 	return &cfgatev1alpha1.CloudflareTunnel{
 		ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "cfgate"},
@@ -1388,31 +1345,6 @@ func caConfigMapForTest(name, namespace string) *corev1.ConfigMap {
 			cloudflared.DefaultOriginCAPoolSecretKey: namespace + "-ca",
 		},
 	}
-}
-
-func backendTLSRuntimeForTest(policy *gatewayv1.BackendTLSPolicy) *originRuntime {
-	return &originRuntime{
-		namedCAPoolPaths: map[string]string{},
-		backendTLSCAPoolPaths: map[types.NamespacedName]string{
-			{Namespace: policy.Namespace, Name: policy.Name}: cloudflared.BackendTLSCAPoolPath(policy.Namespace, policy.Name),
-		},
-	}
-}
-
-type originLookupCountingClient struct {
-	client.Client
-	originPolicyLists     int
-	backendTLSPolicyLists int
-}
-
-func (c *originLookupCountingClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	switch list.(type) {
-	case *cfgatev1alpha1.CloudflareOriginPolicyList:
-		c.originPolicyLists++
-	case *gatewayv1.BackendTLSPolicyList:
-		c.backendTLSPolicyLists++
-	}
-	return c.Client.List(ctx, list, opts...)
 }
 
 func ctrlRequest(namespace, name string) ctrl.Request {

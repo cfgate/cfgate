@@ -1003,6 +1003,9 @@ func (r *CloudflareTunnelReconciler) syncConfigurationWithRuntime(ctx context.Co
 			config.Ingress[lastIdx].Service = fallback
 		}
 	}
+	if err := validateTunnelFallbackOriginRequest(tunnel, config); err != nil {
+		return err
+	}
 
 	// Sync to Cloudflare
 	cfClient, err := r.getCloudflareClient(ctx, tunnel)
@@ -1111,13 +1114,13 @@ func (r *CloudflareTunnelReconciler) collectIngressRulesWithRuntime(ctx context.
 	if err := r.List(ctx, &routes); err != nil {
 		return nil, 0, fmt.Errorf("failed to list httproutes: %w", err)
 	}
-
-	lookups, err := r.loadOriginRulePolicyLookups(ctx, candidateHTTPRoutesForGateways(routes.Items, relevantGateways))
+	candidateRoutes := candidateHTTPRoutesForGateways(routes.Items, relevantGateways)
+	lookups, err := r.loadOriginRulePolicyLookups(ctx, candidateRoutes)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	for _, route := range routes.Items {
+	for _, route := range candidateRoutes {
 		for _, parentRef := range route.Spec.ParentRefs {
 			parentNS := route.Namespace
 			if parentRef.Namespace != nil {
@@ -1201,10 +1204,7 @@ func candidateHTTPRoutesForGateways(routes []gateway.HTTPRoute, gateways map[typ
 // multiple backendRefs (Cloudflare tunnel ingress is 1:1) or an unsupported
 // backend group/kind. Rules with zero backendRefs are skipped.
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTPRoute) ([]cloudflare.IngressRule, error) {
-	return r.buildRulesFromHTTPRouteForHostnamesWithRuntime(context.Background(), route, effectiveHTTPRouteHostnames(route), false, &originRuntime{
-		namedCAPoolPaths:      map[string]string{},
-		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
-	})
+	return r.buildRulesFromHTTPRouteForHostnames(route, effectiveHTTPRouteHostnames(route), false)
 }
 
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnames(route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool) ([]cloudflare.IngressRule, error) {
@@ -1222,8 +1222,17 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 	return r.buildRulesFromHTTPRouteForHostnamesWithRuntimeAndLookups(ctx, route, hostnames, originCAPoolMounted, runtime, lookups)
 }
 
-func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRuntimeAndLookups(ctx context.Context, route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool, runtime *originRuntime, lookups originRulePolicyLookups) ([]cloudflare.IngressRule, error) {
+func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRuntimeAndLookups(ctx context.Context, route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool, runtime *originRuntime, lookups *originRulePolicyLookups) ([]cloudflare.IngressRule, error) {
 	var rules []cloudflare.IngressRule
+	if runtime == nil {
+		runtime = &originRuntime{
+			namedCAPoolPaths:      map[string]string{},
+			backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+		}
+	}
+	if lookups == nil {
+		lookups = emptyOriginRulePolicyLookups()
+	}
 	if err := validateRouteOriginCAPool(route, originCAPoolMounted, runtime.namedCAPoolPaths); err != nil {
 		return nil, err
 	}
@@ -1265,7 +1274,7 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 			if effectiveOriginRequest == nil {
 				effectiveOriginRequest = &cloudflare.OriginRequestConfig{}
 			}
-			originPolicy, err := r.originPolicyForRule(ctx, lookups.originPolicies, route, rule)
+			originPolicy, err := r.originPolicyForRuleFromLookups(ctx, lookups, route, rule)
 			if err != nil {
 				return nil, err
 			}
@@ -1278,7 +1287,7 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 				return nil, err
 			}
 
-			backendTLSPolicy := backendTLSPolicyForBackend(lookups.backendTLSPoliciesByNamespace[backendNS], string(backend.Name))
+			backendTLSPolicy := backendTLSPolicyForBackendFromLookups(lookups, backendNS, string(backend.Name))
 			backendTLSForcesHTTPS := false
 			if usesHTTPS, err := applyBackendTLSPolicy(originRequest, backendTLSPolicy, runtime.backendTLSCAPoolPaths); err != nil {
 				return nil, err
@@ -1293,9 +1302,9 @@ func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnamesWithRunt
 			}
 
 			annotationProtocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
-			if backendTLSForcesHTTPS && annotationProtocol == "http" {
-				return nil, fmt.Errorf("route %s/%s: %s=http conflicts with BackendTLSPolicy %s/%s requiring HTTPS origin service",
-					route.Namespace, route.Name, annotations.AnnotationOriginProtocol, backendTLSPolicy.Namespace, backendTLSPolicy.Name)
+			if backendTLSForcesHTTPS && annotationProtocol == "http" && backendTLSPolicy != nil {
+				return nil, fmt.Errorf("route %s/%s: %s=%s cannot override BackendTLSPolicy %s/%s; BackendTLSPolicy requires HTTPS origin service",
+					route.Namespace, route.Name, annotations.AnnotationOriginProtocol, annotationProtocol, backendTLSPolicy.Namespace, backendTLSPolicy.Name)
 			}
 			if annotationProtocol == "https" || annotationProtocol == "http" {
 				protocol = annotationProtocol
@@ -1475,6 +1484,23 @@ func validateRouteOriginRequest(route *gateway.HTTPRoute, config *cloudflare.Ori
 		case strings.HasPrefix(service, "https://") || strings.HasPrefix(service, "wss://"):
 			return fmt.Errorf("route %s/%s: h2cOrigin requires cleartext HTTP origin service", route.Namespace, route.Name)
 		}
+	}
+	return nil
+}
+
+func validateTunnelFallbackOriginRequest(tunnel *cfgatev1alpha1.CloudflareTunnel, config cloudflare.TunnelConfiguration) error {
+	if tunnel == nil || !tunnel.Spec.OriginDefaults.H2cOrigin {
+		return nil
+	}
+	if len(config.Ingress) == 0 {
+		return nil
+	}
+	fallback := config.Ingress[len(config.Ingress)-1]
+	if fallback.Hostname != "" || fallback.Path != "" {
+		return nil
+	}
+	if strings.HasPrefix(fallback.Service, "https://") || strings.HasPrefix(fallback.Service, "wss://") {
+		return fmt.Errorf("CloudflareTunnel %s/%s: spec.originDefaults.h2cOrigin requires cleartext HTTP fallbackTarget, got %q", tunnel.Namespace, tunnel.Name, fallback.Service)
 	}
 	return nil
 }

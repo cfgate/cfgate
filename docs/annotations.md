@@ -8,7 +8,7 @@ Per-route configuration applied to Gateway API HTTPRoute resources.
 
 | Annotation | Values | Default | Description |
 |---|---|---|---|
-| `cfgate.io/origin-protocol` | `http`, `https` | `http` | Backend protocol; cannot downgrade BackendTLSPolicy |
+| `cfgate.io/origin-protocol` | `http`, `https` | `http` | Backend protocol |
 | `cfgate.io/origin-ssl-verify` | `true`, `false` | `true` | TLS certificate verification |
 | `cfgate.io/origin-connect-timeout` | Duration string (`30s`, `1m`) | `30s` | Origin connection timeout |
 | `cfgate.io/origin-http-host-header` | Hostname string | *none* | Host header override sent to origin |
@@ -45,7 +45,7 @@ When set to `https`, cloudflared opens a TLS connection to the origin. Combine w
 
 `origin-protocol: https` is invalid with effective `cfgate.io/origin-h2c: "true"`. h2c is cleartext HTTP/2 and requires HTTP origin protocol.
 
-Annotations have highest precedence for overrideable origin fields, but they cannot violate transport invariants. Gateway API `BackendTLSPolicy` forces HTTPS origin service generation. `origin-protocol: http` conflicts with BackendTLSPolicy on the same backend, so cfgate skips the route and emits a warning/error. `origin-protocol: https` is allowed with BackendTLSPolicy but redundant.
+`origin-protocol: http` cannot override an accepted BackendTLSPolicy. BackendTLSPolicy requires cfgate to generate an HTTPS origin service.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -244,6 +244,8 @@ Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the or
 Mutually exclusive with `cfgate.io/origin-http2`. Requires the [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared) fork image (the default). Upstream cloudflared silently ignores this field. See [Image](cloudflare-tunnel.md#image).
 
 `origin-h2c` requires HTTP origin protocol. It is invalid with `cfgate.io/origin-protocol: "https"` and invalid when Gateway API `BackendTLSPolicy` applies to the same backend, because BackendTLSPolicy makes cfgate generate an HTTPS origin service.
+
+Annotations are final overrides only for fields that remain overrideable after policy composition. They cannot weaken the BackendTLSPolicy HTTPS invariant.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1

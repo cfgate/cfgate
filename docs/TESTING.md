@@ -61,6 +61,10 @@ Optional local contract test:
 - Positive fixture: h2c HTTP origin validates.
 - Negative fixture: h2c HTTPS origin fails.
 
+```bash
+CLOUDFLARED_H2C_BIN=/path/to/cloudflared go test ./internal/cloudflared -run TestCloudflaredH2CContract
+```
+
 E2E boundary:
 
 - Live Cloudflare e2e is user-run only unless explicitly requested.

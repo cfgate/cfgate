@@ -107,7 +107,7 @@ Use Gateway API `BackendTLSPolicy` for portable backend TLS validation when the 
 
 Use [CloudflareOriginPolicy](cloudflare-origin-policy.md) for cfgate-specific cloudflared origin settings such as host header overrides, connection timeouts, HTTP/2 origin mode, h2c origin mode, and named CA pools.
 
-When both apply to the same backend, cfgate starts with tunnel defaults, applies `CloudflareOriginPolicy`, then applies `BackendTLSPolicy`, then applies route annotations as the final alpha-line override for overrideable fields. Annotations cannot violate transport invariants. This lets you migrate annotations to policies without changing behavior until the annotations are removed.
+When both apply to the same backend, cfgate starts with tunnel defaults, applies `CloudflareOriginPolicy`, then applies `BackendTLSPolicy`, then applies route annotations as the final alpha-line override. This lets you migrate annotations to policies without changing behavior until the annotations are removed.
 
 ### Origin Runtime Composition
 
@@ -118,7 +118,7 @@ Origin settings are composed in this order:
 3. `BackendTLSPolicy`
 4. HTTPRoute annotations
 
-BackendTLSPolicy changes the generated origin service scheme to HTTPS. That conflicts with h2c because h2c is cleartext HTTP/2 and requires HTTP origin protocol. It also conflicts with `cfgate.io/origin-protocol: http`; cfgate skips the route and emits a warning/error. `cfgate.io/origin-protocol: https` is allowed but redundant.
+BackendTLSPolicy can change the generated origin service scheme to HTTPS. That conflicts with h2c because h2c is cleartext HTTP/2 and requires HTTP origin protocol. Route annotations can override only compatible origin settings and cannot change a BackendTLSPolicy backend back to HTTP.
 
 `GRPCRoute`, `TCPRoute`, and `TLSRoute` are not current public-hostname route surfaces for cfgate. Cloudflare Tunnel public hostnames are HTTP-family published applications; gRPC through Tunnel is documented for private subnet routing, and non-HTTP public services require client-side cloudflared or private routing.
 

@@ -287,6 +287,203 @@ func TestCollectIngressRulesWithRuntimeRejectsAllowedRoutesNamespace(t *testing.
 	}
 }
 
+func TestCollectIngressRulesSkipsCrossNamespaceBackendWithoutReferenceGrant(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+	}
+	all := gatewayv1.NamespacesFromAll
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "default/edge",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+				AllowedRoutes: &gatewayv1.AllowedRoutes{
+					Namespaces: &gatewayv1.RouteNamespaces{From: &all},
+				},
+			}},
+		},
+	}
+	servicePort := gatewayv1.PortNumber(8080)
+	valid := tunnelRouteForTest("valid", "default", "valid.example.com", "app", servicePort)
+	crossNamespace := tunnelRouteForTest("cross", "default", "cross.example.com", "foreign", servicePort)
+	backendNS := gatewayv1.Namespace("apps")
+	crossNamespace.Spec.Rules[0].BackendRefs[0].Namespace = &backendNS
+	appService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"}}
+	foreignService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: "apps"}}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gateway, cfgateGatewayClassForTunnelTest(), valid, crossNamespace, appService, foreignService).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{
+		Client:   k8sClient,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	rules, count, err := reconciler.collectIngressRulesWithRuntime(ctx, tunnel, nil)
+	if err != nil {
+		t.Fatalf("collectIngressRulesWithRuntime() error = %v", err)
+	}
+	if count != 1 || len(rules) != 1 {
+		t.Fatalf("rules/count = %d/%d, want 1/1: %#v", len(rules), count, rules)
+	}
+	if rules[0].Hostname != "valid.example.com" || rules[0].Service != "http://app.default.svc.cluster.local:8080" {
+		t.Fatalf("rule = %#v, want valid same-namespace app rule only", rules[0])
+	}
+}
+
+func TestCollectIngressRulesLoadsPolicyListsOncePerNamespace(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "default/edge",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+			}},
+		},
+	}
+	servicePort := gatewayv1.PortNumber(8080)
+	routeA := tunnelRouteForTest("route-a", "default", "a.example.com", "app-a", servicePort)
+	routeB := tunnelRouteForTest("route-b", "default", "b.example.com", "app-b", servicePort)
+	serviceA := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app-a", Namespace: "default"}}
+	serviceB := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app-b", Namespace: "default"}}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gateway, cfgateGatewayClassForTunnelTest(), routeA, routeB, serviceA, serviceB).
+		Build()
+	countedClient := &operationCountingClient{Client: baseClient}
+	reconciler := &CloudflareTunnelReconciler{
+		Client:   countedClient,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	rules, count, err := reconciler.collectIngressRulesWithRuntime(ctx, tunnel, nil)
+	if err != nil {
+		t.Fatalf("collectIngressRulesWithRuntime() error = %v", err)
+	}
+	if count != 2 || len(rules) != 2 {
+		t.Fatalf("rules/count = %d/%d, want 2/2: %#v", len(rules), count, rules)
+	}
+	if countedClient.originPolicyLists != 1 {
+		t.Fatalf("CloudflareOriginPolicy list calls = %d, want 1", countedClient.originPolicyLists)
+	}
+	if countedClient.backendTLSPolicyLists != 1 {
+		t.Fatalf("BackendTLSPolicy list calls = %d, want 1", countedClient.backendTLSPolicyLists)
+	}
+}
+
+func TestSyncConfigurationRejectsFallbackTargetWithH2cDefaults(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	for _, fallback := range []string{"https://fallback.example.com", "wss://fallback.example.com"} {
+		t.Run(fallback, func(t *testing.T) {
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{AccountID: "account"},
+					OriginDefaults: cfgatev1alpha1.OriginDefaults{
+						H2cOrigin: true,
+					},
+					FallbackTarget: fallback,
+				},
+				Status: cfgatev1alpha1.CloudflareTunnelStatus{TunnelID: "tunnel-id"},
+			}
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tunnel).Build()
+			updateCalled := false
+			mockClient := cloudflare.NewMockClient()
+			mockClient.UpdateTunnelConfigurationFunc = func(context.Context, string, string, cloudflare.TunnelConfiguration) error {
+				updateCalled = true
+				return nil
+			}
+			reconciler := &CloudflareTunnelReconciler{
+				Client:   k8sClient,
+				CFClient: mockClient,
+			}
+
+			err := reconciler.syncConfigurationWithRuntime(ctx, tunnel, &originRuntime{
+				namedCAPoolPaths:      map[string]string{},
+				backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+			})
+			if err == nil || !strings.Contains(err.Error(), "fallbackTarget") {
+				t.Fatalf("syncConfigurationWithRuntime() error = %v, want fallbackTarget h2c error", err)
+			}
+			if updateCalled {
+				t.Fatal("UpdateTunnelConfiguration was called for invalid fallback")
+			}
+		})
+	}
+}
+
+func TestSyncConfigurationAllowsFallbackTargetWithH2cDefaults(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	for _, fallback := range []string{"", "http_status:404", "http://fallback.default.svc.cluster.local:8080"} {
+		t.Run(fallback, func(t *testing.T) {
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{AccountID: "account"},
+					OriginDefaults: cfgatev1alpha1.OriginDefaults{
+						H2cOrigin: true,
+					},
+					FallbackTarget: fallback,
+				},
+				Status: cfgatev1alpha1.CloudflareTunnelStatus{TunnelID: "tunnel-id"},
+			}
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tunnel).Build()
+			updateCalled := false
+			mockClient := cloudflare.NewMockClient()
+			mockClient.UpdateTunnelConfigurationFunc = func(_ context.Context, _, _ string, config cloudflare.TunnelConfiguration) error {
+				updateCalled = true
+				want := fallback
+				if want == "" {
+					want = "http_status:404"
+				}
+				if len(config.Ingress) != 1 || config.Ingress[0].Service != want {
+					t.Fatalf("config.Ingress = %#v, want fallback %q", config.Ingress, want)
+				}
+				return nil
+			}
+			reconciler := &CloudflareTunnelReconciler{
+				Client:   k8sClient,
+				CFClient: mockClient,
+			}
+
+			if err := reconciler.syncConfigurationWithRuntime(ctx, tunnel, &originRuntime{
+				namedCAPoolPaths:      map[string]string{},
+				backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+			}); err != nil {
+				t.Fatalf("syncConfigurationWithRuntime() error = %v", err)
+			}
+			if !updateCalled {
+				t.Fatal("UpdateTunnelConfiguration was not called")
+			}
+		})
+	}
+}
+
 func tunnelRouteForTest(name, namespace, hostname, serviceName string, servicePort gatewayv1.PortNumber) *gatewayv1.HTTPRoute {
 	return &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
@@ -1055,6 +1252,7 @@ type statusResettingPatchClient struct {
 type operationCountingClient struct {
 	client.Client
 	configMapGets         map[types.NamespacedName]int
+	originPolicyLists     int
 	backendTLSPolicyLists int
 }
 
@@ -1069,6 +1267,9 @@ func (c *operationCountingClient) Get(ctx context.Context, name types.Namespaced
 }
 
 func (c *operationCountingClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*cfgatev1alpha1.CloudflareOriginPolicyList); ok {
+		c.originPolicyLists++
+	}
 	if _, ok := list.(*gatewayv1.BackendTLSPolicyList); ok {
 		c.backendTLSPolicyLists++
 	}
