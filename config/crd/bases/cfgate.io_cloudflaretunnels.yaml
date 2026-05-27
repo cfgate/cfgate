@@ -134,7 +134,7 @@ spec:
                     maxItems: 20
                     type: array
                   image:
-                    default: ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1
+                    default: ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2
                     description: Image is the cloudflared container image.
                     maxLength: 255
                     type: string
@@ -319,6 +319,60 @@ spec:
                 description: FallbackTarget is the service for unmatched requests.
                 maxLength: 255
                 type: string
+              originCAPools:
+                description: |-
+                  OriginCAPools defines named CA bundles that cfgate mounts into cloudflared
+                  for route-level and policy-level origin TLS verification.
+                items:
+                  description: |-
+                    OriginCAPool defines a named origin CA bundle mounted into cloudflared.
+
+                    Named origin CA pools let routes and policies select trusted roots by name
+                    instead of depending on a user-visible filesystem path. cfgate owns the
+                    generated mount path and maps references to cloudflared originRequest.caPool.
+                  properties:
+                    name:
+                      description: Name is the stable name used by HTTPRoute annotations
+                        and cfgate origin policies.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    secretRef:
+                      description: |-
+                        SecretRef references the Kubernetes Secret containing a PEM-encoded CA bundle.
+                        Cross-namespace Secret references require a Gateway API ReferenceGrant in the
+                        target namespace before cfgate may read or mount the Secret.
+                      properties:
+                        key:
+                          default: ca.crt
+                          description: Key is the Secret data key containing the CA
+                            certificate chain.
+                          maxLength: 253
+                          type: string
+                        name:
+                          description: Name is the Secret name.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the Secret namespace. Empty defaults to the CloudflareTunnel namespace.
+                            Cross-namespace references require a Gateway API ReferenceGrant.
+                          maxLength: 253
+                          type: string
+                      required:
+                      - name
+                      type: object
+                  required:
+                  - name
+                  - secretRef
+                  type: object
+                maxItems: 32
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
               originDefaults:
                 description: OriginDefaults defines default settings for origin connections.
                 properties:
@@ -383,6 +437,10 @@ spec:
             - cloudflare
             - tunnel
             type: object
+            x-kubernetes-validations:
+            - message: originCAPools names must be unique
+              rule: '!has(self.originCAPools) || self.originCAPools.all(p, self.originCAPools.exists_one(q,
+                q.name == p.name))'
           status:
             description: |-
               CloudflareTunnelStatus defines the observed state of a CloudflareTunnel resource.

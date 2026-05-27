@@ -117,7 +117,7 @@ type CloudflaredConfig struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// Image is the cloudflared container image.
-	// +kubebuilder:default="ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1"
+	// +kubebuilder:default="ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2"
 	// +kubebuilder:validation:MaxLength=255
 	Image string `json:"image,omitempty"`
 
@@ -225,11 +225,53 @@ type CAPoolSecretRef struct {
 	Key string `json:"key,omitempty"`
 }
 
+// OriginCAPool defines a named origin CA bundle mounted into cloudflared.
+//
+// Named origin CA pools let routes and policies select trusted roots by name
+// instead of depending on a user-visible filesystem path. cfgate owns the
+// generated mount path and maps references to cloudflared originRequest.caPool.
+type OriginCAPool struct {
+	// Name is the stable name used by HTTPRoute annotations and cfgate origin policies.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
+
+	// SecretRef references the Kubernetes Secret containing a PEM-encoded CA bundle.
+	// Cross-namespace Secret references require a Gateway API ReferenceGrant in the
+	// target namespace before cfgate may read or mount the Secret.
+	// +kubebuilder:validation:Required
+	SecretRef OriginCAPoolSecretRef `json:"secretRef"`
+}
+
+// OriginCAPoolSecretRef references a Secret key containing an origin CA bundle.
+type OriginCAPoolSecretRef struct {
+	// Name is the Secret name.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	Name string `json:"name"`
+
+	// Namespace is the Secret namespace. Empty defaults to the CloudflareTunnel namespace.
+	// Cross-namespace references require a Gateway API ReferenceGrant.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	Namespace *string `json:"namespace,omitempty"`
+
+	// Key is the Secret data key containing the CA certificate chain.
+	// +kubebuilder:default="ca.crt"
+	// +kubebuilder:validation:MaxLength=253
+	Key string `json:"key,omitempty"`
+}
+
 // CloudflareTunnelSpec defines the desired state of a CloudflareTunnel resource.
 //
 // CloudflareTunnelSpec configures the tunnel identity, Cloudflare credentials, cloudflared
 // deployment settings, and origin connection defaults. The tunnel manages lifecycle only;
 // DNS records are managed separately via CloudflareDNS resources.
+//
+// +kubebuilder:validation:XValidation:rule="!has(self.originCAPools) || self.originCAPools.all(p, self.originCAPools.exists_one(q, q.name == p.name))",message="originCAPools names must be unique"
 type CloudflareTunnelSpec struct {
 	// Tunnel defines the tunnel identity configuration.
 	// +kubebuilder:validation:Required
@@ -246,6 +288,14 @@ type CloudflareTunnelSpec struct {
 	// OriginDefaults defines default settings for origin connections.
 	// +optional
 	OriginDefaults OriginDefaults `json:"originDefaults,omitempty"`
+
+	// OriginCAPools defines named CA bundles that cfgate mounts into cloudflared
+	// for route-level and policy-level origin TLS verification.
+	// +optional
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	OriginCAPools []OriginCAPool `json:"originCAPools,omitempty"`
 
 	// FallbackTarget is the service for unmatched requests.
 	// +kubebuilder:default="http_status:404"

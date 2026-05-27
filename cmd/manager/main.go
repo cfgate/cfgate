@@ -135,6 +135,18 @@ var (
 			CredentialCache: credCache,
 		}).SetupWithManager(mgr)
 	}
+	setupOriginPolicyController = func(mgr manager.Manager) error {
+		return (&controller.CloudflareOriginPolicyReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr)
+	}
+	setupBackendTLSPolicyController = func(mgr manager.Manager) error {
+		return (&controller.BackendTLSPolicyReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr)
+	}
 )
 
 func (e cliExitError) Error() string {
@@ -360,6 +372,14 @@ func registerControllers(mgr manager.Manager, featureGates *features.FeatureGate
 
 	if err := setupAccessApplicationController(mgr, featureGates, credCache); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareAccessApplication: %w", err)
+	}
+
+	if err := setupOriginPolicyController(mgr); err != nil {
+		return fmt.Errorf("unable to create controller CloudflareOriginPolicy: %w", err)
+	}
+
+	if err := setupBackendTLSPolicyController(mgr); err != nil {
+		return fmt.Errorf("unable to create controller BackendTLSPolicy: %w", err)
 	}
 
 	return nil

@@ -5,16 +5,23 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
+	"cfgate.io/cfgate/internal/cloudflared"
 	"cfgate.io/cfgate/internal/controller/annotations"
+	"cfgate.io/cfgate/internal/controller/status"
 )
 
 func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
@@ -56,8 +63,19 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 				annotations.AnnotationTunnelRef: "default/edge",
 			},
 		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+			}},
+		},
 	}
+	gatewayClass := cfgateGatewayClassForTunnelTest()
 	servicePort := gatewayv1.PortNumber(8080)
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"},
+	}
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "route",
@@ -68,7 +86,6 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 				"cfgate.io/origin-ca-pool":          "/etc/cfgate/origin-ca-pool/ca.pem",
 				"cfgate.io/origin-ssl-verify":       "false",
 				"cfgate.io/origin-http2":            "true",
-				"cfgate.io/origin-h2c":              "true",
 				"cfgate.io/origin-connect-timeout":  "12s",
 			},
 		},
@@ -95,7 +112,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 	baseClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&cfgatev1alpha1.CloudflareTunnel{}).
-		WithObjects(storedTunnel, gateway, route).
+		WithObjects(storedTunnel, gateway, gatewayClass, service, route).
 		Build()
 	patchClient := &statusResettingPatchClient{Client: baseClient}
 
@@ -124,7 +141,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 			origin.CAPool != "/etc/cfgate/origin-ca-pool/ca.pem" ||
 			!origin.NoTLSVerify ||
 			!origin.HTTP2Origin ||
-			!origin.H2cOrigin ||
+			origin.H2cOrigin ||
 			origin.ConnectTimeout != "12s" {
 			t.Fatalf("ingress OriginRequest = %#v, want propagated route annotations", origin)
 		}
@@ -170,6 +187,322 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 	}
 	if current.Status.TunnelID != "old-id" {
 		t.Fatalf("stored Status.TunnelID = %q, want old-id", current.Status.TunnelID)
+	}
+}
+
+func TestCollectIngressRulesWithRuntimeSkipsRejectedRoutesAndCountsRules(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+	}
+	listenerHostname := gatewayv1.Hostname("app.example.com")
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "default/edge",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+				Hostname: &listenerHostname,
+			}},
+		},
+	}
+	servicePort := gatewayv1.PortNumber(8080)
+	valid := tunnelRouteForTest("valid", "default", "app.example.com", "app", servicePort)
+	missingService := tunnelRouteForTest("missing", "default", "app.example.com", "missing", servicePort)
+	badHostname := tunnelRouteForTest("bad-host", "default", "other.example.com", "app", servicePort)
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"}}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gateway, cfgateGatewayClassForTunnelTest(), valid, missingService, badHostname, service).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{
+		Client:   k8sClient,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	rules, count, err := reconciler.collectIngressRulesWithRuntime(ctx, tunnel, nil)
+	if err != nil {
+		t.Fatalf("collectIngressRulesWithRuntime() error = %v", err)
+	}
+	if count != 1 || len(rules) != 1 {
+		t.Fatalf("rules/count = %d/%d, want 1/1: %#v", len(rules), count, rules)
+	}
+	if rules[0].Hostname != "app.example.com" || rules[0].Service != "http://app.default.svc.cluster.local:8080" {
+		t.Fatalf("rule = %#v, want valid app rule only", rules[0])
+	}
+}
+
+func TestCollectIngressRulesWithRuntimeRejectsAllowedRoutesNamespace(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "default/edge",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+			}},
+		},
+	}
+	servicePort := gatewayv1.PortNumber(8080)
+	route := tunnelRouteForTest("route", "apps", "app.example.com", "app", servicePort)
+	gatewayNS := gatewayv1.Namespace("default")
+	route.Spec.ParentRefs[0].Namespace = &gatewayNS
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"}}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gateway, cfgateGatewayClassForTunnelTest(), route, service).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{
+		Client:   k8sClient,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	rules, count, err := reconciler.collectIngressRulesWithRuntime(ctx, tunnel, nil)
+	if err != nil {
+		t.Fatalf("collectIngressRulesWithRuntime() error = %v", err)
+	}
+	if count != 0 || len(rules) != 0 {
+		t.Fatalf("rules/count = %d/%d, want 0/0: %#v", len(rules), count, rules)
+	}
+}
+
+func TestCollectIngressRulesSkipsCrossNamespaceBackendWithoutReferenceGrant(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+	}
+	all := gatewayv1.NamespacesFromAll
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "default/edge",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+				AllowedRoutes: &gatewayv1.AllowedRoutes{
+					Namespaces: &gatewayv1.RouteNamespaces{From: &all},
+				},
+			}},
+		},
+	}
+	servicePort := gatewayv1.PortNumber(8080)
+	valid := tunnelRouteForTest("valid", "default", "valid.example.com", "app", servicePort)
+	crossNamespace := tunnelRouteForTest("cross", "default", "cross.example.com", "foreign", servicePort)
+	backendNS := gatewayv1.Namespace("apps")
+	crossNamespace.Spec.Rules[0].BackendRefs[0].Namespace = &backendNS
+	appService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"}}
+	foreignService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "foreign", Namespace: "apps"}}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gateway, cfgateGatewayClassForTunnelTest(), valid, crossNamespace, appService, foreignService).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{
+		Client:   k8sClient,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	rules, count, err := reconciler.collectIngressRulesWithRuntime(ctx, tunnel, nil)
+	if err != nil {
+		t.Fatalf("collectIngressRulesWithRuntime() error = %v", err)
+	}
+	if count != 1 || len(rules) != 1 {
+		t.Fatalf("rules/count = %d/%d, want 1/1: %#v", len(rules), count, rules)
+	}
+	if rules[0].Hostname != "valid.example.com" || rules[0].Service != "http://app.default.svc.cluster.local:8080" {
+		t.Fatalf("rule = %#v, want valid same-namespace app rule only", rules[0])
+	}
+}
+
+func TestCollectIngressRulesLoadsPolicyListsOncePerNamespace(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+	}
+	gateway := &gatewayv1.Gateway{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gateway",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationTunnelRef: "default/edge",
+			},
+		},
+		Spec: gatewayv1.GatewaySpec{
+			GatewayClassName: "cfgate",
+			Listeners: []gatewayv1.Listener{{
+				Name:     "http",
+				Protocol: gatewayv1.HTTPProtocolType,
+			}},
+		},
+	}
+	servicePort := gatewayv1.PortNumber(8080)
+	routeA := tunnelRouteForTest("route-a", "default", "a.example.com", "app-a", servicePort)
+	routeB := tunnelRouteForTest("route-b", "default", "b.example.com", "app-b", servicePort)
+	serviceA := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app-a", Namespace: "default"}}
+	serviceB := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app-b", Namespace: "default"}}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gateway, cfgateGatewayClassForTunnelTest(), routeA, routeB, serviceA, serviceB).
+		Build()
+	countedClient := &operationCountingClient{Client: baseClient}
+	reconciler := &CloudflareTunnelReconciler{
+		Client:   countedClient,
+		Recorder: &fakeEventRecorder{},
+	}
+
+	rules, count, err := reconciler.collectIngressRulesWithRuntime(ctx, tunnel, nil)
+	if err != nil {
+		t.Fatalf("collectIngressRulesWithRuntime() error = %v", err)
+	}
+	if count != 2 || len(rules) != 2 {
+		t.Fatalf("rules/count = %d/%d, want 2/2: %#v", len(rules), count, rules)
+	}
+	if countedClient.originPolicyLists != 1 {
+		t.Fatalf("CloudflareOriginPolicy list calls = %d, want 1", countedClient.originPolicyLists)
+	}
+	if countedClient.backendTLSPolicyLists != 1 {
+		t.Fatalf("BackendTLSPolicy list calls = %d, want 1", countedClient.backendTLSPolicyLists)
+	}
+}
+
+func TestSyncConfigurationRejectsFallbackTargetWithH2cDefaults(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	for _, fallback := range []string{"https://fallback.example.com", "wss://fallback.example.com"} {
+		t.Run(fallback, func(t *testing.T) {
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{AccountID: "account"},
+					OriginDefaults: cfgatev1alpha1.OriginDefaults{
+						H2cOrigin: true,
+					},
+					FallbackTarget: fallback,
+				},
+				Status: cfgatev1alpha1.CloudflareTunnelStatus{TunnelID: "tunnel-id"},
+			}
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tunnel).Build()
+			updateCalled := false
+			mockClient := cloudflare.NewMockClient()
+			mockClient.UpdateTunnelConfigurationFunc = func(context.Context, string, string, cloudflare.TunnelConfiguration) error {
+				updateCalled = true
+				return nil
+			}
+			reconciler := &CloudflareTunnelReconciler{
+				Client:   k8sClient,
+				CFClient: mockClient,
+			}
+
+			err := reconciler.syncConfigurationWithRuntime(ctx, tunnel, &originRuntime{
+				namedCAPoolPaths:      map[string]string{},
+				backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+			})
+			if err == nil || !strings.Contains(err.Error(), "fallbackTarget") {
+				t.Fatalf("syncConfigurationWithRuntime() error = %v, want fallbackTarget h2c error", err)
+			}
+			if updateCalled {
+				t.Fatal("UpdateTunnelConfiguration was called for invalid fallback")
+			}
+		})
+	}
+}
+
+func TestSyncConfigurationAllowsFallbackTargetWithH2cDefaults(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	for _, fallback := range []string{"", "http_status:404", "http://fallback.default.svc.cluster.local:8080"} {
+		t.Run(fallback, func(t *testing.T) {
+			tunnel := &cfgatev1alpha1.CloudflareTunnel{
+				ObjectMeta: metav1.ObjectMeta{Name: "edge", Namespace: "default"},
+				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+					Cloudflare: cfgatev1alpha1.CloudflareConfig{AccountID: "account"},
+					OriginDefaults: cfgatev1alpha1.OriginDefaults{
+						H2cOrigin: true,
+					},
+					FallbackTarget: fallback,
+				},
+				Status: cfgatev1alpha1.CloudflareTunnelStatus{TunnelID: "tunnel-id"},
+			}
+			k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tunnel).Build()
+			updateCalled := false
+			mockClient := cloudflare.NewMockClient()
+			mockClient.UpdateTunnelConfigurationFunc = func(_ context.Context, _, _ string, config cloudflare.TunnelConfiguration) error {
+				updateCalled = true
+				want := fallback
+				if want == "" {
+					want = "http_status:404"
+				}
+				if len(config.Ingress) != 1 || config.Ingress[0].Service != want {
+					t.Fatalf("config.Ingress = %#v, want fallback %q", config.Ingress, want)
+				}
+				return nil
+			}
+			reconciler := &CloudflareTunnelReconciler{
+				Client:   k8sClient,
+				CFClient: mockClient,
+			}
+
+			if err := reconciler.syncConfigurationWithRuntime(ctx, tunnel, &originRuntime{
+				namedCAPoolPaths:      map[string]string{},
+				backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+			}); err != nil {
+				t.Fatalf("syncConfigurationWithRuntime() error = %v", err)
+			}
+			if !updateCalled {
+				t.Fatal("UpdateTunnelConfiguration was not called")
+			}
+		})
+	}
+}
+
+func tunnelRouteForTest(name, namespace, hostname, serviceName string, servicePort gatewayv1.PortNumber) *gatewayv1.HTTPRoute {
+	return &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: gatewayv1.HTTPRouteSpec{
+			CommonRouteSpec: gatewayv1.CommonRouteSpec{ParentRefs: []gatewayv1.ParentReference{{
+				Name: "gateway",
+			}}},
+			Hostnames: []gatewayv1.Hostname{gatewayv1.Hostname(hostname)},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: gatewayv1.ObjectName(serviceName),
+							Port: &servicePort,
+						},
+					},
+				}},
+			}},
+		},
 	}
 }
 
@@ -221,6 +554,355 @@ func TestValidateOriginCAPoolSecretRef(t *testing.T) {
 			t.Fatal("validateOriginCAPoolSecretRef() error = nil, want missing key error")
 		}
 	})
+}
+
+func TestReconcileGuardPathPatchesBackendTLSPolicyMountBeforeConfigSync(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(appsv1) error = %v", err)
+	}
+
+	lastSync := metav1.NewTime(time.Now())
+	tunnel := &cfgatev1alpha1.CloudflareTunnel{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "tunnel",
+			Namespace:  "cfgate",
+			Generation: 7,
+			Finalizers: []string{tunnelFinalizer},
+		},
+		Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+			Tunnel: cfgatev1alpha1.TunnelIdentity{
+				Name: "tunnel",
+			},
+			Cloudflare: cfgatev1alpha1.CloudflareConfig{
+				AccountID: "account",
+			},
+		},
+		Status: cfgatev1alpha1.CloudflareTunnelStatus{
+			ObservedGeneration: 7,
+			TunnelID:           "tunnel-id",
+			TunnelName:         "tunnel",
+			TunnelDomain:       cloudflare.TunnelDomain("tunnel-id"),
+			AccountID:          "account",
+			LastSyncTime:       &lastSync,
+			Conditions: []metav1.Condition{{
+				Type:               status.ConditionTypeReady,
+				Status:             metav1.ConditionTrue,
+				Reason:             status.ReasonTunnelOperational,
+				Message:            "ready",
+				ObservedGeneration: 7,
+				LastTransitionTime: metav1.Now(),
+			}},
+		},
+	}
+	deployment := cloudflared.NewBuilder().BuildDeployment(tunnel, "token")
+	gateway := gatewayForTunnelTest()
+	gatewayClass := cfgateGatewayClassForTunnelTest()
+	route := routeForBackendTest("app-route", "apps", "app")
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "apps"},
+	}
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	ca := caConfigMapForTest("ca-app", "apps")
+
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&cfgatev1alpha1.CloudflareTunnel{}).
+		WithObjects(tunnel, deployment, gateway, gatewayClass, route, service, policy, ca).
+		Build()
+	countedClient := &operationCountingClient{
+		Client:        baseClient,
+		configMapGets: map[types.NamespacedName]int{},
+	}
+
+	configUpdated := false
+	mockClient := cloudflare.NewMockClient()
+	mockClient.GetTunnelTokenFunc = func(context.Context, string, string) (string, error) {
+		t.Fatal("GetTunnelToken must not be called in guard path")
+		return "", nil
+	}
+	mockClient.UpdateTunnelConfigurationFunc = func(_ context.Context, accountID, tunnelID string, config cloudflare.TunnelConfiguration) error {
+		configUpdated = true
+		if accountID != "account" || tunnelID != "tunnel-id" {
+			t.Fatalf("UpdateTunnelConfiguration account/tunnel = %s/%s, want account/tunnel-id", accountID, tunnelID)
+		}
+		assertDeploymentHasBackendTLSPolicyMount(t, ctx, baseClient)
+		assertGeneratedBackendTLSSecretExists(t, ctx, baseClient, tunnel, policy)
+
+		var appRule *cloudflare.IngressRule
+		for i := range config.Ingress {
+			if config.Ingress[i].Service == "https://app.apps.svc.cluster.local:8443" {
+				appRule = &config.Ingress[i]
+				break
+			}
+		}
+		if appRule == nil {
+			t.Fatalf("config.Ingress = %#v, want https app service rule", config.Ingress)
+		}
+		if appRule.OriginRequest == nil {
+			t.Fatal("app rule OriginRequest is nil")
+		}
+		if appRule.OriginRequest.CAPool != cloudflared.BackendTLSCAPoolPath("apps", "tls-app") {
+			t.Fatalf("app rule CAPool = %q, want %q", appRule.OriginRequest.CAPool, cloudflared.BackendTLSCAPoolPath("apps", "tls-app"))
+		}
+		return nil
+	}
+
+	reconciler := &CloudflareTunnelReconciler{
+		Client:    countedClient,
+		APIReader: countedClient,
+		Scheme:    scheme,
+		CFClient:  mockClient,
+		Recorder:  &fakeEventRecorder{},
+	}
+	result, err := reconciler.Reconcile(ctx, ctrlRequest("cfgate", "tunnel"))
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != requeueAfterSuccess {
+		t.Fatalf("Reconcile() RequeueAfter = %v, want %v", result.RequeueAfter, requeueAfterSuccess)
+	}
+	if !configUpdated {
+		t.Fatal("UpdateTunnelConfiguration was not called")
+	}
+	if got := countedClient.configMapGets[types.NamespacedName{Namespace: "apps", Name: "ca-app"}]; got != 2 {
+		t.Fatalf("ConfigMap apps/ca-app gets = %d, want 2", got)
+	}
+	if countedClient.backendTLSPolicyLists != 2 {
+		t.Fatalf("BackendTLSPolicy list calls = %d, want 2", countedClient.backendTLSPolicyLists)
+	}
+	assertDeploymentHasBackendTLSPolicyMount(t, ctx, baseClient)
+}
+
+func TestEnsureCloudflaredOriginCAPoolDeploymentRemovesStaleBackendTLSPolicyMount(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(appsv1) error = %v", err)
+	}
+
+	tunnel := tunnelForOriginRuntimeTest()
+	tunnel.Status.TunnelID = "tunnel-id"
+	deployment := cloudflared.NewBuilder().BuildDeployment(tunnel, "token")
+	staleVolumeName := cloudflared.OriginCAPoolVolumeNameFor("backendtls", "apps", "tls-app")
+	staleSecretName := generatedOriginCASecretName(tunnel.Name, "backendtls", "apps", "tls-app", "ca-app")
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes,
+		corev1.Volume{Name: "custom-config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "custom-config"}}}},
+		corev1.Volume{Name: staleVolumeName, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: staleSecretName}}},
+	)
+	container := cloudflaredContainer(&deployment.Spec.Template.Spec)
+	if container == nil {
+		t.Fatal("test deployment has no cloudflared container")
+	}
+	container.VolumeMounts = append(container.VolumeMounts,
+		corev1.VolumeMount{Name: "custom-config", MountPath: "/etc/custom", ReadOnly: true},
+		corev1.VolumeMount{Name: staleVolumeName, MountPath: strings.TrimSuffix(cloudflared.BackendTLSCAPoolPath("apps", "tls-app"), "/"+cloudflared.OriginCAPoolFileName), ReadOnly: true},
+	)
+	staleSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      staleSecretName,
+			Namespace: tunnel.Namespace,
+			Labels: map[string]string{
+				generatedOriginCASecretLabel:   "true",
+				"app.kubernetes.io/instance":   tunnel.Name,
+				"app.kubernetes.io/managed-by": "cfgate",
+				"app.kubernetes.io/component":  "origin-ca-pool",
+			},
+		},
+		Data: map[string][]byte{cloudflared.DefaultOriginCAPoolSecretKey: []byte("old")},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, deployment, staleSecret).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{
+		Client: baseClient,
+		Scheme: scheme,
+	}
+
+	if _, err := reconciler.ensureCloudflaredOriginCAPoolDeployment(ctx, tunnel); err != nil {
+		t.Fatalf("ensureCloudflaredOriginCAPoolDeployment() error = %v", err)
+	}
+
+	var got appsv1.Deployment
+	if err := baseClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: deployment.Name}, &got); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	if hasVolume(got.Spec.Template.Spec.Volumes, staleVolumeName) {
+		t.Fatalf("stale managed volume %q still exists", staleVolumeName)
+	}
+	gotContainer := cloudflaredContainer(&got.Spec.Template.Spec)
+	if gotContainer == nil {
+		t.Fatal("updated deployment has no cloudflared container")
+	}
+	if hasMount(gotContainer.VolumeMounts, staleVolumeName, "") {
+		t.Fatalf("stale managed mount %q still exists", staleVolumeName)
+	}
+	if !hasVolume(got.Spec.Template.Spec.Volumes, "custom-config") {
+		t.Fatal("non-managed volume was removed")
+	}
+	if !hasMount(gotContainer.VolumeMounts, "custom-config", "/etc/custom") {
+		t.Fatal("non-managed mount was removed")
+	}
+	var gotSecret corev1.Secret
+	err := baseClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: staleSecretName}, &gotSecret)
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("stale generated Secret get error = %v, want not found", err)
+	}
+}
+
+func TestEnsureCloudflaredOriginCAPoolDeploymentSyncsGeneratedSecretWhenMountsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	if err := appsv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme(appsv1) error = %v", err)
+	}
+
+	tunnel := tunnelForOriginRuntimeTest()
+	tunnel.Status.TunnelID = "tunnel-id"
+	gw := gatewayForTunnelTest()
+	gatewayClass := cfgateGatewayClassForTunnelTest()
+	route := routeForBackendTest("app-route", "apps", "app")
+	policy := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	ca := caConfigMapForTest("ca-app", "apps")
+	secretName := generatedOriginCASecretName(tunnel.Name, "backendtls", "apps", "tls-app", "ca-app")
+	mount := cloudflared.OriginCAPoolMount{
+		Name:       cloudflared.OriginCAPoolVolumeNameFor("backendtls", "apps", "tls-app"),
+		SecretName: secretName,
+		Key:        cloudflared.DefaultOriginCAPoolSecretKey,
+		MountPath:  strings.TrimSuffix(cloudflared.BackendTLSCAPoolPath("apps", "tls-app"), "/"+cloudflared.OriginCAPoolFileName),
+	}
+	deployment := cloudflared.NewBuilder().BuildDeploymentWithOriginCAPoolMounts(tunnel, "token", []cloudflared.OriginCAPoolMount{mount})
+	existingSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: tunnel.Namespace,
+			Labels: map[string]string{
+				generatedOriginCASecretLabel:   "true",
+				"app.kubernetes.io/instance":   tunnel.Name,
+				"app.kubernetes.io/managed-by": "cfgate",
+				"app.kubernetes.io/component":  "origin-ca-pool",
+			},
+		},
+		Data: map[string][]byte{cloudflared.DefaultOriginCAPoolSecretKey: []byte("old-ca")},
+	}
+	baseClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, deployment, gw, gatewayClass, route, policy, ca, existingSecret).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{
+		Client: baseClient,
+		Scheme: scheme,
+	}
+
+	originState, err := reconciler.ensureCloudflaredOriginCAPoolDeployment(ctx, tunnel)
+	if err != nil {
+		t.Fatalf("ensureCloudflaredOriginCAPoolDeployment() error = %v", err)
+	}
+	if originState == nil || len(originState.originCAPoolMounts) != 1 {
+		t.Fatalf("originState = %#v, want one origin CA pool mount", originState)
+	}
+
+	var gotSecret corev1.Secret
+	if err := baseClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: secretName}, &gotSecret); err != nil {
+		t.Fatalf("get generated Secret: %v", err)
+	}
+	if string(gotSecret.Data[cloudflared.DefaultOriginCAPoolSecretKey]) != "apps-ca" {
+		t.Fatalf("generated Secret data = %q, want apps-ca", gotSecret.Data[cloudflared.DefaultOriginCAPoolSecretKey])
+	}
+	assertDeploymentHasBackendTLSPolicyMount(t, ctx, baseClient)
+}
+
+func TestFindTunnelsForSecretScopesOriginCAReferences(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnels := []client.Object{
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-ca", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginDefaults: cfgatev1alpha1.OriginDefaults{
+					CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"},
+				},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "local-pool", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginCAPools: []cfgatev1alpha1.OriginCAPool{{
+					Name: "local",
+					SecretRef: cfgatev1alpha1.OriginCAPoolSecretRef{
+						Name: "origin-ca",
+					},
+				}},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "cross-pool", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginCAPools: []cfgatev1alpha1.OriginCAPool{{
+					Name: "shared",
+					SecretRef: cfgatev1alpha1.OriginCAPoolSecretRef{
+						Namespace: stringPtr("security"),
+						Name:      "shared-ca",
+					},
+				}},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "apps"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginDefaults: cfgatev1alpha1.OriginDefaults{
+					CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "different-ca"},
+				},
+			},
+		},
+		&cfgatev1alpha1.CloudflareTunnel{
+			ObjectMeta: metav1.ObjectMeta{Name: "default-ca", Namespace: "other"},
+			Spec: cfgatev1alpha1.CloudflareTunnelSpec{
+				OriginDefaults: cfgatev1alpha1.OriginDefaults{
+					CAPoolSecretRef: &cfgatev1alpha1.CAPoolSecretRef{Name: "origin-ca"},
+				},
+			},
+		},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tunnels...).Build()
+	reconciler := &CloudflareTunnelReconciler{Client: k8sClient, APIReader: k8sClient}
+
+	appsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForSecret(ctx, appsSecret), []string{"apps/default-ca", "apps/local-pool"})
+
+	sharedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "shared-ca", Namespace: "security"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForSecret(ctx, sharedSecret), []string{"apps/cross-pool"})
+
+	unrelatedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "unrelated", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForSecret(ctx, unrelatedSecret), nil)
+}
+
+func TestFindTunnelsForConfigMapScopesBackendTLSPolicyCARefs(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	tunnel := tunnelForOriginRuntimeTest()
+	gw := gatewayForTunnelTest()
+	gatewayClass := cfgateGatewayClassForTunnelTest()
+	route := routeForBackendTest("app-route", "apps", "app")
+	relevant := backendTLSPolicyForTest("tls-app", "apps", "app", "app.example.com", "ca-app")
+	unused := backendTLSPolicyForTest("tls-unused", "apps", "unused", "unused.example.com", "ca-app")
+	other := backendTLSPolicyForTest("tls-other", "other", "other", "other.example.com", "ca-other")
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(tunnel, gw, gatewayClass, route, relevant, unused, other).
+		Build()
+	reconciler := &CloudflareTunnelReconciler{Client: k8sClient, APIReader: k8sClient}
+
+	appCA := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ca-app", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForConfigMap(ctx, appCA), []string{"cfgate/tunnel"})
+
+	otherCA := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "ca-other", Namespace: "other"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForConfigMap(ctx, otherCA), nil)
+
+	notCA := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "not-ca", Namespace: "apps"}}
+	assertReconcileRequestKeys(t, reconciler.findTunnelsForConfigMap(ctx, notCA), nil)
 }
 
 func TestBuildRulesFromHTTPRouteUsesHostnameAnnotation(t *testing.T) {
@@ -321,6 +1003,80 @@ func TestBuildRulesFromHTTPRouteValidatesOriginCAPool(t *testing.T) {
 				t.Fatalf("rules = %#v, want managed caPool origin request", rules)
 			}
 		})
+	}
+
+	t.Run("origin-ca-pool and origin-ca-pool-ref are mutually exclusive", func(t *testing.T) {
+		route := baseRoute.DeepCopy()
+		route.Annotations = map[string]string{
+			annotations.AnnotationOriginCAPool:    cloudflared.NamedOriginCAPoolPath("internal"),
+			annotations.AnnotationOriginCAPoolRef: "internal",
+		}
+		runtime := &originRuntime{
+			namedCAPoolPaths: map[string]string{
+				"internal": cloudflared.NamedOriginCAPoolPath("internal"),
+			},
+			backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+		}
+
+		_, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnamesWithRuntime(context.Background(), route, effectiveHTTPRouteHostnames(route), true, runtime)
+		for _, want := range []string{
+			annotations.AnnotationOriginCAPool,
+			annotations.AnnotationOriginCAPoolRef,
+			"mutually exclusive",
+		} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = %v, want containing %q", err, want)
+			}
+		}
+	})
+}
+
+func TestBuildRulesFromHTTPRouteOriginCAPoolErrorListsNamedPools(t *testing.T) {
+	ctx := context.Background()
+	servicePort := gatewayv1.PortNumber(8080)
+	route := &gatewayv1.HTTPRoute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "route",
+			Namespace: "default",
+			Annotations: map[string]string{
+				annotations.AnnotationOriginCAPool: "/etc/cfgate/wrong-ca.pem",
+			},
+		},
+		Spec: gatewayv1.HTTPRouteSpec{
+			Hostnames: []gatewayv1.Hostname{"app.example.com"},
+			Rules: []gatewayv1.HTTPRouteRule{{
+				BackendRefs: []gatewayv1.HTTPBackendRef{{
+					BackendRef: gatewayv1.BackendRef{
+						BackendObjectReference: gatewayv1.BackendObjectReference{
+							Name: "app",
+							Port: &servicePort,
+						},
+					},
+				}},
+			}},
+		},
+	}
+	runtime := &originRuntime{
+		namedCAPoolPaths: map[string]string{
+			"internal": cloudflared.NamedOriginCAPoolPath("internal"),
+			"partner":  cloudflared.NamedOriginCAPoolPath("partner"),
+		},
+		backendTLSCAPoolPaths: map[types.NamespacedName]string{},
+	}
+
+	_, err := (&CloudflareTunnelReconciler{}).buildRulesFromHTTPRouteForHostnamesWithRuntime(ctx, route, effectiveHTTPRouteHostnames(route), false, runtime)
+	if err == nil {
+		t.Fatal("buildRulesFromHTTPRouteForHostnamesWithRuntime() error = nil, want invalid origin CA pool error")
+	}
+	for _, want := range []string{
+		"must be one of",
+		cloudflared.OriginCAPoolPath(),
+		cloudflared.NamedOriginCAPoolPath("internal"),
+		cloudflared.NamedOriginCAPoolPath("partner"),
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want containing %q", err, want)
+		}
 	}
 }
 
@@ -425,8 +1181,99 @@ func TestCloudflaredPathRegex(t *testing.T) {
 	}
 }
 
+func assertDeploymentHasBackendTLSPolicyMount(t *testing.T, ctx context.Context, k8sClient client.Client) {
+	t.Helper()
+	var deployment appsv1.Deployment
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "cfgate", Name: "tunnel-cloudflared"}, &deployment); err != nil {
+		t.Fatalf("get deployment: %v", err)
+	}
+	volumeName := cloudflared.OriginCAPoolVolumeNameFor("backendtls", "apps", "tls-app")
+	if !hasVolume(deployment.Spec.Template.Spec.Volumes, volumeName) {
+		t.Fatalf("deployment volumes = %#v, want %q", deployment.Spec.Template.Spec.Volumes, volumeName)
+	}
+	container := cloudflaredContainer(&deployment.Spec.Template.Spec)
+	if container == nil {
+		t.Fatal("deployment has no cloudflared container")
+	}
+	mountPath := strings.TrimSuffix(cloudflared.BackendTLSCAPoolPath("apps", "tls-app"), "/"+cloudflared.OriginCAPoolFileName)
+	if !hasMount(container.VolumeMounts, volumeName, mountPath) {
+		t.Fatalf("cloudflared mounts = %#v, want %s at %s", container.VolumeMounts, volumeName, mountPath)
+	}
+}
+
+func assertGeneratedBackendTLSSecretExists(t *testing.T, ctx context.Context, k8sClient client.Client, tunnel *cfgatev1alpha1.CloudflareTunnel, policy *gatewayv1.BackendTLSPolicy) {
+	t.Helper()
+	secretName := generatedOriginCASecretName(tunnel.Name, "backendtls", policy.Namespace, policy.Name, "ca-app")
+	var secret corev1.Secret
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: tunnel.Namespace, Name: secretName}, &secret); err != nil {
+		t.Fatalf("generated BackendTLSPolicy Secret missing: %v", err)
+	}
+}
+
+func hasVolume(volumes []corev1.Volume, name string) bool {
+	for _, volume := range volumes {
+		if volume.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMount(mounts []corev1.VolumeMount, name, path string) bool {
+	for _, mount := range mounts {
+		if mount.Name != name {
+			continue
+		}
+		return path == "" || mount.MountPath == path
+	}
+	return false
+}
+
+func assertReconcileRequestKeys(t *testing.T, reqs []reconcile.Request, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(reqs))
+	for _, req := range reqs {
+		got = append(got, req.String())
+	}
+	if len(got) != len(want) {
+		t.Fatalf("reconcile requests = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("reconcile requests = %v, want %v", got, want)
+		}
+	}
+}
+
 type statusResettingPatchClient struct {
 	client.Client
+}
+
+type operationCountingClient struct {
+	client.Client
+	configMapGets         map[types.NamespacedName]int
+	originPolicyLists     int
+	backendTLSPolicyLists int
+}
+
+func (c *operationCountingClient) Get(ctx context.Context, name types.NamespacedName, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*corev1.ConfigMap); ok {
+		if c.configMapGets == nil {
+			c.configMapGets = map[types.NamespacedName]int{}
+		}
+		c.configMapGets[name]++
+	}
+	return c.Client.Get(ctx, name, obj, opts...)
+}
+
+func (c *operationCountingClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if _, ok := list.(*cfgatev1alpha1.CloudflareOriginPolicyList); ok {
+		c.originPolicyLists++
+	}
+	if _, ok := list.(*gatewayv1.BackendTLSPolicyList); ok {
+		c.backendTLSPolicyLists++
+	}
+	return c.Client.List(ctx, list, opts...)
 }
 
 func (c *statusResettingPatchClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {

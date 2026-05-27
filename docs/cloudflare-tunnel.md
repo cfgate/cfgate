@@ -26,7 +26,7 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.cloudflare.secretRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the credentials Secret. Defaults to the tunnel's namespace. Max 63 chars. |
 | `spec.cloudflare.secretKeys.apiToken` | `string` | `CLOUDFLARE_API_TOKEN` | No | Key name within the Secret for the Cloudflare API token. Max 253 chars. |
 | `spec.cloudflared.replicas` | `int32` | `2` | No | Number of cloudflared replicas. Min 1, max 10. Each replica establishes an independent connection for high availability. |
-| `spec.cloudflared.image` | `string` | `ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1` | No | Container image for the cloudflared daemon. See [Image](#image) below. Max 255 chars. |
+| `spec.cloudflared.image` | `string` | `ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2` | No | Container image for the cloudflared daemon. See [Image](#image) below. Max 255 chars. |
 | `spec.cloudflared.imagePullPolicy` | `string` | `IfNotPresent` | No | Image pull policy. One of: `Always`, `Never`, `IfNotPresent`. |
 | `spec.cloudflared.protocol` | `string` | `auto` | No | Tunnel transport protocol. One of: `auto`, `quic`, `http2`. |
 | `spec.cloudflared.resources` | `corev1.ResourceRequirements` | *none* | No | Resource requests and limits for cloudflared containers. Standard Kubernetes resource spec. |
@@ -42,6 +42,10 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.originDefaults.h2cOrigin` | `bool` | `false` | No | Enables HTTP/2 cleartext (h2c) for origin connections. Use for origins that speak HTTP/2 without TLS. Mutually exclusive with `http2Origin`. |
 | `spec.originDefaults.caPoolSecretRef.name` | `string` | *none* | Yes (if caPoolSecretRef set) | Name of the Secret containing CA certificates for origin TLS verification. 1-253 chars. |
 | `spec.originDefaults.caPoolSecretRef.key` | `string` | `ca.crt` | No | Key within the Secret containing the CA certificate chain in PEM format. Max 253 chars. |
+| `spec.originCAPools[].name` | `string` | *none* | Yes | Named CA pool selectable by route annotations and origin policies. Unique within a tunnel. |
+| `spec.originCAPools[].secretRef.name` | `string` | *none* | Yes | Secret containing a PEM-encoded CA bundle. |
+| `spec.originCAPools[].secretRef.namespace` | `string` | *(tunnel namespace)* | No | Secret namespace. Cross-namespace references require a Gateway API `ReferenceGrant`. |
+| `spec.originCAPools[].secretRef.key` | `string` | `ca.crt` | No | Secret data key containing the CA bundle. |
 | `spec.fallbackTarget` | `string` | `http_status:404` | No | Default service for requests that do not match any ingress rule. |
 | `spec.fallbackCredentialsRef.name` | `string` | *none* | Yes (if fallbackCredentialsRef set) | Name of the Secret containing fallback Cloudflare API credentials. 1-253 chars. |
 | `spec.fallbackCredentialsRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the fallback credentials Secret. Max 63 chars. |
@@ -135,7 +139,9 @@ spec:
 
 #### Image
 
-The default image is `ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1`, a fork of [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) maintained at [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared). The fork adds `h2cOrigin` support for HTTP/2 cleartext origin connections; upstream cloudflared does not support this feature ([cloudflare/cloudflared#1304](https://github.com/cloudflare/cloudflared/issues/1304)).
+The intended `v0.3.0-alpha.1` default image is `ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2`, a fork of [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) maintained at [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared). The fork adds `h2cOrigin` support for HTTP/2 cleartext origin connections; upstream cloudflared does not support this feature ([cloudflare/cloudflared#1304](https://github.com/cloudflare/cloudflared/issues/1304)).
+
+The h2c.2 tag is the target default unless implementation work requires a production change in the cloudflared-h2c fork. If the fork changes, cfgate must pin the next released fork tag instead.
 
 Users who do not need h2c can override the image to upstream:
 
@@ -145,7 +151,31 @@ spec:
     image: cloudflare/cloudflared:2026.5.0
 ```
 
-The upstream image is a no-h2c mode override only. The `h2cOrigin` field and `cfgate.io/origin-h2c` annotation require the cfgate fork image.
+The upstream image is a no-h2c mode override only. The `h2cOrigin` field and `cfgate.io/origin-h2c` annotation require the cfgate fork image. With upstream cloudflared, cfgate users must not configure h2c origin settings.
+
+#### cloudflared-h2c Fork Contract
+
+cfgate relies on the inherent-design cloudflared fork for raw `h2cOrigin` support. Cloudflare's Go SDK does not expose `h2cOrigin`, so cfgate must preserve it through raw remote tunnel configuration JSON.
+
+`cloudflared tunnel ingress validate` is the local contract tool for validating generated ingress config against the fork. cfgate release validation should include a positive h2c HTTP-origin fixture and a negative h2c HTTPS-origin fixture when a local fork binary is available.
+
+For gRPC-like h2c origins where HTTP trailers matter, set `spec.cloudflared.protocol: http2`. The current fork warns that QUIC drops HTTP trailers, so h2c alone is not enough for trailer-sensitive gRPC behavior.
+
+### Route Collection And Config Sync
+
+CloudflareTunnel discovers Gateways that reference it with `cfgate.io/tunnel-ref`. It then collects `HTTPRoute` resources attached to those Gateways and emits Cloudflare Tunnel ingress rules for accepted routes only.
+
+A route is accepted for Cloudflare config emission when:
+
+- Its parentRef matches the Gateway.
+- Its sectionName, when set, matches a listener.
+- The listener protocol is HTTP or HTTPS.
+- The listener hostname accepts the route hostname.
+- `allowedRoutes.namespaces` allows the route namespace.
+- backendRefs are supported Service references.
+- Cross-namespace backend Service references have a Gateway API `ReferenceGrant` in the backend namespace.
+
+Rejected routes are skipped, evented, and do not block valid sibling routes from syncing. `status.connectedRouteCount` counts emitted Cloudflare ingress rules, not raw HTTPRoute objects or parentRefs. The config hash is based on the emitted remote config only.
 
 ### `spec.originDefaults`
 
@@ -153,9 +183,22 @@ Default settings for how cloudflared connects to backend services in the cluster
 
 **`caPoolSecretRef`:** Use this when your backend services present TLS certificates signed by a private CA. The Secret must contain the CA certificate chain in PEM format. cfgate mounts the selected Secret key into cloudflared at `/etc/cfgate/origin-ca-pool/ca.pem` and sends `originRequest.caPool` with that path in the remote tunnel configuration. If `key` is omitted or empty, cfgate reads `ca.crt`. Without this, connections to services using private CA certificates will fail TLS verification (unless `noTLSVerify` is set, which is not recommended for production).
 
-The route annotation `cfgate.io/origin-ca-pool` can select that same managed path for a specific ingress rule. Alpha.5 rejects arbitrary annotation paths and rejects the annotation when this Secret ref is not configured, because cfgate cannot guarantee any other file exists inside cloudflared.
+The route annotation `cfgate.io/origin-ca-pool` can select that same managed path for a specific ingress rule. In managed mode, cfgate rejects arbitrary annotation paths and rejects the annotation when this Secret ref is not configured, because cfgate cannot guarantee any other file exists inside cloudflared. Advanced users can opt into unmanaged file paths with `cfgate.io/origin-ca-pool-mode: unmanaged`; cfgate will pass the absolute path through and warn that it does not mount or verify the file.
 
 If the referenced Secret or key is missing, cfgate does not deploy cloudflared and marks `CloudflaredDeployed=False` and `Ready=False`.
+
+#### Origin Defaults Runtime Contract
+
+Origin defaults apply to all emitted ingress rules. Runtime composition uses this precedence order:
+
+1. `CloudflareTunnel.spec.originDefaults`
+2. accepted `CloudflareOriginPolicy`
+3. accepted `BackendTLSPolicy`
+4. HTTPRoute annotations
+
+Route annotations can explicitly override inherited booleans with `false`, `0`, or `no` because annotation presence is observable. v1alpha1 CRD bool fields remain enable-only where omission and false cannot be distinguished.
+
+`h2cOrigin` defaults are invalid for emitted HTTPS origins unless a higher-precedence annotation explicitly disables h2c for that route. If `fallbackTarget` is a URL-backed origin, the same effective h2c validation applies to the fallback URL.
 
 ```yaml
 spec:
@@ -165,6 +208,48 @@ spec:
     caPoolSecretRef:
       name: internal-ca
       key: ca-chain.pem
+```
+
+### `spec.originCAPools`
+
+Named origin CA pools provide a Kubernetes-native replacement for route filesystem paths. cfgate mounts each referenced Secret key into cloudflared at a controller-owned path, then maps route annotations and origin policies to `originRequest.caPool`.
+
+```yaml
+spec:
+  originCAPools:
+    - name: internal
+      secretRef:
+        name: internal-ca
+        key: ca.crt
+    - name: partner
+      secretRef:
+        name: partner-ca
+        namespace: shared-certs
+        key: bundle.pem
+```
+
+Routes can select a pool by name:
+
+```yaml
+metadata:
+  annotations:
+    cfgate.io/origin-ca-pool-ref: internal
+```
+
+Cross-namespace Secret references require a Gateway API `ReferenceGrant` in the Secret namespace permitting `CloudflareTunnel` from the tunnel namespace to reference `Secret`.
+
+Same-namespace named pool Secrets are mounted directly. Cross-namespace named pool Secrets are copied into generated Secrets in the tunnel namespace, owned by the `CloudflareTunnel`, and mounted from there because Kubernetes pods cannot mount Secrets across namespaces. cfgate removes stale generated CA Secrets when the tunnel no longer references them.
+
+Named pools mount at:
+
+```text
+/etc/cfgate/origin-ca-pools/<pool-name>/ca.pem
+```
+
+Gateway API `BackendTLSPolicy` ConfigMap CA bundles are materialized the same way and mounted at:
+
+```text
+/etc/cfgate/backend-tls-policies/<policy-namespace>/<policy-name>/ca.pem
 ```
 
 ### `spec.fallbackTarget`

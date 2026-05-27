@@ -217,6 +217,8 @@ func TestRegisterControllers(t *testing.T) {
 	origHTTPRoute := setupHTTPRouteController
 	origAccess := setupAccessPolicyController
 	origAccessApp := setupAccessApplicationController
+	origOriginPolicy := setupOriginPolicyController
+	origBackendTLS := setupBackendTLSPolicyController
 	t.Cleanup(func() {
 		setupTunnelController = origTunnel
 		setupDNSController = origDNS
@@ -225,6 +227,8 @@ func TestRegisterControllers(t *testing.T) {
 		setupHTTPRouteController = origHTTPRoute
 		setupAccessPolicyController = origAccess
 		setupAccessApplicationController = origAccessApp
+		setupOriginPolicyController = origOriginPolicy
+		setupBackendTLSPolicyController = origBackendTLS
 	})
 
 	t.Run("success", func(t *testing.T) {
@@ -257,12 +261,20 @@ func TestRegisterControllers(t *testing.T) {
 			calls = append(calls, "accessapp")
 			return nil
 		}
+		setupOriginPolicyController = func(manager.Manager) error {
+			calls = append(calls, "originpolicy")
+			return nil
+		}
+		setupBackendTLSPolicyController = func(manager.Manager) error {
+			calls = append(calls, "backendtls")
+			return nil
+		}
 
 		if err := registerControllers(nil, &features.FeatureGates{}); err != nil {
 			t.Fatalf("registerControllers() error = %v", err)
 		}
 
-		want := "tunnel,dns,gateway,gatewayclass,httproute,access,accessapp"
+		want := "tunnel,dns,gateway,gatewayclass,httproute,access,accessapp,originpolicy,backendtls"
 		if got := strings.Join(calls, ","); got != want {
 			t.Fatalf("calls = %q, want %q", got, want)
 		}
@@ -330,6 +342,20 @@ func TestRegisterControllers(t *testing.T) {
 			},
 			want: "unable to create controller CloudflareAccessApplication",
 		},
+		{
+			name: "origin policy failure",
+			fail: func() {
+				setupOriginPolicyController = func(manager.Manager) error { return errors.New("boom") }
+			},
+			want: "unable to create controller CloudflareOriginPolicy",
+		},
+		{
+			name: "backend tls policy failure",
+			fail: func() {
+				setupBackendTLSPolicyController = func(manager.Manager) error { return errors.New("boom") }
+			},
+			want: "unable to create controller BackendTLSPolicy",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache) error { return nil }
@@ -339,6 +365,8 @@ func TestRegisterControllers(t *testing.T) {
 			setupHTTPRouteController = func(manager.Manager) error { return nil }
 			setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error { return nil }
 			setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error { return nil }
+			setupOriginPolicyController = func(manager.Manager) error { return nil }
+			setupBackendTLSPolicyController = func(manager.Manager) error { return nil }
 			tt.fail()
 
 			err := registerControllers(nil, &features.FeatureGates{})

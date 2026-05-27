@@ -1,7 +1,7 @@
 // Package v1alpha1 contains API Schema definitions for the cfgate.io v1alpha1 API group.
 //
 // cfgate is a Gateway API-native Kubernetes operator for Cloudflare Tunnel, DNS, and Access management.
-// This package defines four composable Custom Resource Definitions (CRDs) that enable declarative
+// This package defines composable Custom Resource Definitions (CRDs) that enable declarative
 // management of Cloudflare resources from Kubernetes.
 //
 // # Custom Resource Definitions
@@ -19,6 +19,8 @@
 // CloudflareAccessApplication binds reusable Access policies to Gateway API host/path targets and
 // supports cross-namespace references via ReferenceGrant resources.
 //
+// CloudflareOriginPolicy attaches cfgate-specific origin request settings to Gateway API targets.
+//
 // # Architecture
 //
 // The CRDs follow a composable architecture where each resource manages a single concern:
@@ -26,6 +28,7 @@
 //   - CloudflareDNS: DNS records (references tunnels via tunnelRef)
 //   - CloudflareAccessPolicy: reusable Access policies
 //   - CloudflareAccessApplication: Access Applications and policy links for Gateway API resources
+//   - CloudflareOriginPolicy: origin behavior policy for Gateway API resources
 //
 // This separation enables independent lifecycles, cross-namespace references, and flexible composition.
 //
@@ -41,6 +44,7 @@
 //   - CloudflareDNS: DNS sync policies, ownership tracking, hostname sources
 //   - CloudflareAccessPolicy: reusable Access rules and service tokens
 //   - CloudflareAccessApplication: Gateway API target binding and reusable policy links
+//   - CloudflareOriginPolicy: Gateway API target binding and origin settings
 //
 // +kubebuilder:object:generate=true
 // +groupName=cfgate.io

@@ -2,6 +2,7 @@ package cloudflare
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,6 +23,47 @@ func TestAPIErrorError(t *testing.T) {
 	want := "cloudflare API error (code 429): rate limited"
 	if got != want {
 		t.Fatalf("Error() = %q, want %q", got, want)
+	}
+}
+
+func TestUpdateTunnelConfigurationSendsExplicitFalseOriginBools(t *testing.T) {
+	var body string
+	client := testClientImpl(t, func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("ReadAll() error = %v", err)
+		}
+		body = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"errors":[],"messages":[],"result":{}}`))
+	})
+
+	config := TunnelConfiguration{
+		OriginRequest: &OriginRequestConfig{
+			NoTLSVerifySet: true,
+			HTTP2OriginSet: true,
+			H2cOriginSet:   true,
+		},
+		Ingress: []IngressRule{{
+			Hostname: "app.example.com",
+			Service:  "http://app.default.svc.cluster.local:8080",
+			OriginRequest: &OriginRequestConfig{
+				HTTP2OriginSet: true,
+				H2cOriginSet:   true,
+			},
+		}},
+	}
+	if err := client.UpdateTunnelConfiguration(context.Background(), "account", "tunnel", config); err != nil {
+		t.Fatalf("UpdateTunnelConfiguration() error = %v", err)
+	}
+	for _, want := range []string{
+		`"noTLSVerify":false`,
+		`"http2Origin":false`,
+		`"h2cOrigin":false`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("request body = %s, want %s", body, want)
+		}
 	}
 }
 

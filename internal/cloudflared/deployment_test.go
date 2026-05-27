@@ -2,12 +2,16 @@ package cloudflared
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 func newDeploymentTestTunnel(name string, opts ...func(*cfgatev1alpha1.CloudflareTunnel)) *cfgatev1alpha1.CloudflareTunnel {
@@ -32,6 +36,75 @@ func newDeploymentTestTunnel(name string, opts ...func(*cfgatev1alpha1.Cloudflar
 		opt(tunnel)
 	}
 	return tunnel
+}
+
+func TestDefaultImageContract(t *testing.T) {
+	expected := "ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2"
+	if DefaultImage != expected {
+		t.Fatalf("DefaultImage = %q, want %q", DefaultImage, expected)
+	}
+
+	files := map[string]string{
+		"api":  filepath.Join("..", "..", "api", "v1alpha1", "cloudflaretunnel_types.go"),
+		"crd":  filepath.Join("..", "..", "config", "crd", "bases", "cfgate.io_cloudflaretunnels.yaml"),
+		"docs": filepath.Join("..", "..", "docs", "cloudflare-tunnel.md"),
+	}
+	contents := make(map[string]string, len(files))
+	for name, path := range files {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s default image source %s: %v", name, path, err)
+		}
+		contents[name] = string(data)
+	}
+
+	if want := `+kubebuilder:default="` + expected + `"`; !strings.Contains(contents["api"], want) {
+		t.Fatalf("api default image missing %q", want)
+	}
+	if want := "default: " + expected; !strings.Contains(contents["crd"], want) {
+		t.Fatalf("crd default image missing %q", want)
+	}
+	if !strings.Contains(contents["docs"], expected) {
+		t.Fatalf("docs default image missing %q", expected)
+	}
+	oldTag := strings.TrimSuffix(expected, "2") + "1"
+	if strings.Contains(contents["docs"], oldTag) {
+		t.Fatalf("docs still reference %s", oldTag)
+	}
+}
+
+func TestOriginCAPoolVolumeNameFor(t *testing.T) {
+	t.Run("short name unchanged", func(t *testing.T) {
+		got := OriginCAPoolVolumeNameFor("backendtls", "apps", "tls-app")
+		if got != "origin-ca-backendtls-apps-tls-app" {
+			t.Fatalf("OriginCAPoolVolumeNameFor() = %q, want origin-ca-backendtls-apps-tls-app", got)
+		}
+	})
+
+	t.Run("long name fallback is valid", func(t *testing.T) {
+		got := OriginCAPoolVolumeNameFor(strings.Repeat("a-", 30) + "backendtls")
+		if len(got) > 63 {
+			t.Fatalf("len(OriginCAPoolVolumeNameFor()) = %d, want <= 63: %q", len(got), got)
+		}
+		if errs := validation.IsDNS1123Label(got); len(errs) > 0 {
+			t.Fatalf("OriginCAPoolVolumeNameFor() = %q, want DNS-1123 label: %v", got, errs)
+		}
+		if !strings.HasPrefix(got, "origin-ca-") {
+			t.Fatalf("OriginCAPoolVolumeNameFor() = %q, want origin-ca- prefix", got)
+		}
+		if strings.Contains(got, "--") {
+			t.Fatalf("OriginCAPoolVolumeNameFor() = %q, want no double hyphen", got)
+		}
+	})
+
+	t.Run("fallback deterministic", func(t *testing.T) {
+		parts := []string{"backendtls", strings.Repeat("service-", 12), "tls-app"}
+		first := OriginCAPoolVolumeNameFor(parts...)
+		second := OriginCAPoolVolumeNameFor(parts...)
+		if first != second {
+			t.Fatalf("OriginCAPoolVolumeNameFor() = %q then %q, want deterministic output", first, second)
+		}
+	})
 }
 
 func TestBuildProbes(t *testing.T) {

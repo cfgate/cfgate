@@ -47,6 +47,9 @@ func ingressOriginRequestToAPI(config *OriginRequestConfig) zero_trust.TunnelClo
 	if config.ConnectTimeout != "" {
 		req.ConnectTimeout = cf.F(parseDurationSeconds(config.ConnectTimeout, 30))
 	}
+	if config.TLSTimeout != "" {
+		req.TLSTimeout = cf.F(parseDurationSeconds(config.TLSTimeout, 10))
+	}
 	if config.NoHappyEyeballs {
 		req.NoHappyEyeballs = cf.F(true)
 	}
@@ -59,17 +62,20 @@ func ingressOriginRequestToAPI(config *OriginRequestConfig) zero_trust.TunnelClo
 	if config.OriginServerName != "" {
 		req.OriginServerName = cf.F(config.OriginServerName)
 	}
+	if config.MatchSNIToHost {
+		req.MatchSnItoHost = cf.F(true)
+	}
 	if config.CAPool != "" {
 		req.CAPool = cf.F(config.CAPool)
 	}
-	if config.NoTLSVerify {
-		req.NoTLSVerify = cf.F(true)
+	if config.NoTLSVerify || config.NoTLSVerifySet {
+		req.NoTLSVerify = cf.F(config.NoTLSVerify)
 	}
 	if config.DisableChunkedEncoding {
 		req.DisableChunkedEncoding = cf.F(true)
 	}
-	if config.HTTP2Origin {
-		req.HTTP2Origin = cf.F(true)
+	if config.HTTP2Origin || config.HTTP2OriginSet {
+		req.HTTP2Origin = cf.F(config.HTTP2Origin)
 	}
 
 	return req
@@ -82,6 +88,9 @@ func globalOriginRequestToAPI(config *OriginRequestConfig) zero_trust.TunnelClou
 	if config.ConnectTimeout != "" {
 		req.ConnectTimeout = cf.F(parseDurationSeconds(config.ConnectTimeout, 30))
 	}
+	if config.TLSTimeout != "" {
+		req.TLSTimeout = cf.F(parseDurationSeconds(config.TLSTimeout, 10))
+	}
 	if config.NoHappyEyeballs {
 		req.NoHappyEyeballs = cf.F(true)
 	}
@@ -94,17 +103,20 @@ func globalOriginRequestToAPI(config *OriginRequestConfig) zero_trust.TunnelClou
 	if config.OriginServerName != "" {
 		req.OriginServerName = cf.F(config.OriginServerName)
 	}
+	if config.MatchSNIToHost {
+		req.MatchSnItoHost = cf.F(true)
+	}
 	if config.CAPool != "" {
 		req.CAPool = cf.F(config.CAPool)
 	}
-	if config.NoTLSVerify {
-		req.NoTLSVerify = cf.F(true)
+	if config.NoTLSVerify || config.NoTLSVerifySet {
+		req.NoTLSVerify = cf.F(config.NoTLSVerify)
 	}
 	if config.DisableChunkedEncoding {
 		req.DisableChunkedEncoding = cf.F(true)
 	}
-	if config.HTTP2Origin {
-		req.HTTP2Origin = cf.F(true)
+	if config.HTTP2Origin || config.HTTP2OriginSet {
+		req.HTTP2Origin = cf.F(config.HTTP2Origin)
 	}
 
 	return req

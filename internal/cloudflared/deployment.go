@@ -2,7 +2,9 @@
 package cloudflared
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -17,7 +19,7 @@ import (
 const (
 	// DefaultImage is the default cloudflared container image.
 	// Points to the inherent-design fork which includes h2c origin support.
-	DefaultImage = "ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1"
+	DefaultImage = "ghcr.io/inherent-design/cloudflared:2026.5.1-h2c.2"
 
 	// DefaultMetricsPort is the default port for cloudflared metrics.
 	DefaultMetricsPort = 44483
@@ -33,6 +35,12 @@ const (
 
 	// DefaultOriginCAPoolSecretKey is used when caPoolSecretRef.key is empty.
 	DefaultOriginCAPoolSecretKey = "ca.crt"
+
+	// NamedOriginCAPoolMountBase is where named origin CA pools are mounted.
+	NamedOriginCAPoolMountBase = "/etc/cfgate/origin-ca-pools"
+
+	// BackendTLSCAPoolMountBase is where BackendTLSPolicy CA pools are mounted.
+	BackendTLSCAPoolMountBase = "/etc/cfgate/backend-tls-policies"
 
 	// TokenEnvVar is the environment variable name for the tunnel token.
 	TokenEnvVar = "TUNNEL_TOKEN"
@@ -55,6 +63,19 @@ type Builder interface {
 	BuildTokenSecret(tunnel *cfgatev1alpha1.CloudflareTunnel, token string) *corev1.Secret
 }
 
+// OriginCAPoolMount describes an additional Secret-mounted CA bundle.
+type OriginCAPoolMount struct {
+	Name       string
+	SecretName string
+	Key        string
+	MountPath  string
+}
+
+// DeploymentOriginCAPoolBuilder can mount additional generated or named CA bundles.
+type DeploymentOriginCAPoolBuilder interface {
+	BuildDeploymentWithOriginCAPoolMounts(tunnel *cfgatev1alpha1.CloudflareTunnel, token string, mounts []OriginCAPoolMount) *appsv1.Deployment
+}
+
 // DefaultBuilder is the default implementation of Builder.
 type DefaultBuilder struct{}
 
@@ -71,6 +92,11 @@ func NewBuilder() *DefaultBuilder {
 // - Token-based authentication
 // - Metrics endpoint configuration
 func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel, token string) *appsv1.Deployment {
+	return b.BuildDeploymentWithOriginCAPoolMounts(tunnel, token, nil)
+}
+
+// BuildDeploymentWithOriginCAPoolMounts creates a Deployment and mounts extra CA pool Secrets.
+func (b *DefaultBuilder) BuildDeploymentWithOriginCAPoolMounts(tunnel *cfgatev1alpha1.CloudflareTunnel, token string, mounts []OriginCAPoolMount) *appsv1.Deployment {
 	labels := Labels(tunnel.Name)
 	selector := Selector(tunnel.Name)
 	tokenSecretName := TokenSecretName(tunnel.Name)
@@ -80,7 +106,7 @@ func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel
 		replicas = 2
 	}
 
-	container := buildContainer(tunnel, tokenSecretName)
+	container := buildContainerWithMounts(tunnel, tokenSecretName, mounts)
 	if metricsEnabled(tunnel) {
 		liveness, readiness := buildProbes(getMetricsPort(tunnel))
 		container.LivenessProbe = liveness
@@ -123,6 +149,7 @@ func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel
 	}
 
 	addOriginCAPoolVolume(tunnel, deployment)
+	addExtraOriginCAPoolVolumes(deployment, mounts)
 
 	// Add node selector if specified
 	if len(tunnel.Spec.Cloudflared.NodeSelector) > 0 {
@@ -207,6 +234,10 @@ func Selector(tunnelName string) map[string]string {
 
 // buildContainer creates the cloudflared container spec.
 func buildContainer(tunnel *cfgatev1alpha1.CloudflareTunnel, tokenSecretName string) corev1.Container {
+	return buildContainerWithMounts(tunnel, tokenSecretName, nil)
+}
+
+func buildContainerWithMounts(tunnel *cfgatev1alpha1.CloudflareTunnel, tokenSecretName string, mounts []OriginCAPoolMount) corev1.Container {
 	image := tunnel.Spec.Cloudflared.Image
 	if image == "" {
 		image = DefaultImage
@@ -256,6 +287,13 @@ func buildContainer(tunnel *cfgatev1alpha1.CloudflareTunnel, tokenSecretName str
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name:      OriginCAPoolVolumeName,
 			MountPath: OriginCAPoolMountPath,
+			ReadOnly:  true,
+		})
+	}
+	for _, mount := range mounts {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name:      mount.Name,
+			MountPath: mount.MountPath,
 			ReadOnly:  true,
 		})
 	}
@@ -349,6 +387,32 @@ func OriginCAPoolPath() string {
 	return fmt.Sprintf("%s/%s", OriginCAPoolMountPath, OriginCAPoolFileName)
 }
 
+// NamedOriginCAPoolPath returns the in-container path for a named CA pool.
+func NamedOriginCAPoolPath(name string) string {
+	return fmt.Sprintf("%s/%s/%s", NamedOriginCAPoolMountBase, name, OriginCAPoolFileName)
+}
+
+// BackendTLSCAPoolPath returns the in-container path for a BackendTLSPolicy CA pool.
+func BackendTLSCAPoolPath(namespace, name string) string {
+	return fmt.Sprintf("%s/%s/%s/%s", BackendTLSCAPoolMountBase, namespace, name, OriginCAPoolFileName)
+}
+
+// OriginCAPoolVolumeNameFor returns a deterministic DNS label volume name no longer than 63 chars.
+func OriginCAPoolVolumeNameFor(parts ...string) string {
+	joined := strings.Join(parts, "-")
+	candidate := "origin-ca-" + joined
+	if len(candidate) <= 63 {
+		return candidate
+	}
+	sum := sha256.Sum256([]byte(joined))
+	prefix := joined
+	if len(prefix) > 42 {
+		prefix = prefix[:42]
+	}
+	prefix = strings.TrimRight(prefix, "-")
+	return fmt.Sprintf("origin-ca-%s-%x", prefix, sum[:5])
+}
+
 func metricsEnabled(tunnel *cfgatev1alpha1.CloudflareTunnel) bool {
 	return tunnel.Spec.Cloudflared.Metrics.Enabled == nil || *tunnel.Spec.Cloudflared.Metrics.Enabled
 }
@@ -378,4 +442,25 @@ func addOriginCAPoolVolume(tunnel *cfgatev1alpha1.CloudflareTunnel, deployment *
 			},
 		},
 	})
+}
+
+func addExtraOriginCAPoolVolumes(deployment *appsv1.Deployment, mounts []OriginCAPoolMount) {
+	for _, mount := range mounts {
+		key := mount.Key
+		if key == "" {
+			key = DefaultOriginCAPoolSecretKey
+		}
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, corev1.Volume{
+			Name: mount.Name,
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: mount.SecretName,
+					Items: []corev1.KeyToPath{{
+						Key:  key,
+						Path: OriginCAPoolFileName,
+					}},
+				},
+			},
+		})
+	}
 }

@@ -26,4 +26,9 @@ spec:
   originDefaults:
     connectTimeout: 30s
     noTLSVerify: false
+  originCAPools:
+    - name: internal
+      secretRef:
+        name: internal-ca
+        key: ca.crt
   fallbackTarget: http_status:404

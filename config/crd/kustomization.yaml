@@ -5,3 +5,4 @@ resources:
   - bases/cfgate.io_cloudflarednses.yaml
   - bases/cfgate.io_cloudflareaccesspolicies.yaml
   - bases/cfgate.io_cloudflareaccessapplications.yaml
+  - bases/cfgate.io_cloudflareoriginpolicies.yaml

@@ -309,11 +309,9 @@ func (r *GatewayReconciler) countAttachedRoutes(ctx context.Context, gateway *gw
 			}
 
 			if string(parentRef.Name) == gateway.Name && parentNS == gateway.Namespace {
-				// Check section name if specified
-				if parentRef.SectionName != nil && *parentRef.SectionName != listener.Name {
-					continue
+				if evaluateHTTPRouteForListener(ctx, r.Client, &route, gateway, parentRef, listener).Accepted {
+					count++
 				}
-				count++
 			}
 		}
 	}

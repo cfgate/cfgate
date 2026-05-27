@@ -86,6 +86,42 @@ This creates a cloudflared ingress rule: `app.example.com` routes to `http://my-
 
 Per-route behavior is configured via annotations on the Route resource. See [Annotations Reference](annotations.md) for the full list.
 
+### What Actually Gets Published To Cloudflare
+
+Gateway and HTTPRoute status are part of the publishing contract. cfgate emits Cloudflare Tunnel ingress rules only for routes accepted by Gateway API attachment rules.
+
+A route does not publish to Cloudflare when:
+
+- Its parentRef does not target a cfgate-managed Gateway.
+- Its sectionName does not match the selected listener.
+- Its hostname is not accepted by the listener hostname.
+- `allowedRoutes.namespaces.from: Same` is set and the route is outside the Gateway namespace.
+- `allowedRoutes.namespaces.from: Selector` is set and the route namespace labels do not match.
+- A backend Service reference crosses namespaces without a `ReferenceGrant` in the backend namespace.
+
+Rejected routes are skipped during Cloudflare config sync. Valid sibling routes can still publish.
+
+### Backend TLS and Origin Policy
+
+Use Gateway API `BackendTLSPolicy` for portable backend TLS validation when the policy targets a backend `Service`. cfgate maps valid CA bundles to managed cloudflared `originRequest.caPool` paths.
+
+Use [CloudflareOriginPolicy](cloudflare-origin-policy.md) for cfgate-specific cloudflared origin settings such as host header overrides, connection timeouts, HTTP/2 origin mode, h2c origin mode, and named CA pools.
+
+When both apply to the same backend, cfgate starts with tunnel defaults, applies `CloudflareOriginPolicy`, then applies `BackendTLSPolicy`, then applies route annotations as the final alpha-line override. This lets you migrate annotations to policies without changing behavior until the annotations are removed.
+
+### Origin Runtime Composition
+
+Origin settings are composed in this order:
+
+1. `CloudflareTunnel.spec.originDefaults`
+2. `CloudflareOriginPolicy`
+3. `BackendTLSPolicy`
+4. HTTPRoute annotations
+
+BackendTLSPolicy can change the generated origin service scheme to HTTPS. That conflicts with h2c because h2c is cleartext HTTP/2 and requires HTTP origin protocol. Route annotations can override only compatible origin settings and cannot change a BackendTLSPolicy backend back to HTTP.
+
+`GRPCRoute`, `TCPRoute`, and `TLSRoute` are not current public-hostname route surfaces for cfgate. Cloudflare Tunnel public hostnames are HTTP-family published applications; gRPC through Tunnel is documented for private subnet routing, and non-HTTP public services require client-side cloudflared or private routing.
+
 ## How cfgate Uses Gateway API
 
 The full chain from infrastructure to application routing:
@@ -176,6 +212,7 @@ If you are migrating from an Ingress-based Cloudflare operator:
 - [CloudflareDNS Reference](cloudflare-dns.md)
 - [CloudflareAccessPolicy Reference](cloudflare-access-policy.md)
 - [CloudflareAccessApplication Reference](cloudflare-access-application.md)
+- [CloudflareOriginPolicy Reference](cloudflare-origin-policy.md)
 - [Annotations Reference](annotations.md)
 - [Troubleshooting](troubleshooting.md)
 - [Service Mesh Integration](service-mesh.md)

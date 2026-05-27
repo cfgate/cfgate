@@ -100,6 +100,14 @@ const (
 	// Values: file path string
 	AnnotationOriginCAPool = AnnotationPrefix + "origin-ca-pool"
 
+	// AnnotationOriginCAPoolMode controls how origin-ca-pool paths are interpreted.
+	// Values: "managed", "unmanaged"
+	AnnotationOriginCAPoolMode = AnnotationPrefix + "origin-ca-pool-mode"
+
+	// AnnotationOriginCAPoolRef references a named CloudflareTunnel origin CA pool.
+	// Values: pool name from CloudflareTunnel spec.originCAPools
+	AnnotationOriginCAPoolRef = AnnotationPrefix + "origin-ca-pool-ref"
+
 	// AnnotationOriginHTTP2 enables HTTP/2 to origin.
 	// Values: "true", "false"
 	// Default: "false"
@@ -142,12 +150,19 @@ var ValidOriginProtocols = map[string]bool{
 	"https": true,
 }
 
+// ValidOriginCAPoolModes defines the allowed CA pool path safety modes.
+var ValidOriginCAPoolModes = map[string]bool{
+	"managed":   true,
+	"unmanaged": true,
+}
+
 // hostnameRegex validates RFC 1123 hostnames.
 // - Lowercase alphanumeric characters and hyphens
 // - Labels separated by dots
 // - Each label max 63 characters
 // - Total max 253 characters
 var hostnameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+var originCAPoolNameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // --- Parsing Utilities ---
 
@@ -169,18 +184,28 @@ func GetAnnotation(obj client.Object, key string) string {
 // Returns defaultValue if annotation not present or not a valid boolean.
 // Accepts: "true", "false", "1", "0", "yes", "no" (case-insensitive)
 func GetAnnotationBool(obj client.Object, key string, defaultValue bool) bool {
+	value, present := GetAnnotationBoolValue(obj, key)
+	if !present {
+		return defaultValue
+	}
+	return value
+}
+
+// GetAnnotationBoolValue parses a boolean annotation value and reports whether
+// a valid annotation was present.
+func GetAnnotationBoolValue(obj client.Object, key string) (bool, bool) {
 	value := GetAnnotation(obj, key)
 	if value == "" {
-		return defaultValue
+		return false, false
 	}
 
 	switch strings.ToLower(value) {
 	case "true", "1", "yes":
-		return true
+		return true, true
 	case "false", "0", "no":
-		return false
+		return false, true
 	default:
-		return defaultValue
+		return false, false
 	}
 }
 
@@ -255,6 +280,33 @@ func ValidateOriginProtocol(value string) error {
 	}
 	if !ValidOriginProtocols[strings.ToLower(value)] {
 		return fmt.Errorf("invalid origin protocol %q: must be one of http, https", value)
+	}
+	return nil
+}
+
+// ValidateOriginCAPoolMode validates origin-ca-pool-mode.
+// Empty value is valid and defaults to managed.
+func ValidateOriginCAPoolMode(value string) error {
+	if value == "" {
+		return nil
+	}
+	if !ValidOriginCAPoolModes[strings.ToLower(value)] {
+		return fmt.Errorf("invalid origin CA pool mode %q: must be one of managed, unmanaged", value)
+	}
+	return nil
+}
+
+// ValidateOriginCAPoolRef validates a named CA pool reference.
+// Empty value is valid.
+func ValidateOriginCAPoolRef(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > MaxLabelLength {
+		return fmt.Errorf("origin CA pool ref %q exceeds maximum length of %d characters", value, MaxLabelLength)
+	}
+	if !originCAPoolNameRegex.MatchString(value) {
+		return fmt.Errorf("origin CA pool ref %q must be a lowercase DNS label", value)
 	}
 	return nil
 }
@@ -353,6 +405,26 @@ func ValidateRouteAnnotations(obj client.Object, requireHostname bool) Validatio
 			"%s and %s are mutually exclusive", AnnotationOriginH2c, AnnotationOriginHTTP2))
 	}
 
+	if mode := GetAnnotation(obj, AnnotationOriginCAPoolMode); mode != "" {
+		if err := ValidateOriginCAPoolMode(mode); err != nil {
+			result.Valid = false
+			result.Errors = append(result.Errors, err.Error())
+		}
+	}
+
+	if caPoolRef := GetAnnotation(obj, AnnotationOriginCAPoolRef); caPoolRef != "" {
+		if err := ValidateOriginCAPoolRef(caPoolRef); err != nil {
+			result.Valid = false
+			result.Errors = append(result.Errors, err.Error())
+		}
+	}
+
+	if GetAnnotation(obj, AnnotationOriginCAPool) != "" && GetAnnotation(obj, AnnotationOriginCAPoolRef) != "" {
+		result.Valid = false
+		result.Errors = append(result.Errors, fmt.Sprintf(
+			"%s and %s are mutually exclusive", AnnotationOriginCAPool, AnnotationOriginCAPoolRef))
+	}
+
 	// Validate hostname
 	hostname := GetAnnotation(obj, AnnotationHostname)
 	if requireHostname {
@@ -395,6 +467,12 @@ type OriginConfig struct {
 	// CAPool specifies path to CA certificate pool.
 	CAPool string
 
+	// CAPoolMode controls how CAPool paths are validated.
+	CAPoolMode string
+
+	// CAPoolRef references a named CloudflareTunnel origin CA pool.
+	CAPoolRef string
+
 	// HTTP2 enables HTTP/2 to origin.
 	HTTP2 bool
 
@@ -412,6 +490,8 @@ func ParseOriginConfig(obj client.Object, defaultProtocol string) OriginConfig {
 		HTTPHostHeader: GetAnnotation(obj, AnnotationOriginHTTPHostHeader),
 		ServerName:     GetAnnotation(obj, AnnotationOriginServerName),
 		CAPool:         GetAnnotation(obj, AnnotationOriginCAPool),
+		CAPoolMode:     GetAnnotation(obj, AnnotationOriginCAPoolMode),
+		CAPoolRef:      GetAnnotation(obj, AnnotationOriginCAPoolRef),
 		HTTP2:          GetAnnotationBool(obj, AnnotationOriginHTTP2, false),
 		H2c:            GetAnnotationBool(obj, AnnotationOriginH2c, false),
 	}
@@ -419,6 +499,9 @@ func ParseOriginConfig(obj client.Object, defaultProtocol string) OriginConfig {
 	// Apply default protocol if not specified
 	if config.Protocol == "" {
 		config.Protocol = defaultProtocol
+	}
+	if config.CAPoolMode == "" {
+		config.CAPoolMode = "managed"
 	}
 
 	return config

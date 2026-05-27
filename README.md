@@ -4,13 +4,13 @@
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/cfgate/cfgate/ci.yml?branch=main&style=flat)](https://github.com/cfgate/cfgate/actions/workflows/ci.yml) [![Coverage](https://codecov.io/gh/cfgate/cfgate/branch/main/graph/badge.svg)](https://codecov.io/gh/cfgate/cfgate) [![Go Report Card](https://goreportcard.com/badge/github.com/cfgate/cfgate)](https://goreportcard.com/report/github.com/cfgate/cfgate) [![Go Reference](https://pkg.go.dev/badge/github.com/cfgate/cfgate.svg)](https://pkg.go.dev/cfgate.io/cfgate/)
 
-cfgate is a Kubernetes operator that manages Cloudflare Tunnels, DNS records, reusable Access policies, and Access application bindings through custom resources. It uses [Gateway API](https://gateway-api.sigs.k8s.io/), the CNCF standard replacing Ingress, so routing configuration works the same as Envoy, Istio, or Cilium. Clusters running cfgate need no public IP, no ingress controller, and no load balancer. Traffic reaches services through Cloudflare Tunnels: outbound-only connections from the cluster to Cloudflare's edge.
+cfgate is a Kubernetes operator that manages Cloudflare Tunnels, DNS records, reusable Access policies, Access application bindings, and origin policies through custom resources. It uses [Gateway API](https://gateway-api.sigs.k8s.io/), the CNCF standard replacing Ingress, so routing configuration works the same as Envoy, Istio, or Cilium. Clusters running cfgate need no public IP, no ingress controller, and no load balancer. Traffic reaches services through Cloudflare Tunnels: outbound-only connections from the cluster to Cloudflare's edge.
 
 Gateway API is the Kubernetes successor to Ingress. If you're coming from Ingress, see the [Gateway API Primer](docs/gateway-api-primer.md).
 
 ### Why cfgate?
 
-- **Composable CRDs for tunnels, DNS, and access.** CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, and CloudflareAccessApplication each manage a distinct piece of Cloudflare infrastructure as Kubernetes resources. Tunnels, DNS records, reusable policies, and app bindings all live in version-controlled YAML instead of the Cloudflare dashboard.
+- **Composable CRDs for tunnels, DNS, access, and origin settings.** CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, CloudflareAccessApplication, and CloudflareOriginPolicy each manage a distinct piece of Cloudflare infrastructure as Kubernetes resources. Tunnels, DNS records, reusable policies, app bindings, and origin behavior all live in version-controlled YAML instead of the Cloudflare dashboard.
 - **Outbound-only tunnel connections.** Cloudflare Tunnels establish outbound-only connections from the cluster to Cloudflare's edge. Services are never exposed via public IP or load balancer.
 - **Built on Gateway API.** Uses the [Gateway API](https://gateway-api.sigs.k8s.io/) standard, not a proprietary abstraction. Existing community operators use the deprecated Ingress API and lack Access policy management.
 - **Independent, composable resources.** Each CRD operates independently. Use the resources together or pick the ones you need: a tunnel without DNS sync, DNS without Access, Access policies without app bindings, or the full stack.
@@ -19,7 +19,7 @@ Gateway API is the Kubernetes successor to Ingress. If you're coming from Ingres
 
 ![How cfgate works](docs/images/how-it-works.svg)
 
-Define a CloudflareTunnel, point a Gateway at it, and attach HTTPRoutes to the Gateway. cfgate reconciles each resource against the Cloudflare API: it creates the tunnel, deploys cloudflared pods, syncs DNS records, syncs reusable Access policies, and binds Access Applications to route host/path targets. Traffic flows from Cloudflare's edge through the tunnel directly to in-cluster services. The cluster needs no public IP, no ingress controller, and no load balancer.
+Define a CloudflareTunnel, point a Gateway at it, and attach HTTPRoutes to the Gateway. cfgate reconciles each resource against the Cloudflare API: it creates the tunnel, deploys cloudflared pods, syncs DNS records, syncs reusable Access policies, binds Access Applications to route host/path targets, and applies origin policy contracts. Traffic flows from Cloudflare's edge through the tunnel directly to in-cluster services. The cluster needs no public IP, no ingress controller, and no load balancer.
 
 ## Getting Started
 
@@ -156,7 +156,11 @@ cfgate automatically:
 
 **CloudflareAccessApplication** binds reusable policies to `Gateway` and `HTTPRoute` host/path targets. → [Full reference](docs/cloudflare-access-application.md)
 
-Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) is set via annotations on Gateway API HTTPRoute resources. → [Full reference](docs/annotations.md)
+**CloudflareOriginPolicy** binds cfgate-specific origin settings to `HTTPRoute` targets. → [Full reference](docs/cloudflare-origin-policy.md)
+
+Portable backend TLS validation can be expressed with Gateway API `BackendTLSPolicy`; cfgate maps supported policies into cloudflared origin request settings.
+
+Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) can still be set via annotations on Gateway API HTTPRoute resources. Annotations remain the highest-precedence alpha migration override. → [Full reference](docs/annotations.md)
 
 ## Documentation
 
@@ -167,6 +171,7 @@ Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) is se
 | [CloudflareDNS](docs/cloudflare-dns.md) | Full CRD reference, annotationFilter, ownership |
 | [CloudflareAccessPolicy](docs/cloudflare-access-policy.md) | Reusable Access policy reference, rule types, service tokens |
 | [CloudflareAccessApplication](docs/cloudflare-access-application.md) | Gateway API target binding, path rules, policyRefs |
+| [CloudflareOriginPolicy](docs/cloudflare-origin-policy.md) | Gateway API origin policy binding and cloudflared origin settings |
 | [Annotations](docs/annotations.md) | Complete annotation reference |
 | [Service Mesh](docs/service-mesh.md) | Istio, Envoy Gateway, and Kiali integration |
 | [Troubleshooting](docs/troubleshooting.md) | Diagnostic steps and solutions |

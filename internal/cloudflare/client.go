@@ -293,6 +293,8 @@ type OriginRequestConfig struct {
 
 	// NoTLSVerify disables TLS verification.
 	NoTLSVerify bool `json:"noTLSVerify,omitempty"`
+	// NoTLSVerifySet records explicit false overrides from route annotations.
+	NoTLSVerifySet bool `json:"-"`
 
 	// DisableChunkedEncoding disables chunked encoding.
 	DisableChunkedEncoding bool `json:"disableChunkedEncoding,omitempty"`
@@ -314,10 +316,14 @@ type OriginRequestConfig struct {
 
 	// HTTP2Origin enables HTTP/2 to origin.
 	HTTP2Origin bool `json:"http2Origin,omitempty"`
+	// HTTP2OriginSet records explicit false overrides from route annotations.
+	HTTP2OriginSet bool `json:"-"`
 
 	// H2cOrigin enables HTTP/2 cleartext (h2c) to origin.
 	// Mutually exclusive with HTTP2Origin.
 	H2cOrigin bool `json:"h2cOrigin,omitempty"`
+	// H2cOriginSet records explicit false overrides from route annotations.
+	H2cOriginSet bool `json:"-"`
 
 	// MatchSNIToHost passes SNI matching hostname to origin.
 	MatchSNIToHost bool `json:"matchSniToHost,omitempty"`
