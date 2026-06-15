@@ -7,7 +7,7 @@ require (
 	github.com/go-logr/logr v1.4.3
 	github.com/onsi/ginkgo/v2 v2.28.3
 	github.com/onsi/gomega v1.40.0
-	go.uber.org/zap v1.27.1
+	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.53.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.35.4
