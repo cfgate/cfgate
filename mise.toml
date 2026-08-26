@@ -5,7 +5,7 @@ _.file = ".env"
 
 [tools]
 go = "1.26.3"
-"aqua:kubernetes-sigs/kind" = "0.31.0"
+"aqua:kubernetes-sigs/kind" = "0.33.0"
 "aqua:kubernetes/kubernetes/kubectl" = "1.36.1"
 "aqua:kubernetes-sigs/kustomize" = "5.8.1"
 "aqua:golangci/golangci-lint" = "2.11.4"
