@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/cloudflare/cloudflare-go/v6 v6.10.0
-	github.com/go-logr/logr v1.4.3
+	github.com/go-logr/logr v1.4.4
 	github.com/onsi/ginkgo/v2 v2.28.3
 	github.com/onsi/gomega v1.40.0
 	go.uber.org/zap v1.27.1
