@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
 )
 
 type fakeCleanupClient struct {
+	deleted  []string
 	tunnels  []resource
 	records  []resource
 	apps     []resource
@@ -39,7 +42,7 @@ func TestExecuteCleanup(t *testing.T) {
 	t.Run("config failure returns usage-style exit code", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		code := executeCleanup(func(string) string { return "" }, buf, cleanupRuntime{
-			newClient: func(string) cleanupClient {
+			newClient: func(context.Context, string) cleanupClient {
 				t.Fatal("newClient should not be called on config error")
 				return nil
 			},
@@ -58,15 +61,17 @@ func TestExecuteCleanup(t *testing.T) {
 			switch key {
 			case "CLOUDFLARE_API_TOKEN":
 				return "token"
+			case "E2E_CLEAN_ORPHANS", "E2E_CLEANUP_APPLY":
+				return "true"
 			case "CLOUDFLARE_ACCOUNT_ID":
 				return "account"
 			default:
 				return ""
 			}
 		}, buf, cleanupRuntime{
-			newClient: func(string) cleanupClient {
+			newClient: func(context.Context, string) cleanupClient {
 				return &fakeCleanupClient{
-					tunnels: []resource{{ID: "t1", Name: "e2e-tunnel", Type: "tunnel"}},
+					tunnels: []resource{{ID: "t1", Name: "e2e-old-tunnel-1-2", Type: "tunnel", Created: time.Now().Add(-3 * time.Hour)}},
 					deleteTunnelErr: map[string]error{
 						"t1": errors.New("boom"),
 					},
@@ -90,7 +95,7 @@ func TestExecuteCleanup(t *testing.T) {
 				return ""
 			}
 		}, buf, cleanupRuntime{
-			newClient: func(string) cleanupClient {
+			newClient: func(context.Context, string) cleanupClient {
 				return &fakeCleanupClient{}
 			},
 		})
@@ -132,6 +137,7 @@ func (f *fakeCleanupClient) ResolveZoneID(context.Context, string) (string, erro
 }
 
 func (f *fakeCleanupClient) DeleteTunnel(_ context.Context, _, tunnelID string) error {
+	f.deleted = append(f.deleted, tunnelID)
 	if err := f.deleteTunnelErr[tunnelID]; err != nil {
 		return err
 	}
@@ -139,6 +145,7 @@ func (f *fakeCleanupClient) DeleteTunnel(_ context.Context, _, tunnelID string) 
 }
 
 func (f *fakeCleanupClient) DeleteDNSRecord(_ context.Context, _, recordID string) error {
+	f.deleted = append(f.deleted, recordID)
 	if err := f.deleteRecordErr[recordID]; err != nil {
 		return err
 	}
@@ -146,6 +153,7 @@ func (f *fakeCleanupClient) DeleteDNSRecord(_ context.Context, _, recordID strin
 }
 
 func (f *fakeCleanupClient) DeleteAccessApplication(_ context.Context, _, appID string) error {
+	f.deleted = append(f.deleted, appID)
 	if err := f.deleteAppErr[appID]; err != nil {
 		return err
 	}
@@ -153,6 +161,7 @@ func (f *fakeCleanupClient) DeleteAccessApplication(_ context.Context, _, appID 
 }
 
 func (f *fakeCleanupClient) DeleteAccessPolicy(_ context.Context, _, policyID string) error {
+	f.deleted = append(f.deleted, policyID)
 	if err := f.deletePolicyErr[policyID]; err != nil {
 		return err
 	}
@@ -160,6 +169,7 @@ func (f *fakeCleanupClient) DeleteAccessPolicy(_ context.Context, _, policyID st
 }
 
 func (f *fakeCleanupClient) DeleteAccessTag(_ context.Context, _, tagName string) error {
+	f.deleted = append(f.deleted, tagName)
 	if err := f.deleteTagErr[tagName]; err != nil {
 		return err
 	}
@@ -167,6 +177,7 @@ func (f *fakeCleanupClient) DeleteAccessTag(_ context.Context, _, tagName string
 }
 
 func (f *fakeCleanupClient) DeleteServiceToken(_ context.Context, _, tokenID string) error {
+	f.deleted = append(f.deleted, tokenID)
 	if err := f.deleteTokenErr[tokenID]; err != nil {
 		return err
 	}
@@ -204,209 +215,113 @@ func TestLoadCleanupConfig(t *testing.T) {
 }
 
 func TestRunCleanup(t *testing.T) {
-	cfg := cleanupConfig{
-		APIToken:  "token",
-		AccountID: "account",
-		ZoneName:  "example.com",
+	old := time.Now().Add(-3 * time.Hour)
+	owner := "cfgate:0123456789abcdef0123456789ab"
+	foreign := "cfgate:abcdef0123456789abcdef012345"
+	cfg := cleanupConfig{APIToken: "token", AccountID: "account", ZoneName: "example.com", MinAge: 2 * time.Hour, Apply: true}
+	fixture := func() *fakeCleanupClient {
+		return &fakeCleanupClient{
+			tunnels:  []resource{{ID: "old", Name: "e2e-old-tunnel-1-2", Created: old}, {ID: "fresh", Name: "e2e-new-tunnel-1-2", Created: time.Now()}, {ID: "unknown", Name: "e2e-old-tunnel-1-3"}, {ID: "foreign", Name: "production-e2e-old-tunnel-1-2", Created: old}},
+			records:  []resource{{ID: "dns", Name: "_custom.e2e-old-dns-1-4.example.com", Created: old}},
+			apps:     []resource{{ID: "app", Name: "admin-app", Domain: "e2e-old-access-1-5.example.com/admin", Created: old, Tags: []string{owner}}},
+			policies: []resource{{ID: "policy", Name: "e2e-old-policy-1-6", Created: old}},
+			tokens:   []resource{{ID: "token", Name: "e2e-old-access-1-7-token", Created: old}},
+			tags:     []resource{{ID: owner, Name: owner}, {ID: foreign, Name: foreign}}, zoneID: "zone",
+		}
 	}
-
-	t.Run("reports no resources", func(t *testing.T) {
-		buf := &bytes.Buffer{}
-		summary, err := runCleanup(context.Background(), cfg, &fakeCleanupClient{}, buf)
-		if err != nil {
-			t.Fatalf("runCleanup() error = %v", err)
-		}
-		if summary.Found != 0 || summary.Deleted != 0 || summary.Failed != 0 {
-			t.Fatalf("summary = %+v, want all zero", summary)
-		}
-		if !strings.Contains(buf.String(), "No orphaned E2E resources found") {
-			t.Fatalf("output = %q, want no resources message", buf.String())
+	t.Run("preview has no side effects", func(t *testing.T) {
+		c := fixture()
+		preview := cfg
+		preview.Apply = false
+		summary, err := runCleanup(context.Background(), preview, c, &bytes.Buffer{})
+		if err != nil || summary.Found != 5 || summary.Deleted != 0 || len(c.deleted) != 0 {
+			t.Fatalf("summary=%+v deletes=%v err=%v", summary, c.deleted, err)
 		}
 	})
-
-	t.Run("deletes resources and reports failures", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			tunnels:  []resource{{ID: "t1", Name: "e2e-tunnel", Type: "tunnel"}},
-			records:  []resource{{ID: "r1", Name: "e2e.example.com", Type: "dns"}},
-			apps:     []resource{{ID: "a1", Name: "e2e-app", Type: "access_app"}},
-			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
-			tokens:   []resource{{ID: "s1", Name: "e2e-token", Type: "service_token"}},
-			zoneID:   "zone-1",
-			deleteRecordErr: map[string]error{
-				"r1": errors.New("dns delete failed"),
-			},
-			deleteAppErr:    map[string]error{},
-			deletePolicyErr: map[string]error{},
-			deleteTokenErr:  map[string]error{},
-		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
-			t.Fatalf("runCleanup() error = %v, want cleanup failure", err)
-		}
-		if summary.Found != 5 {
-			t.Fatalf("Found = %d, want 5", summary.Found)
-		}
-		if summary.Deleted != 4 {
-			t.Fatalf("Deleted = %d, want 4", summary.Deleted)
-		}
-		if summary.Failed != 1 {
-			t.Fatalf("Failed = %d, want 1", summary.Failed)
-		}
-		if len(summary.FailedResources) != 1 || summary.FailedResources[0].Type != "dns" {
-			t.Fatalf("FailedResources = %+v, want one dns resource", summary.FailedResources)
-		}
-		if !strings.Contains(buf.String(), "Deleting DNS record") {
-			t.Fatalf("output = %q, want DNS delete log", buf.String())
+	t.Run("apply targets only old complete markers and attributed tags", func(t *testing.T) {
+		c := fixture()
+		summary, err := runCleanup(context.Background(), cfg, c, &bytes.Buffer{})
+		want := []string{"old", "dns", "app", "policy", "token", owner}
+		if err != nil || summary.Deleted != 6 || !reflect.DeepEqual(c.deleted, want) {
+			t.Fatalf("summary=%+v deletes=%v err=%v", summary, c.deleted, err)
 		}
 	})
-
-	t.Run("skips DNS deletion when zone resolution fails", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			records: []resource{{ID: "r1", Name: "e2e.example.com", Type: "dns"}},
-			zoneErr: errors.New("missing zone"),
-		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err != nil {
-			t.Fatalf("runCleanup() error = %v", err)
-		}
-		if summary.Deleted != 0 || summary.Failed != 0 {
-			t.Fatalf("summary = %+v, want no deletions or failures", summary)
-		}
-		if !strings.Contains(buf.String(), "Warning: failed to resolve zone ID") {
-			t.Fatalf("output = %q, want zone warning", buf.String())
-		}
-	})
-
-	t.Run("counts tunnel deletion failures", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			tunnels: []resource{{ID: "t1", Name: "e2e-tunnel", Type: "tunnel"}},
-			zoneID:  "zone-1",
-			deleteTunnelErr: map[string]error{
-				"t1": errors.New("tunnel delete failed"),
-			},
-		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
-			t.Fatalf("runCleanup() error = %v, want cleanup failure", err)
-		}
-		if summary.Failed != 1 || summary.Deleted != 0 {
-			t.Fatalf("summary = %+v, want one failed tunnel deletion", summary)
-		}
-		if !strings.Contains(buf.String(), "Deleting tunnel: e2e-tunnel ... FAILED") {
-			t.Fatalf("output = %q, want failed tunnel deletion log", buf.String())
+	for _, which := range []string{"tunnels", "records", "apps", "policies", "tokens", "zone"} {
+		t.Run("incomplete inventory "+which, func(t *testing.T) {
+			c := fixture()
+			boom := errors.New("inventory failed")
+			switch which {
+			case "tunnels":
+				c.tunnelsErr = boom
+			case "records":
+				c.recordsErr = boom
+			case "apps":
+				c.appsErr = boom
+			case "policies":
+				c.policiesErr = boom
+			case "tokens":
+				c.tokensErr = boom
+			case "zone":
+				c.zoneErr = boom
+			}
+			_, err := runCleanup(context.Background(), cfg, c, &bytes.Buffer{})
+			if err == nil || len(c.deleted) != 0 {
+				t.Fatalf("deletes=%v err=%v", c.deleted, err)
+			}
+		})
+	}
+	t.Run("failed tag relist preserves every tag", func(t *testing.T) {
+		c := fixture()
+		c.tagsErr = errors.New("relist failed")
+		_, err := runCleanup(context.Background(), cfg, c, &bytes.Buffer{})
+		if err == nil || len(c.deleted) != 5 {
+			t.Fatalf("deletes=%v err=%v", c.deleted, err)
 		}
 	})
-
-	t.Run("deletes orphaned Access tags", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			tags: []resource{{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"}},
-		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err != nil {
-			t.Fatalf("runCleanup() error = %v", err)
-		}
-		if summary.Found != 1 || summary.Deleted != 1 || summary.Failed != 0 {
-			t.Fatalf("summary = %+v, want one deleted Access tag", summary)
-		}
-		if !strings.Contains(buf.String(), "Deleting Access tag: cfgate:0123456789abcdef0123456789ab ... OK") {
-			t.Fatalf("output = %q, want Access tag delete log", buf.String())
+	t.Run("unattributed tags are preserved", func(t *testing.T) {
+		c := &fakeCleanupClient{tags: []resource{{ID: owner, Name: owner}}}
+		summary, err := runCleanup(context.Background(), cfg, c, &bytes.Buffer{})
+		if err != nil || summary.Deleted != 0 || len(c.deleted) != 0 {
+			t.Fatalf("summary=%+v err=%v", summary, err)
 		}
 	})
+	for _, which := range []string{"tunnel", "dns", "app", "policy", "token", "tag"} {
+		t.Run("delete failure "+which, func(t *testing.T) {
+			c := fixture()
+			boom := errors.New("delete failed")
+			switch which {
+			case "tunnel":
+				c.deleteTunnelErr = map[string]error{"old": boom}
+			case "dns":
+				c.deleteRecordErr = map[string]error{"dns": boom}
+			case "app":
+				c.deleteAppErr = map[string]error{"app": boom}
+			case "policy":
+				c.deletePolicyErr = map[string]error{"policy": boom}
+			case "token":
+				c.deleteTokenErr = map[string]error{"token": boom}
+			case "tag":
+				c.deleteTagErr = map[string]error{owner: boom}
+			}
+			summary, err := runCleanup(context.Background(), cfg, c, &bytes.Buffer{})
+			if err == nil || summary.Failed != 1 || len(summary.FailedResources) != 1 {
+				t.Fatalf("summary=%+v err=%v", summary, err)
+			}
+		})
+	}
+}
 
-	t.Run("deletes orphaned Access policies", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
+func TestCleanupApplyOptIns(t *testing.T) {
+	for _, tc := range []struct {
+		orphans, apply, skip string
+		want                 bool
+	}{{"", "", "", false}, {"true", "", "", false}, {"", "true", "", false}, {"true", "true", "", true}, {"true", "true", "true", false}} {
+		values := map[string]string{"CLOUDFLARE_API_TOKEN": "token", "CLOUDFLARE_ACCOUNT_ID": "account", "E2E_CLEAN_ORPHANS": tc.orphans, "E2E_CLEANUP_APPLY": tc.apply, "E2E_SKIP_CLEANUP": tc.skip}
+		cfg, err := loadCleanupConfig(func(k string) string { return values[k] })
+		if err != nil || cfg.Apply != tc.want {
+			t.Fatalf("case=%+v cfg=%+v err=%v", tc, cfg, err)
 		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err != nil {
-			t.Fatalf("runCleanup() error = %v", err)
-		}
-		if summary.Found != 1 || summary.Deleted != 1 || summary.Failed != 0 {
-			t.Fatalf("summary = %+v, want one deleted Access policy", summary)
-		}
-		if !strings.Contains(buf.String(), "Deleting Access policy: e2e-policy ... OK") {
-			t.Fatalf("output = %q, want Access policy delete log", buf.String())
-		}
-	})
-
-	t.Run("reports total found count after tag scan", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			apps:     []resource{{ID: "a1", Name: "e2e-app", Type: "access_app"}},
-			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
-			tags: []resource{
-				{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"},
-				{ID: "cfgate:abcdef0123456789abcdef012345", Name: "cfgate:abcdef0123456789abcdef012345", Type: "access_tag"},
-			},
-		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err != nil {
-			t.Fatalf("runCleanup() error = %v", err)
-		}
-		if summary.Found != 4 || summary.Deleted != 4 || summary.Failed != 0 {
-			t.Fatalf("summary = %+v, want four found and deleted resources", summary)
-		}
-		output := buf.String()
-		if !strings.Contains(output, "Found:   4") {
-			t.Fatalf("output = %q, want total found count", output)
-		}
-		if strings.Contains(output, "=== Found 1 orphaned resources ===") {
-			t.Fatalf("output = %q, contains stale pre-tag found banner", output)
-		}
-	})
-
-	t.Run("reports Access tag deletion failures", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			tags: []resource{{ID: "cfgate:0123456789abcdef0123456789ab", Name: "cfgate:0123456789abcdef0123456789ab", Type: "access_tag"}},
-			deleteTagErr: map[string]error{
-				"cfgate:0123456789abcdef0123456789ab": errors.New("tag delete failed"),
-			},
-		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
-			t.Fatalf("runCleanup() error = %v, want cleanup failure", err)
-		}
-		if summary.Failed != 1 || summary.Deleted != 0 {
-			t.Fatalf("summary = %+v, want one failed Access tag deletion", summary)
-		}
-		if len(summary.FailedResources) != 1 || summary.FailedResources[0].Type != "access_tag" {
-			t.Fatalf("FailedResources = %+v, want one access_tag resource", summary.FailedResources)
-		}
-	})
-
-	t.Run("reports Access policy deletion failures", func(t *testing.T) {
-		client := &fakeCleanupClient{
-			policies: []resource{{ID: "p1", Name: "e2e-policy", Type: "access_policy"}},
-			deletePolicyErr: map[string]error{
-				"p1": errors.New("policy delete failed"),
-			},
-		}
-		buf := &bytes.Buffer{}
-
-		summary, err := runCleanup(context.Background(), cfg, client, buf)
-		if err == nil || !strings.Contains(err.Error(), "cleanup failed") {
-			t.Fatalf("runCleanup() error = %v, want cleanup failure", err)
-		}
-		if summary.Failed != 1 || summary.Deleted != 0 {
-			t.Fatalf("summary = %+v, want one failed Access policy deletion", summary)
-		}
-		if len(summary.FailedResources) != 1 || summary.FailedResources[0].Type != "access_policy" {
-			t.Fatalf("FailedResources = %+v, want one access_policy resource", summary.FailedResources)
-		}
-	})
+	}
 }
 
 func TestPrintScanSection(t *testing.T) {

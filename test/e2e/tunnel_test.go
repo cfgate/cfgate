@@ -89,7 +89,7 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			sharedTunnel = tunnel
 		})
 
-		It("should adopt existing tunnel when name matches", func() {
+		It("should adopt an existing tunnel only after explicit opt-in", func() {
 			adoptTunnelName := testID("adopt")
 
 			By("Pre-creating tunnel via Cloudflare API")
@@ -100,6 +100,16 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 
 			By("Creating CloudflareTunnel CR with same name")
 			tunnel := createCloudflareTunnel(ctx, k8sClient, testID("adopt-cr"), namespace.Name, adoptTunnelName)
+
+			By("Verifying the existing tunnel is not adopted without permission")
+			waitForTunnelCondition(ctx, k8sClient, tunnel.Name, tunnel.Namespace, "TunnelReady", metav1.ConditionFalse, DefaultTimeout)
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(tunnel), tunnel)).To(Succeed())
+			Expect(tunnel.Status.TunnelID).To(BeEmpty())
+
+			By("Explicitly authorizing adoption of this run's pre-created tunnel")
+			patch := client.MergeFrom(tunnel.DeepCopy())
+			tunnel.Annotations = map[string]string{"cfgate.io/adopt-existing": "true"}
+			Expect(k8sClient.Patch(ctx, tunnel, patch)).To(Succeed())
 
 			By("Waiting for tunnel to become ready")
 			tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, DefaultTimeout)
@@ -1015,8 +1025,9 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			By("Creating CloudflareTunnel CR with same name but replicas: 2")
 			tunnel := &cfgatev1alpha1.CloudflareTunnel{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      testID("adopt-drift-cr"),
-					Namespace: namespace.Name,
+					Name:        testID("adopt-drift-cr"),
+					Namespace:   namespace.Name,
+					Annotations: map[string]string{"cfgate.io/adopt-existing": "true"},
 				},
 				Spec: cfgatev1alpha1.CloudflareTunnelSpec{
 					Tunnel: cfgatev1alpha1.TunnelIdentity{

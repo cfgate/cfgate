@@ -34,7 +34,8 @@ mise run lint
 | `test:cover` | *none* | Run unit tests with coverage report |
 | `e2e` | *none* | Run local E2E tests against live Cloudflare API |
 | `e2e:filter` | `fe2e` | Run E2E tests with a Ginkgo `--focus` filter |
-| `e2e:cleanup` | `clean` | Clean orphaned E2E resources from Cloudflare |
+| `e2e:cleanup` | `clean` | Preview aged orphaned E2E resources; apply requires explicit opt-ins |
+| `test:e2e-cleanup` | *none* | Test cleanup HTTP effects without credentials or a cluster |
 | `coverage` | `cov` | Run local unit, E2E, merged coverage, and assurance scoring |
 | `coverage:merge` | *none* | Merge unit and E2E coverage into `out/coverage/merged.coverprofile` |
 | `coverage:report` | *none* | Write `out/coverage/merged-summary.txt` with totals and file deltas |
@@ -58,7 +59,7 @@ mise run lint
 
 ## Secrets Configuration
 
-cfgate uses [sops](https://github.com/getsops/sops) with [age](https://github.com/FiloSottile/age) encryption for local development secrets. mise reads `secrets.enc.yaml` automatically via `[env] _.file`.
+cfgate uses [sops](https://github.com/getsops/sops) with [age](https://github.com/FiloSottile/age) encryption for local development secrets. E2E and cleanup tasks load `secrets.enc.yaml` through their task-specific environment; ordinary unit tests do not load Cloudflare credentials.
 
 ### Setting Up Secrets
 
@@ -96,7 +97,7 @@ sops -e -i secrets.enc.yaml
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
 
-### Optional Keys
+### Additional Release E2E Keys
 
 | Key | Purpose |
 |-----|---------|
@@ -107,11 +108,13 @@ sops -e -i secrets.enc.yaml
 
 ### Verifying Secrets
 
+Validate required variable presence without printing credential values:
+
 ```bash
-sops decrypt secrets.enc.yaml
-sops secrets.enc.yaml
-mise env | grep CLOUDFLARE
+mise run e2e:preflight
 ```
+
+The preflight requires all six Cloudflare keys listed above for full release coverage. Presence alone does not verify API permissions or expiry.
 
 ### API Token Permissions
 
@@ -139,12 +142,14 @@ mise run coverage:report   # write merged coverage summary
 mise run coverage:score    # write dual-ledger assurance score
 mise run cluster:create    # repo-local helper for a dedicated kind cluster
 mise run e2e               # local E2E against live Cloudflare API
-mise run e2e:cleanup       # clean orphaned E2E resources
+mise run e2e:cleanup       # preview orphaned E2E resources
 mise run bench             # benchmark suite
 mise run smoke             # fast local sanity check
 ```
 
 Normal GitHub Actions CI runs lint, unit tests, build validation, and unit coverage. It does not provision a cluster or run Cloudflare-backed E2E.
+
+Changes under `test/` trigger CI, but the live E2E suite is still separate. Manual CI dispatch runs the full lint, unit test, build, and coverage jobs on the selected ref. Pushes to `dev` retain the reduced lint and coverage checks.
 
 A manual GitHub Actions workflow named `Remote Release E2E` exists for release-grade remote E2E timing and Codecov upload without publishing release artifacts.
 
@@ -165,7 +170,7 @@ cd ~/production/cfgate/cfgate
 mise run cluster:create
 ```
 
-`mise run e2e` defaults to `E2E_USE_EXISTING_CLUSTER=true` and expects a reachable `kind-abaddon` context, not just a kubeconfig entry with that name.
+`mise run e2e` creates a disposable kind cluster by default. To reuse an explicitly selected disposable cluster, set `E2E_USE_EXISTING_CLUSTER=true CLUSTER_NAME=<name>`. The task checks that its API server is reachable. Default cleanup is scoped to the current run; `mise run e2e:cleanup` previews aged orphan candidates. See the testing guide before enabling orphan deletion.
 
 ## Development Workflow
 

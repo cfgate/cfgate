@@ -10,7 +10,79 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  resolve:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      tag: ${{ steps.source.outputs.tag }}
+      version: ${{ steps.source.outputs.version }}
+      date: ${{ steps.source.outputs.date }}
+      level: ${{ steps.channel.outputs.level }}
+      prerelease: ${{ steps.channel.outputs.prerelease }}
+      is-latest: ${{ steps.channel.outputs.is-latest }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: source
+        name: Resolve immutable release source
+        run: |
+          .github/scripts/validate-release-ref.sh "$RELEASE_TAG" "$RELEASE_SHA"
+          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+      - id: channel
+        run: |
+          VERSION="$RELEASE_VERSION"
+          if [[ "$VERSION" == *"-alpha."* ]]; then
+            echo "level=alpha" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *"-beta."* ]]; then
+            echo "level=beta" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *"-rc."* ]]; then
+            echo "level=rc" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "level=stable" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+          IS_LATEST=false
+          if [[ "$VERSION" != *"-"* ]]; then
+            IS_LATEST=true
+          else
+            HAS_STABLE=false
+            HAS_BETA=false
+            HAS_RC=false
+            for tag in $(git tag -l 'v*' | grep -v "^${RELEASE_TAG}$"); do
+              v="${tag#v}"
+              [[ "$v" != *"-"* ]] && HAS_STABLE=true
+              [[ "$v" == *"-beta."* ]] && HAS_BETA=true
+              [[ "$v" == *"-rc."* ]] && HAS_RC=true
+            done
+            if [[ "$VERSION" == *"-alpha."* && "$HAS_BETA" == "false" && "$HAS_RC" == "false" && "$HAS_STABLE" == "false" ]]; then
+              IS_LATEST=true
+            elif [[ "$VERSION" == *"-beta."* && "$HAS_STABLE" == "false" && "$HAS_RC" == "false" ]]; then
+              IS_LATEST=true
+            elif [[ "$VERSION" == *"-rc."* && "$HAS_STABLE" == "false" ]]; then
+              IS_LATEST=true
+            fi
+          fi
+          echo "is-latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
+
+
   e2e:
+    needs: resolve
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 120
     permissions:
@@ -23,6 +95,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
       - uses: jdx/mise-action@v4
 
       - name: Validate release E2E secrets
@@ -51,80 +126,43 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  release:
-    needs: e2e
+  quality:
+    needs: resolve
     runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
-      contents: write
-      packages: write
-      attestations: write
-      artifact-metadata: write
-      id-token: write
-      security-events: write
-
+      contents: read
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
-
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
       - uses: jdx/mise-action@v4
+      - run: mise run lint
+      - run: mise run test
+      - run: mise run test:e2e-cleanup
+      - run: .github/scripts/test-release-ref.sh
 
-      - uses: docker/setup-qemu-action@v4
-      - name: Setup Blacksmith Builder
-        uses: useblacksmith/setup-docker-builder@v1
-
-      - uses: docker/login-action@v4
+  build-and-scan:
+    needs: resolve
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.verify.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - id: version
-        run: echo "clean=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - id: channel
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          if [[ "$VERSION" == *"-alpha."* ]]; then
-            echo "level=alpha" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" == *"-beta."* ]]; then
-            echo "level=beta" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$VERSION" == *"-rc."* ]]; then
-            echo "level=rc" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "level=stable" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
-          IS_LATEST=false
-          if [[ "$VERSION" != *"-"* ]]; then
-            IS_LATEST=true
-          else
-            HAS_STABLE=false
-            HAS_BETA=false
-            HAS_RC=false
-            for tag in $(git tag -l 'v*' | grep -v "^${GITHUB_REF_NAME}$"); do
-              v="${tag#v}"
-              [[ "$v" != *"-"* ]] && HAS_STABLE=true
-              [[ "$v" == *"-beta."* ]] && HAS_BETA=true
-              [[ "$v" == *"-rc."* ]] && HAS_RC=true
-            done
-            if [[ "$VERSION" == *"-alpha."* && "$HAS_BETA" == "false" && "$HAS_RC" == "false" && "$HAS_STABLE" == "false" ]]; then
-              IS_LATEST=true
-            elif [[ "$VERSION" == *"-beta."* && "$HAS_STABLE" == "false" && "$HAS_RC" == "false" ]]; then
-              IS_LATEST=true
-            elif [[ "$VERSION" == *"-rc."* && "$HAS_STABLE" == "false" ]]; then
-              IS_LATEST=true
-            fi
-          fi
-          echo "is-latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
-
-      - id: build-date
-        run: echo "value=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
+          ref: ${{ needs.resolve.outputs.sha }}
+          persist-credentials: false
+      - uses: jdx/mise-action@v4
+      - uses: docker/setup-qemu-action@v4
+      - uses: useblacksmith/setup-docker-builder@v1
+      - name: Install OCI archive tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo
       - id: meta
         uses: docker/metadata-action@v6
         with:
@@ -134,65 +172,161 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
             type=sha,prefix=
-            type=raw,value=latest,enable=${{ steps.channel.outputs.is-latest }}
-            type=raw,value=${{ steps.channel.outputs.level }},enable=${{ steps.channel.outputs.prerelease == 'true' }}
+            type=raw,value=latest,enable=${{ needs.resolve.outputs.is-latest }}
+            type=raw,value=${{ needs.resolve.outputs.level }},enable=${{ needs.resolve.outputs.prerelease == 'true' }}
           labels: |
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/cfgate/cfgate/main/README.md
             io.artifacthub.package.logo-url=https://cfgate.io/icon.png
             io.artifacthub.package.license=Apache-2.0
-            io.artifacthub.package.prerelease=${{ steps.channel.outputs.prerelease }}
+            io.artifacthub.package.prerelease=${{ needs.resolve.outputs.prerelease }}
             io.artifacthub.package.category=networking
             io.artifacthub.package.keywords=kubernetes,cloudflare,gateway-api,tunnel,dns,operator,controller
             io.artifacthub.package.maintainers=[{"name":"inherent-design","email":"mannie@inherent.design"}]
             org.opencontainers.image.vendor=inherent.design
             org.opencontainers.image.documentation=https://cfgate.io
 
-      - name: Generate code
-        run: mise run codegen
-
-      - id: build-test
-        uses: useblacksmith/build-push-action@v2
-        with:
-          context: .
-          platforms: linux/amd64
-          load: true
-          tags: cfgate:smoke-test
-          build-args: |
-            VERSION=${{ steps.version.outputs.clean }}
-            COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.build-date.outputs.value }}
-
-      - name: Smoke test
-        run: docker run --rm cfgate:smoke-test --help
-
-      - id: trivy
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: cfgate:smoke-test
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-
-      - uses: github/codeql-action/upload-sarif@v4
-        if: always() && steps.trivy.conclusion != 'skipped'
-        with:
-          sarif_file: trivy-results.sarif
-
-      - id: push
+      - name: Verify generated code is current
+        run: |
+          mise run codegen
+          git diff --exit-code -- api config
+      - id: build
+        name: Build both architectures without publication
         uses: useblacksmith/build-push-action@v2
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.resolve.outputs.version }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.version.outputs.clean }}
-            COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.build-date.outputs.value }}
+            VERSION=${{ needs.resolve.outputs.version }}
+            COMMIT=${{ needs.resolve.outputs.sha }}
+            BUILD_DATE=${{ needs.resolve.outputs.date }}
+          outputs: type=oci,dest=cfgate.oci.tar
           provenance: mode=max
           sbom: true
+      - id: verify
+        name: Verify and smoke-test exact platform artifacts
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: .github/scripts/verify-release-images.sh
+      - id: scan-amd64
+        name: Gate AMD64 image before publication
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.70.0
+          input: release-images/amd64
+          format: json
+          output: trivy-amd64.json
+          exit-code: "1"
+          ignore-unfixed: true
+          scanners: vuln
+          severity: CRITICAL,HIGH
+      - id: scan-arm64
+        name: Gate ARM64 image before publication
+        if: always() && steps.verify.outcome == 'success'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.70.0
+          input: release-images/arm64
+          format: json
+          output: trivy-arm64.json
+          exit-code: "1"
+          ignore-unfixed: true
+          scanners: vuln
+          severity: CRITICAL,HIGH
+      - name: Convert scan reports
+        if: always() && steps.verify.outcome == 'success'
+        run: |
+          mkdir -p sarif
+          for arch in amd64 arm64; do
+            if [[ -f "trivy-$arch.json" ]]; then
+              trivy convert --format sarif "trivy-$arch.json" | jq --arg arch "$arch" '.runs[].automationDetails.id = ("release-images/" + $arch + "/")' > "sarif/trivy-$arch.sarif"
+            fi
+          done
+      - uses: github/codeql-action/upload-sarif@v4
+        if: always() && hashFiles('sarif/*.sarif') != ''
+        with:
+          sarif_file: sarif
+          category: release-images
+      - name: Upload scan evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-scan-evidence
+          path: |
+            trivy-*.json
+            release-images/index.json
+            release-images/*-manifest.json
+            release-images/*-attestation.json
+            release-images/*-version.txt
+          if-no-files-found: warn
+      - name: Upload checked image archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-image
+          path: |
+            cfgate.oci.tar
+            cfgate.oci.tar.sha256
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
 
+  release:
+    needs: [resolve, quality, e2e, build-and-scan]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      packages: write
+      attestations: write
+      artifact-metadata: write
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+      RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      EXPECTED_DIGEST: ${{ needs.build-and-scan.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag still identifies checked source
+        run: .github/scripts/validate-release-ref.sh "$RELEASE_TAG" "$RELEASE_SHA"
+      - uses: jdx/mise-action@v4
+      - name: Install OCI archive tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-image
+      - name: Verify checked archive
+        run: |
+          sha256sum --check cfgate.oci.tar.sha256
+          skopeo inspect --raw oci-archive:cfgate.oci.tar > index.json
+          test "$(skopeo manifest-digest index.json)" = "$EXPECTED_DIGEST"
+      - name: Login for artifact promotion
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$GH_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin "$REGISTRY"
+      - name: Recheck current tag before promotion
+        run: |
+          git fetch --no-tags origin "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$RELEASE_SHA"
+          .github/scripts/validate-release-ref.sh "$RELEASE_TAG" "$RELEASE_SHA"
+      - id: push
+        name: Promote checked OCI index without rebuilding
+        env:
+          RELEASE_TAGS: ${{ needs.build-and-scan.outputs.tags }}
+        run: |
+          while IFS= read -r ref; do
+            [[ "$ref" == "$REGISTRY/$IMAGE_NAME:"* ]]
+            skopeo copy --all --preserve-digests oci-archive:cfgate.oci.tar "docker://$ref"
+            skopeo inspect --raw "docker://$ref" > remote-index.json
+            test "$(skopeo manifest-digest remote-index.json)" = "$EXPECTED_DIGEST"
+          done <<< "$RELEASE_TAGS"
+          echo "digest=$EXPECTED_DIGEST" >> "$GITHUB_OUTPUT"
       - name: Attest container provenance
         uses: actions/attest-build-provenance@v4
         with:
@@ -207,7 +341,7 @@ jobs:
 
       - name: Generate manifests
         run: |
-          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }} mise run manifests
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.resolve.outputs.version }} mise run manifests
 
       - name: Generate release notes
         id: changelog
@@ -221,7 +355,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           body: ${{ steps.changelog.outputs.content }}
-          prerelease: ${{ steps.channel.outputs.prerelease == 'true' }}
+          prerelease: ${{ needs.resolve.outputs.prerelease == 'true' }}
           files: |
             dist/install.yaml
             dist/crds.yaml
@@ -232,10 +366,10 @@ jobs:
       - name: Summary
         run: |
           echo "## Release Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Version: ${{ steps.version.outputs.clean }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Channel: ${{ steps.channel.outputs.level }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Latest: ${{ steps.channel.outputs.is-latest }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.clean }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Version: ${{ needs.resolve.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Channel: ${{ needs.resolve.outputs.level }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Latest: ${{ needs.resolve.outputs.is-latest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.resolve.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
           echo "- Digest: ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: oras-project/setup-oras@v2

@@ -750,6 +750,9 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 			tunnelRef := fmt.Sprintf("%s/%s", delNS.Name, tunnel.Name)
 			createGateway(ctx, k8sClient, testID("del-gw"), delNS.Name, delGCName, tunnelRef)
 
+			By("Authorizing this namespace's DNS cleanup to use the fallback Secret")
+			createExplicitReferenceGrant(ctx, k8sClient, delNS.Name, "cfgate.io", "CloudflareDNS", namespace.Name, "", "Secret", "cloudflare-credentials")
+
 			By("Creating DNS with explicit hostname")
 			hostname := fmt.Sprintf("%s.%s", testID("del-dns"), testEnv.CloudflareZoneName)
 			dnsResource := &cfgatev1alpha1.CloudflareDNS{
