@@ -4,6 +4,7 @@
 package e2e_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -67,12 +68,15 @@ const (
 	EnvE2EOrphanMinAge     = "E2E_ORPHAN_MIN_AGE"
 	EnvCleanOrphans        = "E2E_CLEAN_ORPHANS"
 	EnvKubeconfig          = "KUBECONFIG"
+	EnvKindNodeImage       = "E2E_KIND_NODE_IMAGE"
 
 	e2eFallbackCredentialsSecret = "cloudflare-credentials"
 	defaultE2EOrphanMinAge       = 2 * time.Hour
+	defaultE2EKindNodeImage      = "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
 )
 
 var (
+	suiteKindCreated bool
 	// testEnv holds E2E test environment configuration.
 	testEnv *E2ETestEnv
 
@@ -196,10 +200,6 @@ var _ = SynchronizedBeforeSuite(
 		// Load environment configuration.
 		testEnv = loadTestEnv()
 
-		if testEnv.CloudflareAPIToken != "" && !testEnv.SkipCleanup {
-			cleanOrphanedE2EResources(false)
-		}
-
 		// Find project root for CRD paths.
 		projectRoot = findProjectRoot()
 		Expect(projectRoot).NotTo(BeEmpty(), "Could not find project root")
@@ -212,8 +212,12 @@ var _ = SynchronizedBeforeSuite(
 			kubeconfigPath = setupKindCluster()
 		}
 
+		if testEnv.CloudflareAPIToken != "" && !testEnv.SkipCleanup {
+			cleanOrphanedE2EResources(false)
+		}
+
 		// Install CRDs.
-		installCRDs()
+		installCRDs(kubeconfigPath)
 
 		// Create suite-scoped fallback credentials used during namespace teardown.
 		ensureFallbackCredentialsSecret()
@@ -881,7 +885,7 @@ func loadTestEnv() *E2ETestEnv {
 		CloudflareTestGroup: os.Getenv(EnvCloudflareTestGroup),
 		SkipCleanup:         os.Getenv(EnvSkipCleanup) == "true",
 		UseExistingCluster:  os.Getenv(EnvUseExistingCluster) == "true",
-		KindClusterName:     fmt.Sprintf("cfgate-e2e-%d", time.Now().Unix()),
+		KindClusterName:     "cfgate-e2e-" + testRunID,
 	}
 
 	return env
@@ -912,14 +916,24 @@ func findProjectRoot() string {
 // Also sets up cfg, k8sClient, k8sClientset for Process 1 use during CRD installation.
 func setupKindCluster() string {
 	By("Creating kind cluster: " + testEnv.KindClusterName)
+	image := os.Getenv(EnvKindNodeImage)
+	if image == "" {
+		image = defaultE2EKindNodeImage
+	}
+	Expect(strings.Contains(image, "@sha256:")).To(BeTrue(), "E2E_KIND_NODE_IMAGE must select an immutable image digest")
+	GinkgoWriter.Printf("E2E kind node image: %s\n", image)
+	kubeconfigPath := suiteKindKubeconfigPath()
 
 	cmd := exec.CommandContext(ctx, "kind", "create", "cluster",
 		"--name", testEnv.KindClusterName,
+		"--image", image,
+		"--kubeconfig", kubeconfigPath,
 		"--wait", "5m",
 	)
 	cmd.Stdout = GinkgoWriter
 	cmd.Stderr = GinkgoWriter
 	Expect(cmd.Run()).To(Succeed(), "Failed to create kind cluster")
+	suiteKindCreated = true
 
 	// Get kubeconfig from kind.
 	kubeconfigBytes, err := exec.CommandContext(ctx, "kind", "get", "kubeconfig",
@@ -928,7 +942,7 @@ func setupKindCluster() string {
 	Expect(err).NotTo(HaveOccurred(), "Failed to get kind kubeconfig")
 
 	// Create temporary kubeconfig file.
-	kubeconfigPath := filepath.Join(os.TempDir(), fmt.Sprintf("cfgate-e2e-%s.kubeconfig", testEnv.KindClusterName))
+	kubeconfigPath = suiteKindKubeconfigPath()
 	Expect(os.WriteFile(kubeconfigPath, kubeconfigBytes, 0600)).To(Succeed())
 
 	// Set up clients (Process 1 needs these for CRD installation + controller setup).
@@ -957,14 +971,16 @@ func setupExistingCluster() string {
 
 	var err error
 
-	// Load kubeconfig from default location or env.
+	// Require an explicit file and kind identity before installing any resources.
 	kubeconfigPath := os.Getenv(EnvKubeconfig)
-	if kubeconfigPath == "" {
-		kubeconfigPath = filepath.Join(os.Getenv("HOME"), ".kube", "config")
-	}
+	Expect(kubeconfigPath).NotTo(BeEmpty(), "existing-cluster E2E requires an explicit KUBECONFIG")
+	clusterName := os.Getenv("CLUSTER_NAME")
+	Expect(clusterName).NotTo(BeEmpty(), "existing-cluster E2E requires an explicit CLUSTER_NAME")
 
 	cfg, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	Expect(err).NotTo(HaveOccurred(), "Failed to build REST config from kubeconfig")
+	verifySelectedKindCluster(ctx, clusterName, cfg)
+	testEnv.KindClusterName = clusterName
 
 	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
 	Expect(err).NotTo(HaveOccurred(), "Failed to create controller-runtime client")
@@ -979,25 +995,38 @@ func setupExistingCluster() string {
 	return kubeconfigPath
 }
 
-// teardownKindCluster deletes the kind cluster.
+func suiteKindKubeconfigPath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("cfgate-e2e-%s.kubeconfig", testEnv.KindClusterName))
+}
+
+// teardownKindCluster deletes only the suite-owned kind cluster.
 func teardownKindCluster() {
-	if testEnv.KindClusterName == "" {
+	if !suiteKindCreated || testEnv.KindClusterName == "" {
 		return
 	}
 
 	By("Deleting kind cluster: " + testEnv.KindClusterName)
 
-	cmd := exec.CommandContext(context.Background(), "kind", "delete", "cluster",
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cleanupCancel()
+	cmd := exec.CommandContext(cleanupCtx, "kind", "delete", "cluster",
 		"--name", testEnv.KindClusterName,
+		"--kubeconfig", suiteKindKubeconfigPath(),
 	)
 	cmd.Stdout = GinkgoWriter
 	cmd.Stderr = GinkgoWriter
-	// Ignore errors on cleanup.
-	_ = cmd.Run()
+	if err := cmd.Run(); err != nil {
+		GinkgoWriter.Printf("Warning: suite kind cleanup failed: %v\n", err)
+		return
+	}
+	suiteKindCreated = false
+	if err := os.Remove(suiteKindKubeconfigPath()); err != nil && !os.IsNotExist(err) {
+		GinkgoWriter.Printf("Warning: suite kubeconfig cleanup failed: %v\n", err)
+	}
 }
 
 // installCRDs installs cfgate and Gateway API CRDs.
-func installCRDs() {
+func installCRDs(kubeconfigPath string) {
 	By("Installing CRDs")
 
 	// Install cfgate CRDs.
@@ -1011,7 +1040,7 @@ func installCRDs() {
 		}
 
 		crdPath := filepath.Join(crdDir, file.Name())
-		cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", crdPath)
+		cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", crdPath)
 		cmd.Stdout = GinkgoWriter
 		cmd.Stderr = GinkgoWriter
 		Expect(cmd.Run()).To(Succeed(), "Failed to install CRD: "+file.Name())
@@ -1019,7 +1048,7 @@ func installCRDs() {
 
 	// Install Gateway API CRDs (standard channel).
 	gatewayAPICRDs := "https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml"
-	cmd := exec.CommandContext(ctx, "kubectl", "apply", "-f", gatewayAPICRDs)
+	cmd := exec.CommandContext(ctx, "kubectl", "--kubeconfig", kubeconfigPath, "apply", "-f", gatewayAPICRDs)
 	cmd.Stdout = GinkgoWriter
 	cmd.Stderr = GinkgoWriter
 	Expect(cmd.Run()).To(Succeed(), "Failed to install Gateway API CRDs")
@@ -1305,4 +1334,15 @@ func skipIfNoZone() {
 	if testEnv.CloudflareZoneName == "" {
 		Skip("CLOUDFLARE_ZONE_NAME not set - skipping DNS E2E test")
 	}
+}
+
+// verifySelectedKindCluster checks API identity before any existing-cluster mutation.
+func verifySelectedKindCluster(ctx context.Context, name string, actual *rest.Config) {
+	configuration, err := exec.CommandContext(ctx, "kind", "get", "kubeconfig", "--name", name).Output()
+	Expect(err).NotTo(HaveOccurred(), "cannot resolve selected kind cluster")
+	selected, err := clientcmd.RESTConfigFromKubeConfig(configuration)
+	Expect(err).NotTo(HaveOccurred())
+	Expect(rest.LoadTLSFiles(actual)).To(Succeed())
+	Expect(rest.LoadTLSFiles(selected)).To(Succeed())
+	Expect(selected.Host == actual.Host && len(selected.CAData) > 0 && bytes.Equal(selected.CAData, actual.CAData)).To(BeTrue(), "selected kind cluster differs from the E2E Kubernetes client")
 }

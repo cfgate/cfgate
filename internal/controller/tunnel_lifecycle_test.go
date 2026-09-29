@@ -337,18 +337,18 @@ func (c lifecycleSecretWriteFailure) Update(ctx context.Context, obj client.Obje
 
 func TestConnectorReadinessRequiresCurrentCompleteRollout(t *testing.T) {
 	for _, tt := range []struct {
-		name             string
-		observed         int64
-		ready, available int32
-		want             bool
+		name                             string
+		observed                         int64
+		ready, available, updated, total int32
+		want                             bool
 	}{
-		{"none", 2, 0, 0, false}, {"partial", 2, 1, 1, false}, {"not available", 2, 2, 1, false}, {"stale generation", 1, 2, 2, false}, {"complete", 2, 2, 2, true},
+		{"none", 2, 0, 0, 2, 2, false}, {"partial", 2, 1, 1, 2, 2, false}, {"not available", 2, 2, 1, 2, 2, false}, {"stale generation", 1, 2, 2, 2, 2, false}, {"old healthy replicas", 2, 2, 2, 0, 2, false}, {"surged new replicas pending", 2, 2, 2, 2, 4, false}, {"complete", 2, 2, 2, 2, 2, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r, tunnel, _ := lifecycleFixture(t)
 			deployment := cloudflared.NewBuilder().BuildDeployment(tunnel, "token")
 			deployment.Generation = 2
-			deployment.Status = appsv1.DeploymentStatus{ObservedGeneration: tt.observed, ReadyReplicas: tt.ready, AvailableReplicas: tt.available}
+			deployment.Status = appsv1.DeploymentStatus{ObservedGeneration: tt.observed, ReadyReplicas: tt.ready, AvailableReplicas: tt.available, UpdatedReplicas: tt.updated, Replicas: tt.total}
 			for _, typ := range []string{status.ConditionTypeCredentialsValid, status.ConditionTypeTunnelReady, status.ConditionTypeConfigurationSynced} {
 				r.setCondition(tunnel, typ, metav1.ConditionTrue, "Ready", "ready")
 			}
