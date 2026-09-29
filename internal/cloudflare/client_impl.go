@@ -6,14 +6,24 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"iter"
 	"net/http"
+	"strconv"
+	"time"
 
 	cf "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/accounts"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
 	"github.com/cloudflare/cloudflare-go/v6/option"
+	"github.com/cloudflare/cloudflare-go/v6/packages/pagination"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
 	"github.com/cloudflare/cloudflare-go/v6/zones"
+)
+
+const (
+	apiAttemptTimeout   = 30 * time.Second
+	apiOperationTimeout = 2 * time.Minute
+	maxListPages        = 1000
 )
 
 // ClientOption is a functional option for configuring the client.
@@ -22,6 +32,7 @@ type ClientOption func(*clientOptions)
 // clientOptions holds configuration for creating a client.
 type clientOptions struct {
 	httpClient *http.Client
+	settings   ClientSettings
 }
 
 // WithHTTPClient sets a custom HTTP client for the Cloudflare API.
@@ -34,7 +45,8 @@ func WithHTTPClient(httpClient *http.Client) ClientOption {
 
 // clientImpl implements the Client interface using cloudflare-go v6 SDK.
 type clientImpl struct {
-	api *cf.Client
+	api      *cf.Client
+	settings ClientSettings
 }
 
 // NewClient creates a new Cloudflare client with the given API token.
@@ -49,9 +61,16 @@ func NewClient(apiToken string, opts ...ClientOption) (Client, error) {
 		opt(clientOpts)
 	}
 
+	settings, err := NormalizeClientSettings(clientOpts.settings)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build cloudflare-go options
 	cfOpts := []option.RequestOption{
 		option.WithAPIToken(apiToken),
+		option.WithRequestTimeout(settings.AttemptTimeout),
+		option.WithMaxRetries(2),
 	}
 	if clientOpts.httpClient != nil {
 		cfOpts = append(cfOpts, option.WithHTTPClient(clientOpts.httpClient))
@@ -60,7 +79,8 @@ func NewClient(apiToken string, opts ...ClientOption) (Client, error) {
 	api := cf.NewClient(cfOpts...)
 
 	c := &clientImpl{
-		api: api,
+		api:      api,
+		settings: settings,
 	}
 
 	return c, nil
@@ -88,6 +108,8 @@ func hasErrorCode(err error, code int64) bool {
 
 // GetTunnel retrieves a tunnel by ID.
 func (c *clientImpl) GetTunnel(ctx context.Context, accountID, tunnelID string) (*Tunnel, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	tunnel, err := c.api.ZeroTrust.Tunnels.Cloudflared.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredGetParams{
 		AccountID: cf.F(accountID),
 	})
@@ -104,6 +126,8 @@ func (c *clientImpl) GetTunnel(ctx context.Context, accountID, tunnelID string) 
 // GetTunnelByName retrieves a tunnel by name.
 // Returns nil if the tunnel does not exist.
 func (c *clientImpl) GetTunnelByName(ctx context.Context, accountID, name string) (*Tunnel, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	tunnels, err := c.api.ZeroTrust.Tunnels.Cloudflared.List(ctx, zero_trust.TunnelCloudflaredListParams{
 		AccountID: cf.F(accountID),
 		Name:      cf.F(name),
@@ -129,6 +153,8 @@ func (c *clientImpl) GetTunnelByName(ctx context.Context, accountID, name string
 // CreateTunnel creates a new tunnel with the given name.
 // Uses config_src: "cloudflare" for remote management.
 func (c *clientImpl) CreateTunnel(ctx context.Context, accountID string, params CreateTunnelParams) (*Tunnel, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	tunnelSecret, err := generateTunnelSecret()
 	if err != nil {
 		return nil, err
@@ -155,6 +181,8 @@ func (c *clientImpl) CreateTunnel(ctx context.Context, accountID string, params 
 // DeleteTunnel deletes a tunnel by ID.
 // Requires all connections to be deleted first.
 func (c *clientImpl) DeleteTunnel(ctx context.Context, accountID, tunnelID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.ZeroTrust.Tunnels.Cloudflared.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredDeleteParams{
 		AccountID: cf.F(accountID),
 	})
@@ -171,6 +199,8 @@ func (c *clientImpl) DeleteTunnel(ctx context.Context, accountID, tunnelID strin
 // DeleteTunnelConnections deletes all active connections for a tunnel.
 // Must be called before DeleteTunnel.
 func (c *clientImpl) DeleteTunnelConnections(ctx context.Context, accountID, tunnelID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.ZeroTrust.Tunnels.Cloudflared.Connections.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredConnectionDeleteParams{
 		AccountID: cf.F(accountID),
 	})
@@ -186,6 +216,8 @@ func (c *clientImpl) DeleteTunnelConnections(ctx context.Context, accountID, tun
 
 // GetTunnelToken retrieves the tunnel token for cloudflared authentication.
 func (c *clientImpl) GetTunnelToken(ctx context.Context, accountID, tunnelID string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	tokenPtr, err := c.api.ZeroTrust.Tunnels.Cloudflared.Token.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredTokenGetParams{
 		AccountID: cf.F(accountID),
 	})
@@ -203,7 +235,9 @@ func (c *clientImpl) GetTunnelToken(ctx context.Context, accountID, tunnelID str
 // UpdateTunnelConfiguration updates the tunnel's ingress configuration.
 // This is an atomic replacement of the entire configuration.
 func (c *clientImpl) UpdateTunnelConfiguration(ctx context.Context, accountID, tunnelID string, config TunnelConfiguration) error {
-	if err := validateOriginRequests(config); err != nil {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
+	if err := ValidateTunnelConfiguration(config, c.settings); err != nil {
 		return err
 	}
 
@@ -233,6 +267,9 @@ func (c *clientImpl) UpdateTunnelConfiguration(ctx context.Context, accountID, t
 	// The CF API stores the full config JSON — cloudflared parses it directly,
 	// so undocumented fields are preserved and returned.
 	var opts []option.RequestOption
+	if config.WarpRouting != nil {
+		opts = append(opts, option.WithJSONSet("config.warp-routing.enabled", config.WarpRouting.Enabled))
+	}
 	if config.OriginRequest != nil && config.OriginRequest.H2cOrigin {
 		opts = append(opts, option.WithJSONSet("config.originRequest.h2cOrigin", true))
 	}
@@ -255,18 +292,21 @@ func (c *clientImpl) UpdateTunnelConfiguration(ctx context.Context, accountID, t
 
 // ListDNSRecords lists all DNS records in a zone.
 func (c *clientImpl) ListDNSRecords(ctx context.Context, zoneID string) ([]DNSRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var records []DNSRecord
 
-	page := c.api.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
-		ZoneID: cf.F(zoneID),
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
+		return c.api.DNS.Records.List(ctx, dns.RecordListParams{
+			ZoneID: cf.F(zoneID),
+		}, opts...)
 	})
 
-	for page.Next() {
-		records = append(records, dnsRecordFromSDK(page.Current(), zoneID))
-	}
-
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list DNS records: %w", err)
+	for record, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list DNS records: %w", err)
+		}
+		records = append(records, dnsRecordFromSDK(record, zoneID))
 	}
 
 	return records, nil
@@ -274,6 +314,8 @@ func (c *clientImpl) ListDNSRecords(ctx context.Context, zoneID string) ([]DNSRe
 
 // ListDNSRecordsByNameType lists DNS records filtered by exact name and record type.
 func (c *clientImpl) ListDNSRecordsByNameType(ctx context.Context, zoneID, name, recordType string) ([]DNSRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var records []DNSRecord
 
 	params := dns.RecordListParams{
@@ -282,14 +324,15 @@ func (c *clientImpl) ListDNSRecordsByNameType(ctx context.Context, zoneID, name,
 		Type:   cf.F(dns.RecordListParamsType(recordType)),
 	}
 
-	page := c.api.DNS.Records.ListAutoPaging(ctx, params)
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
+		return c.api.DNS.Records.List(ctx, params, opts...)
+	})
 
-	for page.Next() {
-		records = append(records, dnsRecordFromSDK(page.Current(), zoneID))
-	}
-
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list DNS records by name and type: %w", err)
+	for record, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list DNS records by name and type: %w", err)
+		}
+		records = append(records, dnsRecordFromSDK(record, zoneID))
 	}
 
 	return records, nil
@@ -297,6 +340,8 @@ func (c *clientImpl) ListDNSRecordsByNameType(ctx context.Context, zoneID, name,
 
 // CreateDNSRecord creates a new DNS record.
 func (c *clientImpl) CreateDNSRecord(ctx context.Context, zoneID string, record DNSRecord) (*DNSRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var result *dns.RecordResponse
 	var err error
 
@@ -362,6 +407,8 @@ func (c *clientImpl) CreateDNSRecord(ctx context.Context, zoneID string, record 
 
 // UpdateDNSRecord updates an existing DNS record.
 func (c *clientImpl) UpdateDNSRecord(ctx context.Context, zoneID, recordID string, record DNSRecord) (*DNSRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var result *dns.RecordResponse
 	var err error
 
@@ -427,6 +474,8 @@ func (c *clientImpl) UpdateDNSRecord(ctx context.Context, zoneID, recordID strin
 
 // DeleteDNSRecord deletes a DNS record.
 func (c *clientImpl) DeleteDNSRecord(ctx context.Context, zoneID, recordID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.DNS.Records.Delete(ctx, recordID, dns.RecordDeleteParams{
 		ZoneID: cf.F(zoneID),
 	})
@@ -442,12 +491,18 @@ func (c *clientImpl) DeleteDNSRecord(ctx context.Context, zoneID, recordID strin
 
 // ListZones lists all zones accessible with the current credentials.
 func (c *clientImpl) ListZones(ctx context.Context) ([]Zone, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var zoneList []Zone
 
-	page := c.api.Zones.ListAutoPaging(ctx, zones.ZoneListParams{})
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zones.Zone], error) {
+		return c.api.Zones.List(ctx, zones.ZoneListParams{}, opts...)
+	})
 
-	for page.Next() {
-		zone := page.Current()
+	for zone, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list zones: %w", err)
+		}
 		zoneList = append(zoneList, Zone{
 			ID:        zone.ID,
 			Name:      zone.Name,
@@ -456,16 +511,14 @@ func (c *clientImpl) ListZones(ctx context.Context) ([]Zone, error) {
 		})
 	}
 
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list zones: %w", err)
-	}
-
 	return zoneList, nil
 }
 
 // GetZoneByName retrieves a zone by domain name.
 // Returns nil if the zone does not exist.
 func (c *clientImpl) GetZoneByName(ctx context.Context, name string) (*Zone, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	zoneList, err := c.api.Zones.List(ctx, zones.ZoneListParams{
 		Name: cf.F(name),
 	})
@@ -492,6 +545,8 @@ func (c *clientImpl) GetZoneByName(ctx context.Context, name string) (*Zone, err
 // User API Tokens and Account API Tokens.
 // Returns an error if the token is invalid or missing permissions.
 func (c *clientImpl) ValidateToken(ctx context.Context, accountID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	// Validate zone access (required for DNS operations)
 	zones, err := c.ListZones(ctx)
 	if err != nil {
@@ -517,6 +572,8 @@ func (c *clientImpl) ValidateToken(ctx context.Context, accountID string) error 
 // (cloudflare-python#2584) where has_next_page() incorrectly returns true
 // with account-scoped tokens, causing infinite loops.
 func (c *clientImpl) ListAccounts(ctx context.Context) ([]Account, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	resp, err := c.api.Accounts.List(ctx, accounts.AccountListParams{
 		PerPage: cf.F(float64(50)), // Most users have < 50 accounts
 	})
@@ -538,6 +595,8 @@ func (c *clientImpl) ListAccounts(ctx context.Context) ([]Account, error) {
 // GetAccountByName retrieves an account by name.
 // Returns nil if the account does not exist.
 func (c *clientImpl) GetAccountByName(ctx context.Context, name string) (*Account, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	accounts, err := c.ListAccounts(ctx)
 	if err != nil {
 		return nil, err
@@ -584,6 +643,8 @@ func generateTunnelSecret() (string, error) {
 
 // CreateAccessApplication creates a new Access application.
 func (c *clientImpl) CreateAccessApplication(ctx context.Context, accountID string, params ApplicationParams) (*AccessApplication, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	appType := zero_trust.ApplicationType(params.Type)
 	if params.Type == "" {
 		appType = zero_trust.ApplicationTypeSelfHosted
@@ -649,6 +710,8 @@ func (c *clientImpl) CreateAccessApplication(ctx context.Context, accountID stri
 
 // GetAccessApplication retrieves an Access application by ID.
 func (c *clientImpl) GetAccessApplication(ctx context.Context, accountID, appID string) (*AccessApplication, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Applications.Get(ctx, appID, zero_trust.AccessApplicationGetParams{
 		AccountID: cf.F(accountID),
 	})
@@ -668,6 +731,8 @@ func (c *clientImpl) GetAccessApplication(ctx context.Context, accountID, appID 
 
 // UpdateAccessApplication updates an existing Access application.
 func (c *clientImpl) UpdateAccessApplication(ctx context.Context, accountID, appID string, params ApplicationParams) (*AccessApplication, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	httpOnly := true
 	if params.HttpOnlyCookieAttribute != nil {
 		httpOnly = *params.HttpOnlyCookieAttribute
@@ -782,6 +847,8 @@ func accessApplicationUpdatePolicyLinks(links []ApplicationPolicyLink) []zero_tr
 
 // DeleteAccessApplication deletes an Access application.
 func (c *clientImpl) DeleteAccessApplication(ctx context.Context, accountID, appID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.ZeroTrust.Access.Applications.Delete(ctx, appID, zero_trust.AccessApplicationDeleteParams{
 		AccountID: cf.F(accountID),
 	})
@@ -797,14 +864,20 @@ func (c *clientImpl) DeleteAccessApplication(ctx context.Context, accountID, app
 
 // ListAccessApplications lists all Access applications.
 func (c *clientImpl) ListAccessApplications(ctx context.Context, accountID string) ([]AccessApplication, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var apps []AccessApplication
 
-	page := c.api.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
-		AccountID: cf.F(accountID),
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
+		return c.api.ZeroTrust.Access.Applications.List(ctx, zero_trust.AccessApplicationListParams{
+			AccountID: cf.F(accountID),
+		}, opts...)
 	})
 
-	for page.Next() {
-		app := page.Current()
+	for app, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list access applications: %w", err)
+		}
 		converted, err := applicationFromListResponse(&app)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert listed access application: %w", err)
@@ -814,15 +887,13 @@ func (c *clientImpl) ListAccessApplications(ctx context.Context, accountID strin
 		}
 	}
 
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list access applications: %w", err)
-	}
-
 	return apps, nil
 }
 
 // CreateAccessTag creates a new Access tag.
 func (c *clientImpl) CreateAccessTag(ctx context.Context, accountID, tagName string) (*AccessTag, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Tags.New(ctx, zero_trust.AccessTagNewParams{
 		AccountID: cf.F(accountID),
 		Name:      cf.F(tagName),
@@ -835,23 +906,29 @@ func (c *clientImpl) CreateAccessTag(ctx context.Context, accountID, tagName str
 
 // ListAccessTags lists all Access tags.
 func (c *clientImpl) ListAccessTags(ctx context.Context, accountID string) ([]AccessTag, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var tags []AccessTag
 
-	page := c.api.ZeroTrust.Access.Tags.ListAutoPaging(ctx, zero_trust.AccessTagListParams{
-		AccountID: cf.F(accountID),
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.Tag], error) {
+		return c.api.ZeroTrust.Access.Tags.List(ctx, zero_trust.AccessTagListParams{
+			AccountID: cf.F(accountID),
+		}, opts...)
 	})
-	for page.Next() {
-		tag := page.Current()
+
+	for tag, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list access tags: %w", err)
+		}
 		tags = append(tags, AccessTag{Name: tag.Name})
-	}
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list access tags: %w", err)
 	}
 	return tags, nil
 }
 
 // DeleteAccessTag deletes an Access tag.
 func (c *clientImpl) DeleteAccessTag(ctx context.Context, accountID, tagName string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.ZeroTrust.Access.Tags.Delete(ctx, tagName, zero_trust.AccessTagDeleteParams{
 		AccountID: cf.F(accountID),
 	})
@@ -870,6 +947,8 @@ func (c *clientImpl) DeleteAccessTag(ctx context.Context, accountID, tagName str
 
 // CreateAccessPolicy creates a new reusable Access policy.
 func (c *clientImpl) CreateAccessPolicy(ctx context.Context, accountID string, params PolicyParams) (*AccessPolicy, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Policies.New(ctx, zero_trust.AccessPolicyNewParams{
 		AccountID:                    cf.F(accountID),
 		Name:                         cf.F(params.Name),
@@ -892,6 +971,8 @@ func (c *clientImpl) CreateAccessPolicy(ctx context.Context, accountID string, p
 
 // GetAccessPolicy retrieves an Access policy by ID.
 func (c *clientImpl) GetAccessPolicy(ctx context.Context, accountID, policyID string) (*AccessPolicy, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Policies.Get(ctx, policyID, zero_trust.AccessPolicyGetParams{
 		AccountID: cf.F(accountID),
 	})
@@ -907,6 +988,8 @@ func (c *clientImpl) GetAccessPolicy(ctx context.Context, accountID, policyID st
 
 // UpdateAccessPolicy updates an existing Access policy.
 func (c *clientImpl) UpdateAccessPolicy(ctx context.Context, accountID, policyID string, params PolicyParams) (*AccessPolicy, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Policies.Update(ctx, policyID, zero_trust.AccessPolicyUpdateParams{
 		AccountID:                    cf.F(accountID),
 		Name:                         cf.F(params.Name),
@@ -929,6 +1012,8 @@ func (c *clientImpl) UpdateAccessPolicy(ctx context.Context, accountID, policyID
 
 // DeleteAccessPolicy deletes an Access policy.
 func (c *clientImpl) DeleteAccessPolicy(ctx context.Context, accountID, policyID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.ZeroTrust.Access.Policies.Delete(ctx, policyID, zero_trust.AccessPolicyDeleteParams{
 		AccountID: cf.F(accountID),
 	})
@@ -944,19 +1029,21 @@ func (c *clientImpl) DeleteAccessPolicy(ctx context.Context, accountID, policyID
 
 // ListAccessPolicies lists all reusable Access policies.
 func (c *clientImpl) ListAccessPolicies(ctx context.Context, accountID string) ([]AccessPolicy, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var policies []AccessPolicy
 
-	page := c.api.ZeroTrust.Access.Policies.ListAutoPaging(ctx, zero_trust.AccessPolicyListParams{
-		AccountID: cf.F(accountID),
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessPolicyListResponse], error) {
+		return c.api.ZeroTrust.Access.Policies.List(ctx, zero_trust.AccessPolicyListParams{
+			AccountID: cf.F(accountID),
+		}, opts...)
 	})
 
-	for page.Next() {
-		policy := page.Current()
+	for policy, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list access policies: %w", err)
+		}
 		policies = append(policies, *policyFromListResponse(&policy))
-	}
-
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list access policies: %w", err)
 	}
 
 	return policies, nil
@@ -968,6 +1055,8 @@ func (c *clientImpl) ListAccessPolicies(ctx context.Context, accountID string) (
 
 // CreateAccessGroup creates a new Access group.
 func (c *clientImpl) CreateAccessGroup(ctx context.Context, accountID string, params GroupParams) (*AccessGroup, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Groups.New(ctx, zero_trust.AccessGroupNewParams{
 		AccountID: cf.F(accountID),
 		Name:      cf.F(params.Name),
@@ -982,6 +1071,8 @@ func (c *clientImpl) CreateAccessGroup(ctx context.Context, accountID string, pa
 
 // GetAccessGroup retrieves an Access group by ID.
 func (c *clientImpl) GetAccessGroup(ctx context.Context, accountID, groupID string) (*AccessGroup, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Groups.Get(ctx, groupID, zero_trust.AccessGroupGetParams{
 		AccountID: cf.F(accountID),
 	})
@@ -997,6 +1088,8 @@ func (c *clientImpl) GetAccessGroup(ctx context.Context, accountID, groupID stri
 
 // UpdateAccessGroup updates an existing Access group.
 func (c *clientImpl) UpdateAccessGroup(ctx context.Context, accountID, groupID string, params GroupParams) (*AccessGroup, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.Groups.Update(ctx, groupID, zero_trust.AccessGroupUpdateParams{
 		AccountID: cf.F(accountID),
 		Name:      cf.F(params.Name),
@@ -1011,6 +1104,8 @@ func (c *clientImpl) UpdateAccessGroup(ctx context.Context, accountID, groupID s
 
 // DeleteAccessGroup deletes an Access group.
 func (c *clientImpl) DeleteAccessGroup(ctx context.Context, accountID, groupID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.ZeroTrust.Access.Groups.Delete(ctx, groupID, zero_trust.AccessGroupDeleteParams{
 		AccountID: cf.F(accountID),
 	})
@@ -1026,19 +1121,21 @@ func (c *clientImpl) DeleteAccessGroup(ctx context.Context, accountID, groupID s
 
 // ListAccessGroups lists all Access groups.
 func (c *clientImpl) ListAccessGroups(ctx context.Context, accountID string) ([]AccessGroup, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var groups []AccessGroup
 
-	page := c.api.ZeroTrust.Access.Groups.ListAutoPaging(ctx, zero_trust.AccessGroupListParams{
-		AccountID: cf.F(accountID),
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessGroupListResponse], error) {
+		return c.api.ZeroTrust.Access.Groups.List(ctx, zero_trust.AccessGroupListParams{
+			AccountID: cf.F(accountID),
+		}, opts...)
 	})
 
-	for page.Next() {
-		group := page.Current()
+	for group, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list access groups: %w", err)
+		}
 		groups = append(groups, *groupFromListResponse(&group))
-	}
-
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list access groups: %w", err)
 	}
 
 	return groups, nil
@@ -1047,6 +1144,8 @@ func (c *clientImpl) ListAccessGroups(ctx context.Context, accountID string) ([]
 // GetAccessGroupByName retrieves an Access group by name.
 // Returns nil if the group does not exist.
 func (c *clientImpl) GetAccessGroupByName(ctx context.Context, accountID, name string) (*AccessGroup, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	groups, err := c.ListAccessGroups(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -1068,6 +1167,8 @@ func (c *clientImpl) GetAccessGroupByName(ctx context.Context, accountID, name s
 
 // CreateServiceToken creates a new service token.
 func (c *clientImpl) CreateServiceToken(ctx context.Context, accountID string, params ServiceTokenParams) (*ServiceTokenWithSecret, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.ServiceTokens.New(ctx, zero_trust.AccessServiceTokenNewParams{
 		AccountID: cf.F(accountID),
 		Name:      cf.F(params.Name),
@@ -1091,6 +1192,8 @@ func (c *clientImpl) CreateServiceToken(ctx context.Context, accountID string, p
 
 // GetServiceToken retrieves a service token by ID.
 func (c *clientImpl) GetServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	// The SDK doesn't have a direct Get method, so we list and filter
 	tokens, err := c.ListServiceTokens(ctx, accountID)
 	if err != nil {
@@ -1109,6 +1212,8 @@ func (c *clientImpl) GetServiceToken(ctx context.Context, accountID, tokenID str
 
 // UpdateServiceToken updates an existing service token.
 func (c *clientImpl) UpdateServiceToken(ctx context.Context, accountID, tokenID string, params ServiceTokenParams) (*ServiceToken, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.ServiceTokens.Update(ctx, tokenID, zero_trust.AccessServiceTokenUpdateParams{
 		AccountID: cf.F(accountID),
 		Name:      cf.F(params.Name),
@@ -1129,6 +1234,8 @@ func (c *clientImpl) UpdateServiceToken(ctx context.Context, accountID, tokenID 
 
 // DeleteServiceToken deletes a service token.
 func (c *clientImpl) DeleteServiceToken(ctx context.Context, accountID, tokenID string) error {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	_, err := c.api.ZeroTrust.Access.ServiceTokens.Delete(ctx, tokenID, zero_trust.AccessServiceTokenDeleteParams{
 		AccountID: cf.F(accountID),
 	})
@@ -1144,14 +1251,20 @@ func (c *clientImpl) DeleteServiceToken(ctx context.Context, accountID, tokenID 
 
 // ListServiceTokens lists all service tokens.
 func (c *clientImpl) ListServiceTokens(ctx context.Context, accountID string) ([]ServiceToken, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	var tokens []ServiceToken
 
-	page := c.api.ZeroTrust.Access.ServiceTokens.ListAutoPaging(ctx, zero_trust.AccessServiceTokenListParams{
-		AccountID: cf.F(accountID),
+	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.ServiceToken], error) {
+		return c.api.ZeroTrust.Access.ServiceTokens.List(ctx, zero_trust.AccessServiceTokenListParams{
+			AccountID: cf.F(accountID),
+		}, opts...)
 	})
 
-	for page.Next() {
-		token := page.Current()
+	for token, err := range items {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list service tokens: %w", err)
+		}
 		tokens = append(tokens, ServiceToken{
 			ID:        token.ID,
 			Name:      token.Name,
@@ -1161,15 +1274,13 @@ func (c *clientImpl) ListServiceTokens(ctx context.Context, accountID string) ([
 		})
 	}
 
-	if err := page.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list service tokens: %w", err)
-	}
-
 	return tokens, nil
 }
 
 // RotateServiceToken rotates a service token.
 func (c *clientImpl) RotateServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceTokenWithSecret, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.ServiceTokens.Rotate(ctx, tokenID, zero_trust.AccessServiceTokenRotateParams{
 		AccountID: cf.F(accountID),
 	})
@@ -1191,6 +1302,8 @@ func (c *clientImpl) RotateServiceToken(ctx context.Context, accountID, tokenID 
 
 // RefreshServiceToken refreshes a service token's expiration.
 func (c *clientImpl) RefreshServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
 	result, err := c.api.ZeroTrust.Access.ServiceTokens.Refresh(ctx, tokenID, zero_trust.AccessServiceTokenRefreshParams{
 		AccountID: cf.F(accountID),
 	})
@@ -1205,4 +1318,31 @@ func (c *clientImpl) RefreshServiceToken(ctx context.Context, accountID, tokenID
 		Duration:  result.Duration,
 		ExpiresAt: result.ExpiresAt,
 	}, nil
+}
+
+// Explicit fetches retain caller cancellation; the SDK auto-pager resets the context.
+func allPages[T any](ctx context.Context, fetch func(...option.RequestOption) (*pagination.V4PagePaginationArray[T], error)) iter.Seq2[T, error] {
+	return func(yield func(T, error) bool) {
+		var zero T
+		for page := 1; page <= maxListPages; page++ {
+			if err := ctx.Err(); err != nil {
+				yield(zero, err)
+				return
+			}
+			response, err := fetch(option.WithQuery("page", strconv.Itoa(page)))
+			if err != nil {
+				yield(zero, err)
+				return
+			}
+			if len(response.Result) == 0 {
+				return
+			}
+			for _, item := range response.Result {
+				if !yield(item, nil) {
+					return
+				}
+			}
+		}
+		yield(zero, fmt.Errorf("cloudflare list exceeded %d pages", maxListPages))
+	}
 }
