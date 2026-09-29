@@ -564,6 +564,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			annotationFilter := "e2e.dns/selection=union"
 
 			makeRoute := func(targetNamespace *corev1.Namespace, suffix string) string {
+				createExplicitReferenceGrant(ctx, k8sClient, targetNamespace.Name, "gateway.networking.k8s.io", "Gateway", namespace.Name, "cfgate.io", "CloudflareTunnel", sharedTunnel.Name)
 				gatewayName := testID("gw-" + suffix)
 				createGateway(ctx, k8sClient, gatewayName, targetNamespace.Name, gatewayClassName, tunnelRef)
 				serviceName := testID("svc-" + suffix)

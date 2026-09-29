@@ -828,7 +828,7 @@ func createCloudflareTunnel(ctx context.Context, k8sClient client.Client, name, 
 func e2eFallbackCredentialsRef() *cfgatev1alpha1.SecretReference {
 	return &cfgatev1alpha1.SecretReference{
 		Name:      e2eFallbackCredentialsSecret,
-		Namespace: e2eFallbackCredentialsNamespace,
+		Namespace: e2eSystemNamespace(),
 	}
 }
 

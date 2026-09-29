@@ -1,6 +1,6 @@
 // Package e2e contains end-to-end tests for cfgate.
 // These tests run against real Cloudflare API and real Kubernetes clusters.
-// NO mocks, NO envtest - real APIs only.
+// Live specs use real APIs; TestCleanup regressions exercise the harness without credentials.
 package e2e_test
 
 import (
@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"cfgate.io/cfgate/internal/accesstags"
+	"cfgate.io/cfgate/internal/e2ecleanup"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -63,11 +65,11 @@ const (
 	EnvUseExistingCluster  = "E2E_USE_EXISTING_CLUSTER"
 	EnvE2ERunID            = "E2E_RUN_ID"
 	EnvE2EOrphanMinAge     = "E2E_ORPHAN_MIN_AGE"
+	EnvCleanOrphans        = "E2E_CLEAN_ORPHANS"
 	EnvKubeconfig          = "KUBECONFIG"
 
-	e2eFallbackCredentialsNamespace = "cfgate-e2e-system"
-	e2eFallbackCredentialsSecret    = "cloudflare-credentials"
-	defaultE2EOrphanMinAge          = 2 * time.Hour
+	e2eFallbackCredentialsSecret = "cloudflare-credentials"
+	defaultE2EOrphanMinAge       = 2 * time.Hour
 )
 
 var (
@@ -175,6 +177,7 @@ var _ = SynchronizedBeforeSuite(
 		if testRunID == "" {
 			testRunID = generateE2ERunID()
 		}
+		Expect(e2ecleanup.ValidRunID(testRunID)).To(BeTrue(), "E2E_RUN_ID must contain 1-20 lowercase letters or digits")
 		GinkgoWriter.Printf("E2E run ID: %s\n", testRunID)
 
 		// Initialize logger for controller-runtime.
@@ -238,20 +241,22 @@ var _ = SynchronizedBeforeSuite(
 
 		// Register all 6 controllers.
 		tunnelReconciler := &controller.CloudflareTunnelReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflaretunnel-controller"),
-			Builder:         cloudflared.NewBuilder(),
-			APIReader:       mgr.GetAPIReader(),
-			CredentialCache: credCache,
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflaretunnel-controller"),
+			Builder:               cloudflared.NewBuilder(),
+			APIReader:             mgr.GetAPIReader(),
+			CredentialCache:       credCache,
+			InstallationNamespace: e2eSystemNamespace(),
 		}
 		Expect(tunnelReconciler.SetupWithManager(mgr)).To(Succeed(), "Failed to setup tunnel controller")
 
 		dnsReconciler := &controller.CloudflareDNSReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflaredns-controller"),
-			CredentialCache: credCache,
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflaredns-controller"),
+			CredentialCache:       credCache,
+			InstallationNamespace: e2eSystemNamespace(),
 		}
 		Expect(dnsReconciler.SetupWithManager(mgr)).To(Succeed(), "Failed to setup DNS controller")
 
@@ -324,6 +329,7 @@ var _ = SynchronizedBeforeSuite(
 		kubeconfigPath := bootstrap.KubeconfigPath
 		testRunID = bootstrap.RunID
 		Expect(testRunID).NotTo(BeEmpty(), "E2E run ID must not be empty")
+		Expect(e2ecleanup.ValidRunID(testRunID)).To(BeTrue(), "E2E_RUN_ID must contain 1-20 lowercase letters or digits")
 		GinkgoWriter.Printf("E2E run ID: %s\n", testRunID)
 
 		// Schemes already registered in init().
@@ -411,9 +417,34 @@ func cleanOrphanedTestNamespaces() {
 		return
 	}
 
+	// Installation identity and fallback credentials must outlive test resources.
+	sort.SliceStable(nsList.Items, func(i, j int) bool {
+		return nsList.Items[i].Labels["cfgate.io/e2e-system"] != "true" && nsList.Items[j].Labels["cfgate.io/e2e-system"] == "true"
+	})
+
 	for _, ns := range nsList.Items {
+		if !e2ecleanup.NamespaceSelected(ns.Labels, testRunID, ns.CreationTimestamp.Time, time.Now(), os.Getenv(EnvCleanOrphans) == "true", e2eOrphanMinAge()) {
+			continue
+		}
+		if ns.Labels["cfgate.io/e2e-system"] == "true" {
+			var remaining corev1.NamespaceList
+			if err := k8sClient.List(ctx, &remaining, client.MatchingLabels{
+				"cfgate.io/e2e-test": "true", "cfgate.io/e2e-run": ns.Labels["cfgate.io/e2e-run"],
+			}); err != nil {
+				GinkgoWriter.Printf("Preserving system namespace %s: namespace inventory failed: %v\n", ns.Name, err)
+				continue
+			}
+			if len(remaining.Items) != 1 || remaining.Items[0].UID != ns.UID {
+				GinkgoWriter.Printf("Preserving system namespace %s: test namespaces still require credentials\n", ns.Name)
+				continue
+			}
+		}
 		deleteTestNamespace(ns.DeepCopy())
 	}
+}
+
+func e2eSystemNamespace() string {
+	return "cfgate-e2e-system-" + testRunID
 }
 
 func ensureFallbackCredentialsSecret() {
@@ -423,16 +454,26 @@ func ensureFallbackCredentialsSecret() {
 
 	fallbackNS := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: e2eFallbackCredentialsNamespace,
+			Name: e2eSystemNamespace(),
+			Labels: map[string]string{
+				"cfgate.io/e2e-test":   "true",
+				"cfgate.io/e2e-run":    testRunID,
+				"cfgate.io/e2e-system": "true",
+			},
 		},
 	}
 	if err := k8sClient.Create(ctx, fallbackNS); err != nil && !apierrors.IsAlreadyExists(err) {
 		Expect(err).NotTo(HaveOccurred(), "failed to create fallback credentials namespace")
 	}
 
+	var existingNamespace corev1.Namespace
+	Expect(k8sClient.Get(ctx, client.ObjectKey{Name: fallbackNS.Name}, &existingNamespace)).To(Succeed())
+	Expect(existingNamespace.Labels["cfgate.io/e2e-test"]).To(Equal("true"))
+	Expect(existingNamespace.Labels["cfgate.io/e2e-run"]).To(Equal(testRunID), "refusing foreign fallback namespace")
+
 	secretKey := client.ObjectKey{
 		Name:      e2eFallbackCredentialsSecret,
-		Namespace: e2eFallbackCredentialsNamespace,
+		Namespace: e2eSystemNamespace(),
 	}
 	var existing corev1.Secret
 	err := k8sClient.Get(ctx, secretKey, &existing)
@@ -440,7 +481,7 @@ func ensureFallbackCredentialsSecret() {
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      e2eFallbackCredentialsSecret,
-				Namespace: e2eFallbackCredentialsNamespace,
+				Namespace: e2eSystemNamespace(),
 			},
 			Type: corev1.SecretTypeOpaque,
 			StringData: map[string]string{
@@ -468,26 +509,15 @@ func e2eOrphanMinAge() time.Duration {
 		return defaultE2EOrphanMinAge
 	}
 	minAge, err := time.ParseDuration(raw)
-	if err != nil {
+	if err != nil || minAge <= 0 {
 		GinkgoWriter.Printf("Invalid %s=%q, using %s\n", EnvE2EOrphanMinAge, raw, defaultE2EOrphanMinAge)
 		return defaultE2EOrphanMinAge
 	}
 	return minAge
 }
 
-func staleEnough(created time.Time, minAge time.Duration) bool {
-	return !created.IsZero() && time.Since(created) >= minAge
-}
-
-func isCurrentRunE2EResource(name string) bool {
-	return testRunID != "" && strings.Contains(name, "e2e-"+testRunID+"-")
-}
-
 func shouldCleanupE2EResource(name string, created time.Time, includeCurrentRun bool, minAge time.Duration) bool {
-	if includeCurrentRun && isCurrentRunE2EResource(name) {
-		return true
-	}
-	return staleEnough(created, minAge)
+	return testEnv != nil && !testEnv.SkipCleanup && e2ecleanup.Select(name, testRunID, created, time.Now(), includeCurrentRun, os.Getenv(EnvCleanOrphans) == "true", minAge)
 }
 
 func createdAtFromRawJSON(raw string) time.Time {
@@ -505,15 +535,17 @@ func createdAtFromRawJSON(raw string) time.Time {
 }
 
 // cleanOrphanedE2EResources deletes E2E test resources from Cloudflare.
-// Startup cleanup removes stale non-current resources. Suite shutdown also removes
-// current-run resources regardless of age so local business accounts do not accrue
-// fresh e2e resources.
+// Startup orphan cleanup requires an explicit opt-in. Default teardown selects
+// only the current run; unidentified owner tags are always preserved.
 func cleanOrphanedE2EResources(includeCurrentRun bool) {
+	if testEnv == nil || testEnv.SkipCleanup || (!includeCurrentRun && os.Getenv(EnvCleanOrphans) != "true") {
+		return
+	}
 	By("Cleaning orphaned E2E resources from Cloudflare")
 
-	cfClient := cloudflare.NewClient(option.WithAPIToken(testEnv.CloudflareAPIToken))
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
+	cfClient := cloudflare.NewClient(option.WithAPIToken(testEnv.CloudflareAPIToken), option.WithHTTPClient(e2ecleanup.HTTPClient(cleanupCtx)), option.WithRequestTimeout(30*time.Second), option.WithMaxRetries(2))
 	options := e2eCleanupOptions{
 		includeCurrentRun: includeCurrentRun,
 		minAge:            e2eOrphanMinAge(),
@@ -530,8 +562,8 @@ func cleanOrphanedE2EResources(includeCurrentRun bool) {
 	}
 
 	// Clean Access applications, unreferenced owner tags, and reusable policies.
-	cleanOrphanedAccessApplications(cleanupCtx, cfClient, options)
-	cleanOrphanedAccessTags(cleanupCtx, cfClient)
+	allowedTags := cleanOrphanedAccessApplications(cleanupCtx, cfClient, options)
+	cleanOrphanedAccessTags(cleanupCtx, cfClient, allowedTags)
 	cleanOrphanedAccessPolicies(cleanupCtx, cfClient, options)
 
 	// Clean service tokens.
@@ -636,7 +668,8 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client, o
 }
 
 // cleanOrphanedAccessApplications deletes e2e-* Access applications by name or domain.
-func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
+func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) map[string]struct{} {
+	allowedTags := map[string]struct{}{}
 	iter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
 	})
@@ -653,6 +686,11 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 		nameKey := app.Name + " " + app.Domain
 		if shouldCleanupE2EResource(nameKey, createdAtFromRawJSON(app.JSON.RawJSON()), options.includeCurrentRun, options.minAge) {
 			orphaned = append(orphaned, struct{ ID, Name string }{app.ID, app.Name})
+			for _, tag := range accesstags.ApplicationTagNames(app.Tags) {
+				if accesstags.IsOwnerTag(tag) {
+					allowedTags[tag] = struct{}{}
+				}
+			}
 		} else {
 			skipped++
 		}
@@ -660,12 +698,12 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 
 	if err := iter.Err(); err != nil {
 		GinkgoWriter.Printf("Warning: failed to list Access applications: %v\n", err)
-		return
+		return nil
 	}
 
 	if len(orphaned) == 0 {
 		GinkgoWriter.Printf("No orphaned Access applications found (skipped %d fresh/unknown-age)\n", skipped)
-		return
+		return nil
 	}
 
 	GinkgoWriter.Printf("Deleting %d orphaned Access applications (skipped %d fresh/unknown-age)\n", len(orphaned), skipped)
@@ -677,10 +715,14 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 			GinkgoWriter.Printf("  Warning: %s: %v\n", app.Name, err)
 		}
 	}
+	return allowedTags
 }
 
 // cleanOrphanedAccessTags deletes unreferenced cfgate owner tags.
-func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client) {
+func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client, allowedTags map[string]struct{}) {
+	if len(allowedTags) == 0 || testEnv.SkipCleanup {
+		return
+	}
 	referenced := map[string]struct{}{}
 	appIter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
 		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
@@ -702,7 +744,7 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client) {
 	var orphaned []string
 	for tagIter.Next() {
 		tagName := tagIter.Current().Name
-		if !accesstags.IsOwnerTag(tagName) {
+		if _, allowed := allowedTags[tagName]; !allowed || !accesstags.IsOwnerTag(tagName) {
 			continue
 		}
 		if _, ok := referenced[tagName]; ok {
@@ -1015,10 +1057,20 @@ func createTestNamespace(prefix string) *corev1.Namespace {
 			GenerateName: prefix + "-",
 			Labels: map[string]string{
 				"cfgate.io/e2e-test": "true",
+				"cfgate.io/e2e-run":  testRunID,
 			},
 		},
 	}
 	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+	// Explicitly authorize only this test namespace's tunnel fallback credential.
+	grant := &gatewayv1b1.ReferenceGrant{
+		ObjectMeta: metav1.ObjectMeta{Name: "fallback-" + ns.Name, Namespace: e2eSystemNamespace()},
+		Spec: gatewayv1b1.ReferenceGrantSpec{
+			From: []gatewayv1b1.ReferenceGrantFrom{{Group: "cfgate.io", Kind: "CloudflareTunnel", Namespace: gatewayv1b1.Namespace(ns.Name)}},
+			To:   []gatewayv1b1.ReferenceGrantTo{{Group: "", Kind: "Secret", Name: ptrTo(gatewayv1b1.ObjectName(e2eFallbackCredentialsSecret))}},
+		},
+	}
+	Expect(k8sClient.Create(ctx, grant)).To(Succeed())
 	return ns
 }
 

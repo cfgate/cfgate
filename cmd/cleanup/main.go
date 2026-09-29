@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"cfgate.io/cfgate/internal/accesstags"
+	"cfgate.io/cfgate/internal/e2ecleanup"
 
 	cloudflare "github.com/cloudflare/cloudflare-go/v6"
 	"github.com/cloudflare/cloudflare-go/v6/dns"
@@ -26,12 +29,17 @@ const (
 
 // resource represents a Cloudflare resource identified for cleanup.
 type resource struct {
-	ID   string // Cloudflare resource ID
-	Name string // Resource name (for display)
-	Type string // Resource type: tunnel, dns, access_app, access_policy, access_tag, service_token
+	Created time.Time
+	Domain  string
+	Tags    []string
+	ID      string // Cloudflare resource ID
+	Name    string // Resource name (for display)
+	Type    string // Resource type: tunnel, dns, access_app, access_policy, access_tag, service_token
 }
 
 type cleanupConfig struct {
+	Apply     bool
+	MinAge    time.Duration
 	APIToken  string
 	AccountID string
 	ZoneName  string
@@ -65,7 +73,7 @@ type cloudflareCleanupClient struct {
 }
 
 type cleanupRuntime struct {
-	newClient func(string) cleanupClient
+	newClient func(context.Context, string) cleanupClient
 }
 
 var (
@@ -91,9 +99,9 @@ func main() {
 
 func defaultCleanupRuntime() cleanupRuntime {
 	return cleanupRuntime{
-		newClient: func(apiToken string) cleanupClient {
+		newClient: func(ctx context.Context, apiToken string) cleanupClient {
 			return &cloudflareCleanupClient{
-				client: cloudflare.NewClient(option.WithAPIToken(apiToken)),
+				client: cloudflare.NewClient(option.WithAPIToken(apiToken), option.WithHTTPClient(e2ecleanup.HTTPClient(ctx)), option.WithRequestTimeout(30*time.Second), option.WithMaxRetries(2)),
 			}
 		},
 	}
@@ -110,7 +118,8 @@ func executeCleanup(getenv func(string) string, out io.Writer, runtime cleanupRu
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 
-	if _, err := runCleanup(ctx, cfg, runtime.newClient(cfg.APIToken), out); err != nil {
+	if _, err := runCleanup(ctx, cfg, runtime.newClient(ctx, cfg.APIToken), out); err != nil {
+		_, _ = fmt.Fprintf(out, "ERROR: %v\n", err)
 		return 1
 	}
 	return 0
@@ -118,9 +127,21 @@ func executeCleanup(getenv func(string) string, out io.Writer, runtime cleanupRu
 
 func loadCleanupConfig(getenv func(string) string) (cleanupConfig, error) {
 	cfg := cleanupConfig{
+		Apply:     getenv("E2E_CLEAN_ORPHANS") == "true" && getenv("E2E_CLEANUP_APPLY") == "true",
+		MinAge:    2 * time.Hour,
 		APIToken:  getenv("CLOUDFLARE_API_TOKEN"),
 		AccountID: getenv("CLOUDFLARE_ACCOUNT_ID"),
 		ZoneName:  getenv("CLOUDFLARE_ZONE_NAME"),
+	}
+	if raw := getenv("E2E_ORPHAN_MIN_AGE"); raw != "" {
+		var err error
+		cfg.MinAge, err = time.ParseDuration(raw)
+		if err != nil || cfg.MinAge <= 0 {
+			return cleanupConfig{}, fmt.Errorf("E2E_ORPHAN_MIN_AGE must be a positive duration")
+		}
+	}
+	if getenv("E2E_SKIP_CLEANUP") == "true" {
+		cfg.Apply = false
 	}
 	if cfg.APIToken == "" || cfg.AccountID == "" {
 		return cleanupConfig{}, fmt.Errorf("CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID must be set")
@@ -130,120 +151,126 @@ func loadCleanupConfig(getenv func(string) string) (cleanupConfig, error) {
 
 func runCleanup(ctx context.Context, cfg cleanupConfig, client cleanupClient, out io.Writer) (cleanupSummary, error) {
 	summary := cleanupSummary{}
-
-	_, _ = fmt.Fprintln(out, "=== cfgate E2E Resource Cleanup ===")
-	_, _ = fmt.Fprintf(out, "Account ID: %s\n", cfg.AccountID)
-	_, _ = fmt.Fprintf(out, "Zone: %s\n\n", cfg.ZoneName)
-
-	tunnels, err := client.ListOrphanedTunnels(ctx, cfg.AccountID)
-	printScanSection(out, "Tunnels", tunnels, err)
-	summary.Found += len(tunnels)
-
-	var records []resource
-	if cfg.ZoneName != "" {
-		records, err = client.ListOrphanedDNSRecords(ctx, cfg.ZoneName)
-		printScanSection(out, "DNS Records", records, err)
-		summary.Found += len(records)
+	_, _ = fmt.Fprintf(out, "=== cfgate E2E Resource Cleanup ===\nAccount ID: %s\nZone: %s\nApply: %t, minimum age: %s\n", cfg.AccountID, cfg.ZoneName, cfg.Apply, cfg.MinAge)
+	type group struct {
+		label     string
+		resources []resource
+		remove    func(resource) error
 	}
-
-	apps, err := client.ListOrphanedAccessApplications(ctx, cfg.AccountID)
-	printScanSection(out, "Access Applications", apps, err)
-	summary.Found += len(apps)
-
-	policies, err := client.ListOrphanedAccessPolicies(ctx, cfg.AccountID)
-	printScanSection(out, "Access Policies", policies, err)
-	summary.Found += len(policies)
-
-	tokens, err := client.ListOrphanedServiceTokens(ctx, cfg.AccountID)
-	printScanSection(out, "Service Tokens", tokens, err)
-	summary.Found += len(tokens)
-
-	deletionStarted := false
-	startDeleting := func() {
-		if deletionStarted {
-			return
+	var groups []group
+	add := func(label string, resources []resource, err error, remove func(resource) error) error {
+		if err != nil {
+			return fmt.Errorf("incomplete %s inventory: %w", label, err)
 		}
-		_, _ = fmt.Fprintln(out, "--- Deleting Resources ---")
-		deletionStarted = true
-	}
-
-	deleteResources := func(resources []resource, label string, deleteFn func(resource) error) {
+		var selected []resource
 		for _, res := range resources {
-			_, _ = fmt.Fprintf(out, "  Deleting %s: %s ... ", label, res.Name)
-			if err := deleteFn(res); err != nil {
-				_, _ = fmt.Fprintf(out, "FAILED: %v\n", err)
-				summary.Failed++
-				summary.FailedResources = append(summary.FailedResources, res)
-				continue
-			}
-
-			_, _ = fmt.Fprintln(out, "OK")
-			summary.Deleted++
-		}
-	}
-
-	if summary.Found > 0 {
-		startDeleting()
-		deleteResources(tunnels, "tunnel", func(res resource) error {
-			return client.DeleteTunnel(ctx, cfg.AccountID, res.ID)
-		})
-
-		if cfg.ZoneName != "" && len(records) > 0 {
-			zoneID, err := client.ResolveZoneID(ctx, cfg.ZoneName)
-			if err != nil {
-				_, _ = fmt.Fprintf(out, "Warning: failed to resolve zone ID for %s: %v\n", cfg.ZoneName, err)
-			} else {
-				deleteResources(records, "DNS record", func(res resource) error {
-					return client.DeleteDNSRecord(ctx, zoneID, res.ID)
-				})
+			if e2ecleanup.Select(res.Name+" "+res.Domain, "", res.Created, time.Now(), false, true, cfg.MinAge) {
+				selected = append(selected, res)
 			}
 		}
-
-		deleteResources(apps, "Access application", func(res resource) error {
-			return client.DeleteAccessApplication(ctx, cfg.AccountID, res.ID)
-		})
-
-		deleteResources(policies, "Access policy", func(res resource) error {
-			return client.DeleteAccessPolicy(ctx, cfg.AccountID, res.ID)
-		})
-
-		deleteResources(tokens, "service token", func(res resource) error {
-			return client.DeleteServiceToken(ctx, cfg.AccountID, res.ID)
-		})
+		printScanSection(out, label, selected, nil)
+		summary.Found += len(selected)
+		groups = append(groups, group{label, selected, remove})
+		return nil
 	}
-
-	tags, err := client.ListOrphanedAccessTags(ctx, cfg.AccountID)
-	printScanSection(out, "Access Tags", tags, err)
-	summary.Found += len(tags)
-
-	if len(tags) > 0 {
-		startDeleting()
+	tunnels, err := client.ListOrphanedTunnels(ctx, cfg.AccountID)
+	if err := add("tunnel", tunnels, err, func(r resource) error { return client.DeleteTunnel(ctx, cfg.AccountID, r.ID) }); err != nil {
+		return summary, err
 	}
-
-	deleteResources(tags, "Access tag", func(res resource) error {
-		return client.DeleteAccessTag(ctx, cfg.AccountID, res.ID)
-	})
-
-	if summary.Found == 0 {
-		_, _ = fmt.Fprintln(out, "=== No orphaned E2E resources found ===")
+	zoneID := ""
+	if cfg.ZoneName != "" {
+		zoneID, err = client.ResolveZoneID(ctx, cfg.ZoneName)
+		if err != nil {
+			return summary, fmt.Errorf("resolve cleanup zone: %w", err)
+		}
+		records, err := client.ListOrphanedDNSRecords(ctx, cfg.ZoneName)
+		if err := add("DNS record", records, err, func(r resource) error { return client.DeleteDNSRecord(ctx, zoneID, r.ID) }); err != nil {
+			return summary, err
+		}
+	}
+	apps, err := client.ListOrphanedAccessApplications(ctx, cfg.AccountID)
+	if err := add("Access application", apps, err, func(r resource) error { return client.DeleteAccessApplication(ctx, cfg.AccountID, r.ID) }); err != nil {
+		return summary, err
+	}
+	allowedTags := map[string]struct{}{}
+	for _, res := range groups[len(groups)-1].resources {
+		for _, tag := range res.Tags {
+			if accesstags.IsOwnerTag(tag) {
+				allowedTags[tag] = struct{}{}
+			}
+		}
+	}
+	policies, err := client.ListOrphanedAccessPolicies(ctx, cfg.AccountID)
+	if err := add("Access policy", policies, err, func(r resource) error { return client.DeleteAccessPolicy(ctx, cfg.AccountID, r.ID) }); err != nil {
+		return summary, err
+	}
+	tokens, err := client.ListOrphanedServiceTokens(ctx, cfg.AccountID)
+	if err := add("service token", tokens, err, func(r resource) error { return client.DeleteServiceToken(ctx, cfg.AccountID, r.ID) }); err != nil {
+		return summary, err
+	}
+	if !cfg.Apply {
+		tagNames := make([]string, 0, len(allowedTags))
+		for tag := range allowedTags {
+			tagNames = append(tagNames, tag)
+		}
+		sort.Strings(tagNames)
+		for _, tag := range tagNames {
+			_, _ = fmt.Fprintf(out, "Candidate application owner tag: %s (delete only if unreferenced after application deletion)\n", tag)
+		}
+		_, _ = fmt.Fprintln(out, "Preview only; no resources deleted. Set E2E_CLEAN_ORPHANS=true E2E_CLEANUP_APPLY=true to apply this scope after reviewing the inventory.")
+		_, _ = fmt.Fprintf(out, "Found: %d; candidate application owner tags: %d (rechecked after deletion)\n", summary.Found, len(allowedTags))
 		return summary, nil
 	}
-
-	_, _ = fmt.Fprintln(out)
-	_, _ = fmt.Fprintln(out, "=== Cleanup Summary ===")
-	_, _ = fmt.Fprintf(out, "Found:   %d\n", summary.Found)
-	_, _ = fmt.Fprintf(out, "Deleted: %d\n", summary.Deleted)
-	_, _ = fmt.Fprintf(out, "Failed:  %d\n", summary.Failed)
-
-	if summary.Failed > 0 {
-		_, _ = fmt.Fprintln(out, "\nFailed resources:")
-		for _, res := range summary.FailedResources {
-			_, _ = fmt.Fprintf(out, "  - %s: %s (ID: %s)\n", res.Type, res.Name, res.ID)
+	remove := func(label string, resources []resource, fn func(resource) error) {
+		for _, res := range resources {
+			_, _ = fmt.Fprintf(out, "Deleting %s: %s (ID: %s) ... ", label, res.Name, res.ID)
+			if err := fn(res); err != nil {
+				summary.Failed++
+				summary.FailedResources = append(summary.FailedResources, res)
+				_, _ = fmt.Fprintf(out, "FAILED: %v\n", err)
+			} else {
+				summary.Deleted++
+				_, _ = fmt.Fprintln(out, "OK")
+			}
 		}
+	}
+	for _, g := range groups {
+		remove(g.label, g.resources, g.remove)
+	}
+	// This fresh complete inventory excludes tags still referenced by any application.
+	if len(allowedTags) > 0 {
+		tags, err := client.ListOrphanedAccessTags(ctx, cfg.AccountID)
+		if err != nil {
+			return summary, fmt.Errorf("recheck application tag references: %w", err)
+		}
+		var selected []resource
+		for _, tag := range tags {
+			if _, ok := allowedTags[tag.Name]; ok {
+				selected = append(selected, tag)
+			}
+		}
+		summary.Found += len(selected)
+		remove("Access tag", selected, func(r resource) error { return client.DeleteAccessTag(ctx, cfg.AccountID, r.ID) })
+	}
+	_, _ = fmt.Fprintf(out, "Found: %d, deleted: %d, failed: %d\n", summary.Found, summary.Deleted, summary.Failed)
+	if summary.Failed > 0 {
 		return summary, fmt.Errorf("cleanup failed for %d resource(s)", summary.Failed)
 	}
-
 	return summary, nil
+}
+
+func cleanupCreatedAt(raw string) time.Time {
+	var value struct {
+		CreatedAt time.Time `json:"created_at"`
+		CreatedOn time.Time `json:"created_on"`
+	}
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return time.Time{}
+	}
+	if !value.CreatedAt.IsZero() {
+		return value.CreatedAt
+	}
+	return value.CreatedOn
 }
 
 func printScanSection(out io.Writer, title string, resources []resource, err error) {
@@ -322,7 +349,7 @@ func listOrphanedTunnels(ctx context.Context, client *cloudflare.Client, account
 	for iter.Next() {
 		t := iter.Current()
 		if strings.HasPrefix(t.Name, e2ePrefix) || strings.HasPrefix(t.Name, recoveryPrefix) {
-			results = append(results, resource{ID: t.ID, Name: t.Name, Type: "tunnel"})
+			results = append(results, resource{ID: t.ID, Name: t.Name, Type: "tunnel", Created: t.CreatedAt})
 		}
 	}
 
@@ -348,7 +375,7 @@ func listOrphanedDNSRecords(ctx context.Context, client *cloudflare.Client, zone
 	for iter.Next() {
 		record := iter.Current()
 		if strings.Contains(record.Name, e2ePrefix) || strings.HasPrefix(record.Name, ownershipPrefix) {
-			results = append(results, resource{ID: record.ID, Name: record.Name, Type: "dns"})
+			results = append(results, resource{ID: record.ID, Name: record.Name, Type: "dns", Created: record.CreatedOn})
 		}
 	}
 
@@ -369,7 +396,7 @@ func listOrphanedAccessApplications(ctx context.Context, client *cloudflare.Clie
 	for iter.Next() {
 		app := iter.Current()
 		if isE2EAccessApplication(app.Name, app.Domain) {
-			results = append(results, resource{ID: app.ID, Name: app.Name, Type: "access_app"})
+			results = append(results, resource{ID: app.ID, Name: app.Name, Type: "access_app", Created: cleanupCreatedAt(app.JSON.RawJSON()), Domain: app.Domain, Tags: accesstags.ApplicationTagNames(app.Tags)})
 		}
 	}
 
@@ -394,7 +421,7 @@ func listOrphanedAccessPolicies(ctx context.Context, client *cloudflare.Client, 
 	for iter.Next() {
 		policy := iter.Current()
 		if strings.HasPrefix(policy.Name, e2ePrefix) {
-			results = append(results, resource{ID: policy.ID, Name: policy.Name, Type: "access_policy"})
+			results = append(results, resource{ID: policy.ID, Name: policy.Name, Type: "access_policy", Created: policy.CreatedAt})
 		}
 	}
 
@@ -451,7 +478,7 @@ func listOrphanedServiceTokens(ctx context.Context, client *cloudflare.Client, a
 	for iter.Next() {
 		token := iter.Current()
 		if strings.HasPrefix(token.Name, e2ePrefix) {
-			results = append(results, resource{ID: token.ID, Name: token.Name, Type: "service_token"})
+			results = append(results, resource{ID: token.ID, Name: token.Name, Type: "service_token", Created: cleanupCreatedAt(token.JSON.RawJSON())})
 		}
 	}
 

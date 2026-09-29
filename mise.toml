@@ -129,6 +129,14 @@ echo "Running unit tests: ${packages}"
 go test -race -count=1 ${TEST_ARGS:-} $packages
 """
 
+[tasks."test:e2e-cleanup"]
+description = "Test E2E cleanup effects without credentials or cluster"
+run = """
+go test -race -count=1 ./test/e2e -run '^TestCleanup'
+go test ./internal/e2ecleanup -run '^$' -fuzz '^FuzzSelect$' -fuzztime=5s
+go test ./internal/cloudflare -run '^$' -fuzz '^FuzzTunnelConfigurationBudget$' -fuzztime=5s
+"""
+
 [tasks."test:cover"]
 description = "Run unit tests with coverage report"
 run = """
@@ -153,7 +161,7 @@ description = "Run E2E tests against live Cloudflare API"
 env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = """
 set -eu
-export E2E_USE_EXISTING_CLUSTER="${E2E_USE_EXISTING_CLUSTER:-true}"
+export E2E_USE_EXISTING_CLUSTER="${E2E_USE_EXISTING_CLUSTER:-false}"
 restore_context_needed="false"
 current_context=""
 target_context=""
@@ -196,7 +204,8 @@ cleanup() {
 }
 trap cleanup EXIT
 if [ "$E2E_USE_EXISTING_CLUSTER" = "true" ]; then
-  target_context="kind-${CLUSTER_NAME:-abaddon}"
+  : "${CLUSTER_NAME:?Set CLUSTER_NAME to an explicitly selected disposable kind cluster}"
+  target_context="kind-${CLUSTER_NAME}"
   current_context="$(kubectl config current-context 2>/dev/null || true)"
   if ! kubectl config get-contexts "$target_context" >/dev/null 2>&1; then
     echo "Kubernetes context ${target_context} is not configured for local E2E." >&2
@@ -267,7 +276,7 @@ echo "Release E2E secret preflight passed"
 
 [tasks."e2e:cleanup"]
 alias = ["clean"]
-description = "Clean up orphaned E2E test resources from Cloudflare"
+description = "Preview orphaned E2E resources; explicit opt-ins enable deletion"
 env = { _.file = ["secrets.enc.yaml", ".env"] }
 run = "go run ./cmd/cleanup"
 

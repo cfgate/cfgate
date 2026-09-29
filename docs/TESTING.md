@@ -18,11 +18,13 @@ Unit coverage is the primary CI coverage signal. The default unit test surface i
 
 Current tunnel correctness coverage includes:
 
-- cloudflared metrics default port `44483` and `metrics.enabled: false` omission of args, ports, and HTTP probes
+- cloudflared metrics default port `44483`; `metrics.enabled: false` omits the scrape port while retaining the listener and health probes
 - `caPoolSecretRef` Secret volume/item/mount generation and global `originRequest.caPool`
 - managed per-route `caPool`, `originServerName`, host header, TLS verify, HTTP/2, and h2c origin request propagation
 - `cfgate.io/hostname` override for listener compatibility plus tunnel/DNS route discovery
 - HTTPRoute path translation to anchored cloudflared regexes
+- HTTPRoute rejection asserted against emitted Cloudflare configuration, including unsupported restrictions
+- Source-path precedence, zero-weight rejection responses, hostname overlap, route age and rule ordering
 - cross-namespace backend `Service` `ReferenceGrant` enforcement
 - HTTPRoute unsupported backend status for multiple backendRefs and non-Service backend group/kind values
 - CloudflareAccessApplication runtime validation for stale non-`self_hosted` application types
@@ -68,8 +70,10 @@ Tests construct hostnames as `e2e-{run}-{type}-{node}-{line}.{CLOUDFLARE_ZONE_NA
 | `CLOUDFLARE_TEST_GROUP` | Test group name for GSuite group rule verification |
 | `E2E_SKIP_CLEANUP` | Set to `true` to skip resource cleanup after tests (for debugging) |
 | `E2E_USE_EXISTING_CLUSTER` | Set to `true` to use existing kubeconfig cluster instead of creating kind |
-| `E2E_RUN_ID` | Optional per-suite run ID override for Cloudflare resource names; auto-generated when unset |
-| `E2E_ORPHAN_MIN_AGE` | Minimum age for stale cross-run Cloudflare orphan cleanup (default: `2h`) |
+| `E2E_RUN_ID` | Optional 1-20 lowercase alphanumeric run ID for names and namespace labels; auto-generated when unset |
+| `E2E_ORPHAN_MIN_AGE` | Positive minimum age for explicitly enabled orphan cleanup (default: `2h`); unknown ages are preserved |
+| `E2E_CLEAN_ORPHANS` | Set to `true` for deliberate stale test-resource cleanup across runs; default is current-run teardown only |
+| `E2E_CLEANUP_APPLY` | Set to `true` with `E2E_CLEAN_ORPHANS=true` to apply the cleanup CLI inventory; the CLI previews by default |
 | `E2E_PROCS` | Ginkgo parallel process count (default: 4) |
 
 #### API Token Permissions
@@ -96,7 +100,7 @@ mise install
 
 2. Configure secrets (see [CONTRIBUTING.md](../CONTRIBUTING.md#secrets-configuration))
 
-3. Bootstrap a reachable local cluster. Both paths are supported equally:
+3. Start Docker or Colima. The default E2E task creates and removes its own kind cluster. These existing-cluster bootstrap paths remain available for explicitly selected disposable development clusters:
 
 ```bash
 # Path A: broader local stack bootstrap
@@ -109,7 +113,7 @@ cd ~/production/cfgate/cfgate
 mise run cluster:create
 ```
 
-`mise run e2e` defaults to `E2E_USE_EXISTING_CLUSTER=true`, switches to `kind-abaddon` when needed, and now fails fast if that context exists but the API server is unreachable. The test suite installs CRDs and Gateway API resources automatically if not already present.
+`mise run e2e` creates a disposable kind cluster by default. Reusing a cluster requires `E2E_USE_EXISTING_CLUSTER=true` and an explicitly selected `CLUSTER_NAME`; the task fails if its API server is unreachable. The suite installs CRDs and Gateway API resources, so an existing cluster must also be disposable. Cloudflare account and zone isolation are separate from Kubernetes isolation.
 
 #### Run E2E Tests
 
@@ -214,7 +218,26 @@ Resources created during tests follow the pattern:
 e2e-{run}-{type}-{node}-{line}
 ```
 
-The `{run}` component scopes resources to one suite invocation, while `{line}` is the Ginkgo spec's source line number. This ensures parallel test nodes do not collide, concurrent suite runs do not delete each other's fresh Cloudflare resources, and orphaned resources remain identifiable.
+The `{run}` component scopes resources to one suite invocation, while `{line}` is the Ginkgo spec's source line number. Default startup performs no Cloudflare cleanup; teardown selects only the current run, including applications identified by their domain rather than name. Namespaces require both `cfgate.io/e2e-test=true` and the matching `cfgate.io/e2e-run` label. `E2E_SKIP_CLEANUP=true` takes precedence over cleanup opt-ins, but does not disable deliberate deletion assertions within specs.
+
+For occasional maintenance, preview orphan candidates before applying cleanup:
+
+```bash
+mise run e2e:cleanup
+E2E_CLEAN_ORPHANS=true E2E_CLEANUP_APPLY=true mise run e2e:cleanup
+```
+
+The CLI inventories again when applying. Both modes select complete generated test markers and resources older than `E2E_ORPHAN_MIN_AGE`. Unknown ages, malformed or legacy names without a complete marker, and unrelated resources are preserved. Review account, zone, names, IDs, and application tag candidates before applying. Never use the CLI as a broad account reset. `E2E_CLEAN_ORPHANS=true` also enables aged cross-run cleanup within the suite; ordinary CI leaves it unset.
+
+Owner tags may be deleted only when attributed to selected test applications and unreferenced after a fresh complete application inventory. An arbitrary unreferenced `cfgate:*` tag is insufficient proof of test ownership and remains untouched. Failed inventories prevent deletion for that resource collection; the maintenance CLI requires a complete inventory before any deletion. Tags whose application vanished before inventory may remain for manual provenance review.
+
+Run cleanup effect regressions without credentials, cluster setup, or Ginkgo suite hooks:
+
+```bash
+mise run test:e2e-cleanup
+```
+
+Ordinary PR CI runs these regressions along with race-enabled unit tests. They assert exact HTTP DELETE targets against an in-memory transport, including another run, foreign/shared tags, failed inventories, skip precedence, and default startup.
 
 ### Test Patterns
 
@@ -405,3 +428,41 @@ mise run smoke
 - `profile:view` launches the pprof web UI
 - `profile:export` writes `top`, `tree`, and `proto` outputs beside the selected profile
 - `smoke` builds `bin/manager`, verifies `./bin/manager --help` exits successfully, then runs a fast local package test pass
+
+### Cloudflare request budgets
+
+The API client bounds each operation to two minutes, including pagination and retries; an earlier caller deadline takes precedence. Individual SDK attempts have a 30-second deadline and at most two retries. Explicit page fetches retain the caller context because the pinned SDK auto-pager resets it. Lists stop with an error after 1,000 nonempty pages; partial inventories are never returned as complete results. Tests exercise stalled headers and bodies, rate-limit retry waits, shutdown cancellation, and a stalled second page for every paginated operation without live credentials.
+
+Aggregate tunnel configuration defaults to at most 1,000 ingress rules and 1 MiB of encoded ingress and origin settings. These are operator guardrails, not Cloudflare service limits. Manager overrides support larger explicitly budgeted installations; all cached clients receive the same immutable settings. Rejected configurations leave the previous remote configuration unchanged rather than publishing a truncated rule set. Rule-count, byte-boundary, default/override, and no-outbound-write tests run in ordinary CI, with a bounded configuration fuzz target. `BenchmarkTunnelConfigurationBudget` measures validation allocation and processing cost at 1, 100, and 1,000 rules; it does not establish end-to-end routing throughput.
+
+## Release artifact verification
+
+The release workflow resolves a validated semantic-version tag to a commit once.
+Quality, E2E, and image jobs check out that commit. The quality job runs lint,
+race tests, cleanup effects, bounded fuzzing, and release-ref contracts. The image job builds both architectures
+into one OCI archive, retaining BuildKit provenance and SBOM attestations. It
+extracts each platform without changing its manifest digest, verifies binary
+version/source metadata, and smoke-tests both architectures. Trivy scans the
+single-platform OCI layout directories and fails on fixable HIGH or CRITICAL
+OS/library vulnerabilities. Failed scans or missing attestations block promotion.
+
+After E2E and both scans pass, the publication job verifies the source tag again,
+checks the archive checksum and OCI index digest, and promotes that same index
+with all platform and attestation manifests. It does not rebuild the images.
+GitHub provenance, cosign signatures, generated manifests, release notes, and
+Artifact Hub metadata remain part of publication. Scheduled monitoring scans
+both published architectures with the same severity gate.
+
+`bash .github/scripts/test-release-ref.sh` checks valid release channels,
+malformed versions, literal shell payloads, and mismatched tag/checkout commits
+without credentials or publication. PR CI runs this alongside cleanup regressions.
+Local OCI fixture tests establish archive mechanics only; final cfgate images
+must still pass the actual release checks after dependency updates. Creating the
+cfgate release tag remains gated on the user's final release review for alpha.6.
+
+Cleanup SDK clients are scoped to one operation and have a 30-second HTTP attempt
+limit. A cleanup-only transport restores the operation context on every SDK page,
+including pages where the SDK resets its context. Earlier request deadlines win;
+operation cancellation closes response bodies. Mock HTTP tests stall second-page
+headers and bodies and prove cleanup stops within its operation budget. These
+clients are never stored in the manager credential cache.
