@@ -28,6 +28,7 @@ func TestHTTPRouteHelperFinders(t *testing.T) {
 	}
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "app"},
+		Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}},
 	}
 	policy := &cfgatev1alpha1.CloudflareAccessPolicy{
 		ObjectMeta: metav1.ObjectMeta{Name: "policy", Namespace: "app"},
@@ -121,7 +122,7 @@ func TestValidateParentRef(t *testing.T) {
 			Name:      "gateway",
 			Namespace: "app",
 			Annotations: map[string]string{
-				annotations.AnnotationTunnelRef: "cfgate-system/tunnel",
+				annotations.AnnotationTunnelRef: "tunnel",
 			},
 		},
 		Spec: gatewayv1.GatewaySpec{
@@ -161,7 +162,7 @@ func TestValidateParentRef(t *testing.T) {
 
 	same := gatewayv1.NamespacesFromSame
 	gateway = gateway.DeepCopy()
-	gateway.Annotations = map[string]string{annotations.AnnotationTunnelRef: "cfgate-system/tunnel"}
+	gateway.Annotations = map[string]string{annotations.AnnotationTunnelRef: "tunnel"}
 	gateway.Spec.Listeners[0].AllowedRoutes = &gatewayv1.AllowedRoutes{
 		Namespaces: &gatewayv1.RouteNamespaces{From: &same},
 	}
@@ -179,7 +180,7 @@ func TestValidateParentRef(t *testing.T) {
 
 	selectorFrom := gatewayv1.NamespacesFromSelector
 	gateway = gateway.DeepCopy()
-	gateway.Annotations = map[string]string{annotations.AnnotationTunnelRef: "cfgate-system/tunnel"}
+	gateway.Annotations = map[string]string{annotations.AnnotationTunnelRef: "tunnel"}
 	gateway.Spec.Listeners[0].AllowedRoutes = &gatewayv1.AllowedRoutes{
 		Namespaces: &gatewayv1.RouteNamespaces{
 			From: &selectorFrom,
@@ -226,7 +227,7 @@ func TestValidateParentRefStatusReasons(t *testing.T) {
 			Name:      "gateway",
 			Namespace: "app",
 			Annotations: map[string]string{
-				annotations.AnnotationTunnelRef: "cfgate-system/tunnel",
+				annotations.AnnotationTunnelRef: "tunnel",
 			},
 		},
 		Spec: gatewayv1.GatewaySpec{
@@ -352,7 +353,7 @@ func TestValidateParentRefPathSupport(t *testing.T) {
 			Name:      "gateway",
 			Namespace: "app",
 			Annotations: map[string]string{
-				annotations.AnnotationTunnelRef: "cfgate-system/tunnel",
+				annotations.AnnotationTunnelRef: "tunnel",
 			},
 		},
 		Spec: gatewayv1.GatewaySpec{
@@ -369,7 +370,7 @@ func TestValidateParentRefPathSupport(t *testing.T) {
 			ControllerName: gatewayv1.GatewayController(GatewayControllerName),
 		},
 	}
-	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "app"}}
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "app"}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}}}
 	regexType := gatewayv1.PathMatchRegularExpression
 	invalidRegex := "["
 	route := &gatewayv1.HTTPRoute{
@@ -431,10 +432,10 @@ func TestHostnameMatches(t *testing.T) {
 		{name: "exact same hostname", routeHostname: "app.example.com", listenerHostname: "app.example.com", want: true},
 		{name: "case insensitive exact match", routeHostname: "APP.EXAMPLE.COM", listenerHostname: "app.example.com", want: true},
 		{name: "listener wildcard one label", routeHostname: "foo.example.com", listenerHostname: "*.example.com", want: true},
-		{name: "listener wildcard deep subdomain", routeHostname: "a.b.example.com", listenerHostname: "*.example.com"},
+		{name: "listener wildcard deep subdomain", routeHostname: "a.b.example.com", listenerHostname: "*.example.com", want: true},
 		{name: "listener wildcard apex", routeHostname: "example.com", listenerHostname: "*.example.com"},
 		{name: "route wildcard exact listener one label", routeHostname: "*.example.com", listenerHostname: "foo.example.com", want: true},
-		{name: "route wildcard deep listener", routeHostname: "*.example.com", listenerHostname: "a.b.example.com"},
+		{name: "route wildcard deep listener", routeHostname: "*.example.com", listenerHostname: "a.b.example.com", want: true},
 		{name: "same wildcard hostname", routeHostname: "*.example.com", listenerHostname: "*.example.com", want: true},
 		{name: "unrelated hostname", routeHostname: "foo.example.com", listenerHostname: "bar.example.net"},
 	}
@@ -456,6 +457,7 @@ func TestResolveBackends(t *testing.T) {
 	}
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "app"},
+		Spec:       corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}},
 	}
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
@@ -533,7 +535,7 @@ func TestResolveBackends(t *testing.T) {
 	route.Namespace = "app"
 	route.Spec.Rules[0].BackendRefs[0].Name = "svc"
 	route.Spec.Rules[0].BackendRefs[0].Namespace = &backendNS
-	crossNSService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "backend"}}
+	crossNSService := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "svc", Namespace: "backend"}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 80}}}}
 	r = newHTTPRouteTestReconciler(t, scheme, crossNSService)
 	condition = r.resolveBackends(context.Background(), route)
 	if condition.Status != metav1.ConditionFalse || condition.Reason != status.ReasonRefNotPermitted {

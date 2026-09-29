@@ -95,8 +95,8 @@ spec:
                     type: boolean
                   onlyManaged:
                     description: |-
-                      OnlyManaged only deletes records that were created by cfgate (verified via ownership).
-                      nil defaults to true.
+                      OnlyManaged is retained for compatibility. Ownership verification is always required;
+                      setting false cannot authorize deletion of foreign or unmarked records.
                     type: boolean
                 type: object
               cloudflare:
@@ -229,7 +229,7 @@ spec:
                           Enabled enables comment-based ownership tracking.
 
                           Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-                          writes a "managed by cfgate" comment. Will be removed in a future cleanup release.
+                          writes an exact resource owner marker. Will be removed in a future cleanup release.
                         type: boolean
                       template:
                         default: managed by cfgate
@@ -237,15 +237,15 @@ spec:
                           Template is the comment template.
 
                           Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-                          uses "managed by cfgate" as the comment. Will be removed in a future cleanup release.
+                          uses an exact resource owner marker. Will be removed in a future cleanup release.
                         maxLength: 255
                         type: string
                     type: object
                   ownerId:
                     description: |-
-                      OwnerID is the cluster/installation identifier used in TXT ownership records.
-                      Used to distinguish records created by different cfgate installations.
-                      Defaults to the CloudflareDNS resource's namespace/name if not specified.
+                      OwnerID is a deprecated legacy migration hint, not an ownership authority.
+                      Since v0.2.0-alpha.6 the controller persists installation/resource UIDs in status.ownerId.
+                      Setting this field cannot adopt another resource's records.
                     maxLength: 253
                     pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?(/[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$
                     type: string
@@ -515,6 +515,10 @@ spec:
                   controller.
                 format: int64
                 type: integer
+              ownerId:
+                description: OwnerID persists the installation namespace UID and resource
+                  UID for cleanup.
+                type: string
               pendingRecords:
                 description: PendingRecords is the number of records pending sync.
                 format: int32
@@ -527,7 +531,7 @@ spec:
 
                     DNSRecordSyncStatus tracks individual DNS record state including the Cloudflare record ID,
                     current configuration, and sync status. The Status field indicates: Synced (successfully
-                    synchronized), Pending (awaiting sync), or Failed (sync failed, see Error field).
+                    synchronized), Pending (awaiting sync), Skipped (policy prevented synchronization), or Failed (sync failed, see Error field).
                   properties:
                     error:
                       description: Error contains the error message if status is Failed.
@@ -542,7 +546,8 @@ spec:
                       description: RecordID is the Cloudflare record ID.
                       type: string
                     status:
-                      description: 'Status is the sync status: Synced, Pending, Failed.'
+                      description: 'Status is the sync status: Synced, Pending, Skipped,
+                        Failed.'
                       type: string
                     target:
                       description: Target is the record target/content.

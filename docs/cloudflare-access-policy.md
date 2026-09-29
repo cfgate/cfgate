@@ -116,3 +116,9 @@ spec:
       secretRef:
         name: ci-access-token
 ```
+
+## Credential data keys
+
+`spec.cloudflareRef.secretKeys.apiToken` selects the Secret data key containing the Cloudflare API token. It defaults to `CLOUDFLARE_API_TOKEN`. A missing or empty selected key is an error; cfgate does not fall back to another token stored in the same Secret. Clients cached for different keys remain separate.
+
+Credential cleanup preserves `status.credentialSecretKeys` alongside the resolved Secret reference and account. Cross-namespace credential references require a Secret ReferenceGrant from `CloudflareAccessPolicy`; see [authorization and ownership](authorization-and-ownership.md).

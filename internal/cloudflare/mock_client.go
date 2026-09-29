@@ -25,6 +25,8 @@ type MockClient struct {
 	GetTunnelTokenFunc            func(ctx context.Context, accountID, tunnelID string) (string, error)
 	UpdateTunnelConfigurationFunc func(ctx context.Context, accountID, tunnelID string, config TunnelConfiguration) error
 
+	GetTunnelConfigurationFunc func(context.Context, string, string) (*TunnelConfiguration, error)
+
 	// DNS operations
 	ListDNSRecordsFunc           func(ctx context.Context, zoneID string) ([]DNSRecord, error)
 	ListDNSRecordsByNameTypeFunc func(ctx context.Context, zoneID, name, recordType string) ([]DNSRecord, error)
@@ -403,6 +405,13 @@ func (m *MockClient) RotateServiceToken(ctx context.Context, accountID, tokenID 
 func (m *MockClient) RefreshServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error) {
 	if m.RefreshServiceTokenFunc != nil {
 		return m.RefreshServiceTokenFunc(ctx, accountID, tokenID)
+	}
+	return nil, nil
+}
+
+func (m *MockClient) GetTunnelConfiguration(ctx context.Context, accountID, tunnelID string) (*TunnelConfiguration, error) {
+	if m.GetTunnelConfigurationFunc != nil {
+		return m.GetTunnelConfigurationFunc(ctx, accountID, tunnelID)
 	}
 	return nil, nil
 }

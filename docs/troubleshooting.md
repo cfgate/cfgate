@@ -10,6 +10,14 @@ A Service-link-shaped value containing `tcp://`, a numeric IPv4 or bracketed IPv
 
 The bundled manager Deployment sets `spec.template.spec.enableServiceLinks: false` to prevent these collisions. Apply the same setting to custom manager Deployments. Kubernetes Service discovery through DNS remains available.
 
+## HTTPRoute Missing from Tunnel Configuration
+
+Tunnel configuration uses current Kubernetes objects to check the parent GatewayClass, listener protocol, section and port, allowed route kinds and namespaces, hostname intersection, backend Service and port, and cross-namespace ReferenceGrant. A stale HTTPRoute status does not bypass these checks. Routes denied by listener/class authorization are excluded. Attached rules with missing or unauthorized backends return HTTP 500 for their matches, while valid sibling rules remain published. Unsupported match restrictions reject the route. Wildcard route hostnames are narrowed to the matching listener's hostname when necessary.
+
+Check the HTTPRoute's `Accepted` and `ResolvedRefs` conditions, including `RefNotPermitted`, `BackendNotFound`, and `UnsupportedValue` reasons. A route that cannot be translated into cloudflared ingress generates an `HTTPRouteError` warning event on the CloudflareTunnel. Transient Kubernetes read errors abort the configuration update, retain the last remote configuration, and set `ConfigurationSynced=False` with reason `ConfigSyncError`.
+
+Service, Namespace, ReferenceGrant, GatewayClass, relevant annotation, and credential Secret changes enqueue affected tunnel reconciliations. Periodic full reconciliation also verifies remote configuration and repairs dependencies.
+
 ## DNS Records Not Syncing
 
 *For full field documentation, see [CloudflareDNS Reference](cloudflare-dns.md).*

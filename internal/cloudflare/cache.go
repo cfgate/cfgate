@@ -2,6 +2,7 @@ package cloudflare
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,8 +15,8 @@ const (
 )
 
 // CredentialCache caches validated Cloudflare clients to avoid repeated API validations.
-// The cache key is based on secret UID and ResourceVersion, ensuring cache invalidation
-// when the secret changes.
+// The cache key includes Secret UID, ResourceVersion, and the selected token key.
+// Account IDs are request parameters, not client authentication options.
 type CredentialCache struct {
 	mu      sync.RWMutex
 	entries map[string]cacheEntry
@@ -39,17 +40,18 @@ func NewCredentialCache(ttl time.Duration) *CredentialCache {
 	}
 }
 
-// cacheKey generates a cache key from secret UID and ResourceVersion.
-// The combination ensures automatic invalidation when the secret changes.
+// cacheKey selects the default token key for the legacy cache accessors.
 func cacheKey(secret *corev1.Secret) string {
-	return string(secret.UID) + ":" + secret.ResourceVersion
+	return credentialCacheKey(secret, "")
 }
 
 // Get retrieves a cached client for the given secret.
 // Returns nil if the entry is not found or expired.
 func (c *CredentialCache) Get(secret *corev1.Secret) Client {
-	key := cacheKey(secret)
+	return c.get(credentialCacheKey(secret, ""))
+}
 
+func (c *CredentialCache) get(key string) Client {
 	c.mu.RLock()
 	entry, ok := c.entries[key]
 	c.mu.RUnlock()
@@ -71,8 +73,10 @@ func (c *CredentialCache) Get(secret *corev1.Secret) Client {
 
 // Set stores a client in the cache for the given secret.
 func (c *CredentialCache) Set(secret *corev1.Secret, client Client) {
-	key := cacheKey(secret)
+	c.set(credentialCacheKey(secret, ""), client)
+}
 
+func (c *CredentialCache) set(key string, client Client) {
 	c.mu.Lock()
 	c.entries[key] = cacheEntry{
 		client:    client,
@@ -85,10 +89,27 @@ func (c *CredentialCache) Set(secret *corev1.Secret, client Client) {
 // The createFn is only called if no valid cached entry exists.
 // Expired entries are cleaned up on each call to prevent unbounded growth.
 func (c *CredentialCache) GetOrCreate(ctx context.Context, secret *corev1.Secret, createFn func() (Client, error)) (Client, error) {
-	c.Cleanup()
+	return c.GetOrCreateForKey(ctx, secret, "", createFn)
+}
 
-	// Try to get from cache first
-	if client := c.Get(secret); client != nil {
+// GetOrCreateForKey isolates cached clients by their selected API token data key.
+// An empty key selects CLOUDFLARE_API_TOKEN. Factories must not vary other authentication settings.
+func (c *CredentialCache) GetOrCreateForKey(ctx context.Context, secret *corev1.Secret, tokenKey string, createFn func() (Client, error)) (Client, error) {
+	return c.GetOrCreateWithSettings(ctx, secret, tokenKey, DefaultClientSettings(), createFn)
+}
+
+// GetOrCreateWithSettings isolates clients by authentication and request limits.
+func (c *CredentialCache) GetOrCreateWithSettings(ctx context.Context, secret *corev1.Secret, tokenKey string, settings ClientSettings, createFn func() (Client, error)) (Client, error) {
+	settings, err := NormalizeClientSettings(settings)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	c.Cleanup()
+	key := credentialSettingsCacheKey(secret, tokenKey, settings)
+	if client := c.get(key); client != nil {
 		return client, nil
 	}
 
@@ -99,17 +120,20 @@ func (c *CredentialCache) GetOrCreate(ctx context.Context, secret *corev1.Secret
 	}
 
 	// Store in cache
-	c.Set(secret, client)
+	c.set(key, client)
 
 	return client, nil
 }
 
-// Invalidate removes a specific entry from the cache.
+// Invalidate removes all selected-token entries for one Secret version.
 func (c *CredentialCache) Invalidate(secret *corev1.Secret) {
-	key := cacheKey(secret)
-
+	prefix := string(secret.UID) + ":" + secret.ResourceVersion + ":"
 	c.mu.Lock()
-	delete(c.entries, key)
+	for key := range c.entries {
+		if strings.HasPrefix(key, prefix) {
+			delete(c.entries, key)
+		}
+	}
 	c.mu.Unlock()
 }
 

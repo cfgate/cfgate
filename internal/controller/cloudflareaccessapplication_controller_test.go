@@ -1149,6 +1149,30 @@ func newAccessAppReconciler(t *testing.T, mockClient cloudflare.Client, objects 
 	if err := gwapiv1b1.Install(scheme); err != nil {
 		t.Fatalf("Install(gateway/v1beta1) error = %v", err)
 	}
+	objects = append(objects, &gwapiv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "cfgate"}, Spec: gwapiv1.GatewayClassSpec{ControllerName: GatewayControllerName}})
+	for _, object := range objects {
+		switch value := object.(type) {
+		case *gwapiv1.Gateway:
+			if value.Spec.GatewayClassName == "" {
+				value.Spec.GatewayClassName = "cfgate"
+			}
+			if len(value.Spec.Listeners) == 0 {
+				value.Spec.Listeners = []gwapiv1.Listener{{Name: "http", Port: 80, Protocol: gwapiv1.HTTPProtocolType}}
+			}
+		case *gwapiv1.HTTPRoute:
+			if len(value.Spec.Hostnames) == 0 {
+				value.Spec.Hostnames = []gwapiv1.Hostname{"example.test"}
+			}
+		}
+	}
+	for _, object := range objects {
+		if tunnel, ok := object.(*cfgatev1alpha1.CloudflareTunnel); ok {
+			secretNS := tunnel.Spec.Cloudflare.SecretRef.Namespace
+			if secretNS != "" && secretNS != tunnel.Namespace {
+				objects = append(objects, credentialGrant(tunnel.Namespace, secretNS, tunnel.Spec.Cloudflare.SecretRef.Name, "CloudflareTunnel", "CloudflareAccessApplication"))
+			}
+		}
+	}
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(objects...).

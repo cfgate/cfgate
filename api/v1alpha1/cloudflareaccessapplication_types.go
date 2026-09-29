@@ -91,6 +91,10 @@ type CloudflareAccessApplicationStatus struct {
 	// The namespace is always stored explicitly.
 	CredentialSecretRef *SecretReference `json:"credentialSecretRef,omitempty"`
 
+	// CredentialSecretKeys preserves the selected token key for cleanup.
+	// +optional
+	CredentialSecretKeys SecretKeys `json:"credentialSecretKeys,omitempty"`
+
 	// AttachedTargets is the count of successfully attached Gateway API targets.
 	AttachedTargets int32 `json:"attachedTargets,omitempty"`
 

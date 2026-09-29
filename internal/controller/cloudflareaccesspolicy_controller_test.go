@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"strings"
 	"testing"
 	"time"
@@ -377,13 +378,13 @@ func TestK8sSecretWriterWriteSecret(t *testing.T) {
 		owner:     owner,
 		scheme:    scheme,
 	}
-	if err := unmanagedWriter.WriteSecret(ctx, "svc", map[string][]byte{"a": []byte("owned")}); err != nil {
-		t.Fatalf("WriteSecret(unmanaged update) error = %v", err)
+	if err := unmanagedWriter.WriteSecret(ctx, "svc", map[string][]byte{"a": []byte("owned")}); err == nil {
+		t.Fatal("unowned secret was adopted")
 	}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "manual-secret", Namespace: "app"}, &secret); err != nil {
 		t.Fatalf("Get(unmanaged secret) error = %v", err)
 	}
-	if string(secret.Data["a"]) != "owned" || len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != owner.Name {
+	if string(secret.Data["a"]) != "manual" || len(secret.OwnerReferences) != 0 {
 		t.Fatalf("unmanaged secret = %#v, want data and owner reference", secret)
 	}
 
@@ -413,7 +414,7 @@ func TestK8sSecretWriterWriteSecret(t *testing.T) {
 		scheme:    scheme,
 	}
 	err := otherOwnedWriter.WriteSecret(ctx, "svc", map[string][]byte{"a": []byte("kept")})
-	if err == nil || !strings.Contains(err.Error(), "secret app/other-owned-secret is already controlled by CloudflareAccessPolicy/other") {
+	if err == nil || !strings.Contains(err.Error(), "resource app/other-owned-secret is not controlled by expected owner UID") {
 		t.Fatalf("WriteSecret(other-owned update) error = %v, want ownership error", err)
 	}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: "other-owned-secret", Namespace: "app"}, &secret); err != nil {
@@ -464,6 +465,11 @@ func TestK8sSecretWriterServiceTokenSecretNeedsRefresh(t *testing.T) {
 			"CF_ACCESS_CLIENT_ID":     []byte("other-client-id"),
 			"CF_ACCESS_CLIENT_SECRET": []byte("client-secret"),
 		},
+	}
+	for _, secret := range []*corev1.Secret{validSecret, missingClientID, missingSecret, mismatchedClientID} {
+		if err := controllerutil.SetControllerReference(owner, secret, scheme); err != nil {
+			t.Fatal(err)
+		}
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner, validSecret, missingClientID, missingSecret, mismatchedClientID).Build()
 
@@ -802,7 +808,7 @@ func newAccessPolicyReconciler(t *testing.T, mockClient cloudflare.Client, objec
 func baseAccessPolicy(namespace, name string) *cfgatev1alpha1.CloudflareAccessPolicy {
 	trueValue := true
 	return &cfgatev1alpha1.CloudflareAccessPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, UID: types.UID(namespace + "-" + name)},
 		Spec: cfgatev1alpha1.CloudflareAccessPolicySpec{
 			CloudflareRef: cfgatev1alpha1.CloudflareSecretRef{Name: "cf", AccountID: "account-1"},
 			Name:          name,

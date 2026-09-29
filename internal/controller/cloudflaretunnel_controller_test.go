@@ -58,6 +58,9 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 		},
 	}
 	servicePort := gatewayv1.PortNumber(8080)
+	gateway.Spec = gatewayv1.GatewaySpec{GatewayClassName: "cfgate", Listeners: []gatewayv1.Listener{{Name: "http", Port: 80, Protocol: gatewayv1.HTTPProtocolType}}}
+	class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "cfgate"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: GatewayControllerName}}
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "default"}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 8080}}}}
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "route",
@@ -67,7 +70,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 				"cfgate.io/origin-server-name":      "tls.example.com",
 				"cfgate.io/origin-ca-pool":          "/etc/cfgate/origin-ca-pool/ca.pem",
 				"cfgate.io/origin-ssl-verify":       "false",
-				"cfgate.io/origin-http2":            "true",
+				"cfgate.io/origin-http2":            "false",
 				"cfgate.io/origin-h2c":              "true",
 				"cfgate.io/origin-connect-timeout":  "12s",
 			},
@@ -95,7 +98,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 	baseClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithStatusSubresource(&cfgatev1alpha1.CloudflareTunnel{}).
-		WithObjects(storedTunnel, gateway, route).
+		WithObjects(storedTunnel, gateway, route, class, service).
 		Build()
 	patchClient := &statusResettingPatchClient{Client: baseClient}
 
@@ -123,7 +126,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 			origin.OriginServerName != "tls.example.com" ||
 			origin.CAPool != "/etc/cfgate/origin-ca-pool/ca.pem" ||
 			!origin.NoTLSVerify ||
-			!origin.HTTP2Origin ||
+			origin.HTTP2Origin ||
 			!origin.H2cOrigin ||
 			origin.ConnectTimeout != "12s" {
 			t.Fatalf("ingress OriginRequest = %#v, want propagated route annotations", origin)
@@ -137,6 +140,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 		CFClient:  mockClient,
 		Recorder:  &fakeEventRecorder{},
 	}
+	installTunnelClaimForTest(t, reconciler, tunnel)
 	if err := reconciler.syncConfiguration(ctx, tunnel); err != nil {
 		t.Fatalf("syncConfiguration() error = %v", err)
 	}
@@ -369,7 +373,7 @@ func TestCloudflaredPathRegex(t *testing.T) {
 				Type:  pathMatchType(gatewayv1.PathMatchPathPrefix),
 				Value: stringPtr("/api/v1/"),
 			}},
-			want: "^/api/v1/.*$",
+			want: "^/api/v1(?:/.*)?$",
 		},
 		{
 			name: "exact",
@@ -419,9 +423,9 @@ func TestCloudflaredPathRegex(t *testing.T) {
 	if !prefixRegex.MatchString("/foo") || !prefixRegex.MatchString("/foo/bar") || prefixRegex.MatchString("/foobar") {
 		t.Fatal("path prefix regex should match /foo and /foo/bar, but not /foobar")
 	}
-	trailingSlashRegex := regexp.MustCompile("^/api/v1/.*$")
-	if !trailingSlashRegex.MatchString("/api/v1/") || !trailingSlashRegex.MatchString("/api/v1/users") || trailingSlashRegex.MatchString("/api/v1") {
-		t.Fatal("trailing slash path prefix regex should match /api/v1/ and /api/v1/users, but not /api/v1")
+	trailingSlashRegex := regexp.MustCompile("^/api/v1(?:/.*)?$")
+	if !trailingSlashRegex.MatchString("/api/v1/") || !trailingSlashRegex.MatchString("/api/v1/users") || !trailingSlashRegex.MatchString("/api/v1") {
+		t.Fatal("trailing slash path prefix regex should match /api/v1/ and /api/v1/users, and /api/v1")
 	}
 }
 

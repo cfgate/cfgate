@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
+	gatewaybeta "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
@@ -64,6 +68,10 @@ const (
 // It manages the complete tunnel lifecycle: credential validation, tunnel
 // creation/adoption, cloudflared deployment, and configuration sync.
 type CloudflareTunnelReconciler struct {
+	InstallationNamespace string
+	// ClusterDomain is the Kubernetes DNS suffix used for backend Services.
+	ClusterDomain  string
+	ClientSettings cloudflare.ClientSettings
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -87,8 +95,9 @@ type CloudflareTunnelReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways;httproutes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=services;pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
@@ -136,25 +145,22 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{Requeue: true}, nil
 	}
 
-	tunnelLifecycleUnchanged := tunnel.Generation == tunnel.Status.ObservedGeneration &&
-		isTunnelHealthy(&tunnel) &&
-		tunnel.Status.LastSyncTime != nil &&
-		time.Since(tunnel.Status.LastSyncTime.Time) < 30*time.Minute
+	tunnelLifecycleUnchanged, err := r.canSkipTunnelLifecycle(ctx, &tunnel)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to check lifecycle dependencies: %w", err)
+	}
 
 	if tunnelLifecycleUnchanged {
 		log.V(1).Info("tunnel lifecycle unchanged, skipping credential/tunnel/deployment checks",
 			"generation", tunnel.Generation,
-			"lastSync", tunnel.Status.LastSyncTime.Time)
+			"lastFullReconcile", tunnel.Status.LastFullReconcileTime.Time)
 
 		deploymentName := cloudflared.DeploymentName(tunnel.Name)
 		var deployment appsv1.Deployment
-		if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: tunnel.Namespace}, &deployment); err == nil {
-			if deployment.Status.ReadyReplicas != tunnel.Status.ReadyReplicas ||
-				deployment.Status.Replicas != tunnel.Status.Replicas {
-				tunnel.Status.ReadyReplicas = deployment.Status.ReadyReplicas
-				tunnel.Status.Replicas = deployment.Status.Replicas
-			}
+		if err := r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: tunnel.Namespace}, &deployment); err != nil {
+			return ctrl.Result{}, fmt.Errorf("failed to observe connector deployment: %w", err)
 		}
+		r.observeConnectorDeployment(&tunnel, &deployment)
 
 		syncErr := r.syncConfiguration(ctx, &tunnel)
 		if syncErr != nil {
@@ -165,6 +171,7 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 				fmt.Sprintf("Configuration synced with %d ingress rules", tunnel.Status.ConnectedRouteCount))
 		}
 
+		r.updateTunnelReadiness(&tunnel)
 		now := metav1.Now()
 		tunnel.Status.LastSyncTime = &now
 		if err := r.updateStatus(ctx, &tunnel); err != nil {
@@ -214,10 +221,9 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		r.Recorder.Eventf(&tunnel, nil, corev1.EventTypeWarning, "DeploymentError", "Deploy", "%s", err.Error())
 		return ctrl.Result{RequeueAfter: requeueAfterError}, nil
 	}
-	r.setCondition(&tunnel, status.ConditionTypeCloudflaredDeployed, metav1.ConditionTrue, status.ReasonDeploymentReady, "cloudflared deployment ready")
 
 	// 6. Sync configuration
-	if err := r.syncConfiguration(ctx, &tunnel); err != nil {
+	if err := r.syncConfiguration(ctx, &tunnel, true); err != nil {
 		log.Error(err, "failed to sync configuration")
 		r.setCondition(&tunnel, status.ConditionTypeConfigurationSynced, metav1.ConditionFalse, status.ReasonConfigSyncError, err.Error())
 		r.setCondition(&tunnel, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonConfigSyncError, "Failed to sync configuration")
@@ -231,11 +237,21 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	// Note: DNS management is handled by CloudflareDNS CRD
 
+	dependencyHash, err := r.lifecycleDependencyHash(ctx, r.lifecycleReader(), &tunnel)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to record lifecycle dependencies: %w", err)
+	}
+	if dependencyHash == "" {
+		return ctrl.Result{RequeueAfter: requeueAfterError}, nil
+	}
+
 	// 7. Update status
-	r.setCondition(&tunnel, status.ConditionTypeReady, metav1.ConditionTrue, status.ReasonTunnelOperational, "Tunnel is fully operational")
+	r.updateTunnelReadiness(&tunnel)
 	tunnel.Status.ObservedGeneration = tunnel.Generation
 	now := metav1.Now()
 	tunnel.Status.LastSyncTime = &now
+	tunnel.Status.LastFullReconcileTime = &now
+	tunnel.Status.LifecycleDependencyHash = dependencyHash
 
 	if err := r.updateStatus(ctx, &tunnel); err != nil {
 		log.Error(err, "failed to update status")
@@ -263,9 +279,9 @@ func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log.Info("registering controller with manager")
 	r.APIReader = mgr.GetAPIReader()
 
-	return ctrl.NewControllerManagedBy(mgr).
+	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&cfgatev1alpha1.CloudflareTunnel{},
-			builder.WithPredicates(GenerationOrDeletionPredicate),
+			builder.WithPredicates(predicate.Or(GenerationOrDeletionPredicate, CfgateAnnotationOrGenerationPredicate)),
 		).
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Secret{}).
@@ -273,15 +289,24 @@ func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&gateway.Gateway{},
 			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForGateway),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate),
 		).
 		// Watch HTTPRoute resources that may affect tunnel configuration
 		Watches(
 			&gateway.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.findTunnelsForHTTPRoute),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
+			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate),
 		).
-		Complete(r)
+		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForCredentialSecret)).
+		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency)).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency), builder.WithPredicates(predicate.LabelChangedPredicate{})).
+		Watches(&gateway.GatewayClass{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency), builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	if _, err := mgr.GetRESTMapper().RESTMapping(schema.GroupKind{Group: gateway.GroupName, Kind: "ReferenceGrant"}, "v1beta1"); err == nil {
+		controllerBuilder = controllerBuilder.Watches(&gatewaybeta.ReferenceGrant{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency), builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	} else if !meta.IsNoMatchError(err) {
+		return fmt.Errorf("discover ReferenceGrant watch: %w", err)
+	}
+	return controllerBuilder.Complete(withReconcileProgress("cloudflaretunnel", r))
 }
 
 // findTunnelsForGateway returns reconcile requests for tunnels referenced by a Gateway.
@@ -393,15 +418,43 @@ func (r *CloudflareTunnelReconciler) ensureTunnel(ctx context.Context, tunnel *c
 		return fmt.Errorf("failed to create Cloudflare client: %w", err)
 	}
 
-	tunnelService := cloudflare.NewTunnelService(cfClient, log)
 	accountID, err := r.resolveAccountID(ctx, cfClient, tunnel)
 	if err != nil {
 		return fmt.Errorf("failed to resolve account: %w", err)
 	}
 
-	cfTunnel, created, err := tunnelService.EnsureTunnel(ctx, accountID, tunnel.Spec.Tunnel.Name)
-	if err != nil {
-		return fmt.Errorf("failed to ensure tunnel: %w", err)
+	if r.InstallationNamespace == "" || tunnel.UID == "" {
+		return fmt.Errorf("installation namespace and resource UID are required for tunnel ownership")
+	}
+	var cfTunnel *cloudflare.Tunnel
+	if tunnel.Status.TunnelID != "" {
+		cfTunnel, err = cfClient.GetTunnel(ctx, accountID, tunnel.Status.TunnelID)
+		if err != nil {
+			return fmt.Errorf("verify recorded tunnel ID: %w", err)
+		}
+	}
+	if cfTunnel == nil {
+		cfTunnel, err = cfClient.GetTunnelByName(ctx, accountID, tunnel.Spec.Tunnel.Name)
+		if err != nil {
+			return fmt.Errorf("find tunnel: %w", err)
+		}
+	}
+	created := false
+	if cfTunnel == nil {
+		cfTunnel, err = cfClient.CreateTunnel(ctx, accountID, cloudflare.CreateTunnelParams{Name: tunnel.Spec.Tunnel.Name, ConfigSrc: "cloudflare"})
+		if err != nil {
+			return fmt.Errorf("create tunnel: %w", err)
+		}
+		created = true
+	}
+	if cfTunnel == nil || cfTunnel.ID == "" {
+		return fmt.Errorf("cloudflare returned no tunnel identity")
+	}
+	if cfTunnel.AccountTag != "" && cfTunnel.AccountTag != accountID {
+		return fmt.Errorf("remote tunnel account does not match requested account")
+	}
+	if err := r.claimTunnel(ctx, tunnel, accountID, cfTunnel.ID, created); err != nil {
+		return err
 	}
 
 	// Update status with tunnel info
@@ -445,6 +498,10 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 		return fmt.Errorf("failed to resolve account: %w", err)
 	}
 
+	if err := r.verifyTunnelClaim(ctx, tunnel, accountID); err != nil {
+		return err
+	}
+
 	token, err := tunnelService.GetToken(ctx, accountID, tunnel.Status.TunnelID)
 	if err != nil {
 		return fmt.Errorf("failed to get tunnel token: %w", err)
@@ -458,6 +515,13 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 
 	// Create or update token Secret
 	secret := builder.BuildTokenSecret(tunnel, token)
+	if secret.Data == nil {
+		secret.Data = make(map[string][]byte)
+	}
+	for key, value := range secret.StringData {
+		secret.Data[key] = []byte(value)
+	}
+	secret.StringData = nil
 	if err := controllerutil.SetControllerReference(tunnel, secret, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set secret owner reference: %w", err)
 	}
@@ -470,23 +534,34 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 				if !apierrors.IsAlreadyExists(err) {
 					return fmt.Errorf("failed to create token secret: %w", err)
 				}
-				// Already exists from concurrent reconcile, continue
+				return fmt.Errorf("token secret appeared during reconciliation: %w", err)
 			} else {
 				log.Info("Created token secret", "name", secret.Name)
+				existingSecret = secret
 			}
 		} else {
 			return fmt.Errorf("failed to get token secret: %w", err)
 		}
 	} else {
-		existingSecret.Data = secret.Data
-		existingSecret.StringData = secret.StringData
-		if err := r.Update(ctx, existingSecret); err != nil {
-			return fmt.Errorf("failed to update token secret: %w", err)
+		if err := requireControllerOwner(existingSecret, tunnel); err != nil {
+			return err
 		}
+		if !reflect.DeepEqual(existingSecret.Data, secret.Data) {
+			existingSecret.Data = secret.Data
+			existingSecret.StringData = nil
+			if err := r.Update(ctx, existingSecret); err != nil {
+				return fmt.Errorf("failed to update token secret: %w", err)
+			}
+		}
+
 	}
 
 	// Create or update Deployment
 	deployment := builder.BuildDeployment(tunnel, token)
+	if deployment.Spec.Template.Annotations == nil {
+		deployment.Spec.Template.Annotations = make(map[string]string)
+	}
+	deployment.Spec.Template.Annotations["cfgate.io/tunnel-token-revision"] = string(existingSecret.UID) + "/" + existingSecret.ResourceVersion
 	if err := controllerutil.SetControllerReference(tunnel, deployment, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set deployment owner reference: %w", err)
 	}
@@ -499,7 +574,7 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 				if !apierrors.IsAlreadyExists(err) {
 					return fmt.Errorf("failed to create deployment: %w", err)
 				}
-				// Already exists from concurrent reconcile, continue
+				return fmt.Errorf("connector deployment appeared during reconciliation: %w", err)
 			} else {
 				log.Info("Created cloudflared deployment", "name", deployment.Name)
 				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeNormal, "DeploymentCreated", "Create", "Created cloudflared deployment %s", deployment.Name)
@@ -508,6 +583,9 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 			return fmt.Errorf("failed to get deployment: %w", err)
 		}
 	} else {
+		if err := requireControllerOwner(existingDeployment, tunnel); err != nil {
+			return err
+		}
 		// Update deployment spec
 		existingDeployment.Spec = deployment.Spec
 		if err := r.Update(ctx, existingDeployment); err != nil {
@@ -516,13 +594,11 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 		log.Info("Updated cloudflared deployment", "name", deployment.Name)
 	}
 
-	// Re-fetch deployment to get current status (after create/update)
-	if err := r.Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment); err != nil {
-		log.Error(err, "failed to get deployment status")
-	} else {
-		tunnel.Status.Replicas = existingDeployment.Status.Replicas
-		tunnel.Status.ReadyReplicas = existingDeployment.Status.ReadyReplicas
+	// Read the committed generation so a new rollout cannot reuse stale readiness.
+	if err := r.lifecycleReader().Get(ctx, types.NamespacedName{Name: deployment.Name, Namespace: deployment.Namespace}, existingDeployment); err != nil {
+		return fmt.Errorf("failed to get deployment status: %w", err)
 	}
+	r.observeConnectorDeployment(tunnel, existingDeployment)
 
 	return nil
 }
@@ -553,7 +629,7 @@ func (r *CloudflareTunnelReconciler) validateOriginCAPoolSecretRef(ctx context.C
 
 // syncConfiguration syncs the tunnel configuration to Cloudflare.
 // Collects routes from Gateway/HTTPRoute resources and pushes to Cloudflare API.
-func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
+func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel, forceVerification ...bool) error {
 	log := log.FromContext(ctx)
 
 	if tunnel.Status.TunnelID == "" {
@@ -598,6 +674,10 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		}
 	}
 
+	if err := cloudflare.ValidateTunnelConfiguration(config, r.ClientSettings); err != nil {
+		return err
+	}
+
 	// Sync to Cloudflare
 	cfClient, err := r.getCloudflareClient(ctx, tunnel)
 	if err != nil {
@@ -610,27 +690,43 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		return fmt.Errorf("failed to resolve account: %w", err)
 	}
 
-	desiredHash := tunnelConfigHash(config)
+	if err := r.verifyTunnelClaim(ctx, tunnel, accountID); err != nil {
+		return err
+	}
+
+	desiredHash := appliedTunnelConfigHash(accountID, tunnel.Status.TunnelID, config)
 	currentHash := tunnel.Annotations[configHashAnnotation]
-	if desiredHash == currentHash {
+	verifyRemote := (len(forceVerification) > 0 && forceVerification[0]) || tunnel.Status.LastFullReconcileTime == nil || time.Since(tunnel.Status.LastFullReconcileTime.Time) >= fullLifecycleInterval
+	if desiredHash == currentHash && !verifyRemote {
 		log.V(1).Info("tunnel configuration unchanged, skipping update",
 			"tunnelID", tunnel.Status.TunnelID)
 		tunnel.Status.ConnectedRouteCount = int32(routeCount)
 		return nil
 	}
 
-	if err := tunnelService.UpdateConfiguration(ctx, accountID, tunnel.Status.TunnelID, config); err != nil {
-		errStr := err.Error()
-		if strings.Contains(errStr, "404") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "Tunnel not found") {
-			log.Info("Tunnel not found on Cloudflare, clearing tunnelID to force re-adoption", "tunnelID", tunnel.Status.TunnelID)
-			tunnel.Status.TunnelID = ""
-			tunnel.Status.TunnelName = ""
-			tunnel.Status.TunnelDomain = ""
-			if statusErr := r.Status().Update(ctx, tunnel); statusErr != nil {
-				log.Error(statusErr, "failed to clear stale tunnelID from status")
-			}
+	remoteMatches := false
+	if verifyRemote {
+		remote, err := cfClient.GetTunnelConfiguration(ctx, accountID, tunnel.Status.TunnelID)
+		if err != nil {
+			return fmt.Errorf("failed to verify remote configuration: %w", err)
 		}
-		return fmt.Errorf("failed to update tunnel configuration: %w", err)
+		remoteMatches = remote != nil && equivalentTunnelConfiguration(*remote, config)
+	}
+	if !remoteMatches {
+		if err := tunnelService.UpdateConfiguration(ctx, accountID, tunnel.Status.TunnelID, config); err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "404") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "Tunnel not found") {
+				log.Info("Tunnel not found on Cloudflare, clearing tunnelID to force re-adoption", "tunnelID", tunnel.Status.TunnelID)
+				tunnel.Status.TunnelID = ""
+				tunnel.Status.TunnelName = ""
+				tunnel.Status.TunnelDomain = ""
+				if statusErr := r.Status().Update(ctx, tunnel); statusErr != nil {
+					log.Error(statusErr, "failed to clear stale tunnelID from status")
+				}
+			}
+			return fmt.Errorf("failed to update tunnel configuration: %w", err)
+		}
+
 	}
 
 	annotationTunnel := tunnel.DeepCopy()
@@ -654,7 +750,7 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 
 // collectIngressRules collects ingress rules from HTTPRoutes that reference this tunnel.
 func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) ([]cloudflare.IngressRule, int, error) {
-	var rules []cloudflare.IngressRule
+	var rules []orderedIngressRule
 	routeCount := 0
 
 	// Find Gateways that reference this tunnel
@@ -663,159 +759,196 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 		return nil, 0, fmt.Errorf("failed to list gateways: %w", err)
 	}
 
-	var relevantGateways []gateway.Gateway
-
+	relevantGateways := map[types.NamespacedName]gateway.Gateway{}
+	managedClasses := map[gateway.ObjectName]bool{}
 	for _, gw := range gateways.Items {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
 		ref := annotations.GetAnnotation(&gw, annotations.AnnotationTunnelRef)
-		if ref == "" {
-			continue
-		}
 		ns, name, err := annotations.ParseNamespacedName(ref, gw.Namespace)
-		if err != nil {
+		if err != nil || name != tunnel.Name || ns != tunnel.Namespace {
 			continue
 		}
-		if name == tunnel.Name && ns == tunnel.Namespace {
-			relevantGateways = append(relevantGateways, gw)
+		if err := requireReferenceGrant(ctx, r.Client, gw.Namespace, gateway.GroupName, "Gateway", tunnel.Namespace, "cfgate.io", "CloudflareTunnel", tunnel.Name); err != nil {
+			if errors.Is(err, errReferenceNotPermitted) {
+				continue
+			}
+			return nil, 0, err
+		}
+		managed, checked := managedClasses[gw.Spec.GatewayClassName]
+		if !checked {
+			var class gateway.GatewayClass
+			if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &class); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return nil, 0, fmt.Errorf("get GatewayClass: %w", err)
+				}
+			} else {
+				managed = string(class.Spec.ControllerName) == GatewayControllerName
+			}
+			managedClasses[gw.Spec.GatewayClassName] = managed
+		}
+		if managed {
+			relevantGateways[types.NamespacedName{Namespace: gw.Namespace, Name: gw.Name}] = gw
 		}
 	}
 
-	// Fetch HTTPRoutes once, then match against each relevant gateway.
+	// Fetch routes once and validate backends once per admitted route, independent
+	// of the number of parents, hostnames or path matches emitted.
 	var routes gateway.HTTPRouteList
 	if err := r.List(ctx, &routes); err != nil {
 		return nil, 0, fmt.Errorf("failed to list httproutes: %w", err)
 	}
-
-	for _, gw := range relevantGateways {
-		for _, route := range routes.Items {
-			for _, parentRef := range route.Spec.ParentRefs {
-				if !isGatewayParentRef(parentRef) {
-					continue
-				}
-
-				parentNS := route.Namespace
-				if parentRef.Namespace != nil {
-					parentNS = string(*parentRef.Namespace)
-				}
-
-				if string(parentRef.Name) == gw.Name && parentNS == gw.Namespace {
-					hostnames := routeHostnamesForGateway(&route, &gw, parentRef)
-					if len(hostnames) == 0 {
-						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
-							"skipping HTTPRoute %s/%s: no route hostnames and no matching listener hostname", route.Namespace, route.Name)
-						continue
-					}
-
-					routeRules, err := r.buildRulesFromHTTPRouteForHostnames(&route, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil)
-					if err != nil {
-						r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules",
-							"skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
-						break
-					}
-					rules = append(rules, routeRules...)
-					routeCount++
+	for _, route := range routes.Items {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		var hostnames []gateway.Hostname
+		seen := map[gateway.Hostname]bool{}
+		for _, parentRef := range route.Spec.ParentRefs {
+			if !isGatewayParentRef(parentRef) {
+				continue
+			}
+			parentNS := route.Namespace
+			if parentRef.Namespace != nil {
+				parentNS = string(*parentRef.Namespace)
+			}
+			gw, relevant := relevantGateways[types.NamespacedName{Namespace: parentNS, Name: string(parentRef.Name)}]
+			if !relevant {
+				continue
+			}
+			accepted, err := acceptedRouteHostnames(ctx, r.Client, &route, &gw, parentRef)
+			if err != nil {
+				return nil, 0, fmt.Errorf("validate listeners for HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
+			}
+			for _, hostname := range accepted {
+				if !seen[hostname] {
+					seen[hostname] = true
+					hostnames = append(hostnames, hostname)
 				}
 			}
 		}
+		if len(hostnames) == 0 {
+			continue
+		}
+		if err := validateHTTPRouteFeatures(&route); err != nil {
+			continue
+		}
+		// An attached route with invalid backends still owns its matches. Preserve
+		// those matches as HTTP 500 responses instead of falling through to a
+		// less specific route, while keeping valid sibling rules available.
+		resolvedRoute := route.DeepCopy()
+		for ruleIndex := range route.Spec.Rules {
+			singleRule := route
+			singleRule.Spec.Rules = []gateway.HTTPRouteRule{route.Spec.Rules[ruleIndex]}
+			condition, err := validateHTTPRouteBackendRefs(ctx, r.Client, &singleRule)
+			if err != nil {
+				return nil, 0, fmt.Errorf("validate backends for HTTPRoute %s/%s: %w", route.Namespace, route.Name, err)
+			}
+			if condition.Status != metav1.ConditionTrue {
+				resolvedRoute.Spec.Rules[ruleIndex].BackendRefs = nil
+			}
+		}
+		// Account for the catch-all before allocating hostname/match expansion.
+		count := len(rules) + 1
+		for _, rule := range route.Spec.Rules {
+			matches := len(rule.Matches)
+			if matches == 0 {
+				matches = 1
+			}
+			for range hostnames {
+				count += matches
+				if err := r.ClientSettings.CheckRuleCount(count); err != nil {
+					return nil, 0, err
+				}
+			}
+		}
+		routeRules, err := r.buildOrderedRulesFromHTTPRoute(resolvedRoute, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil)
+		if err != nil {
+			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules", "skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
+			continue
+		}
+		rules = append(rules, routeRules...)
+		if len(routeRules) > 0 {
+			routeCount++
+		}
 	}
 
-	// Sort rules by specificity for Cloudflare's first-match-wins evaluation.
-	// Within each hostname: path-bearing rules before path-less, longer paths first.
-	sort.SliceStable(rules, func(i, j int) bool {
-		if rules[i].Hostname != rules[j].Hostname {
-			return false
-		}
-		iHasPath := rules[i].Path != ""
-		jHasPath := rules[j].Path != ""
-		if iHasPath != jHasPath {
-			return iHasPath
-		}
-		return len(rules[i].Path) > len(rules[j].Path)
-	})
-
-	return rules, routeCount, nil
+	sort.SliceStable(rules, func(i, j int) bool { return ingressRuleBefore(rules[i], rules[j]) })
+	return flattenIngressRules(rules), routeCount, nil
 }
 
 // buildRulesFromHTTPRoute builds ingress rules from an HTTPRoute by iterating
 // all hostnames and all matches per rule. Returns an error if a rule has
 // multiple backendRefs (Cloudflare tunnel ingress is 1:1) or an unsupported
-// backend group/kind. Rules with zero backendRefs are skipped.
+// backend group/kind. Rules without an active backend produce an HTTP 500 response.
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRoute(route *gateway.HTTPRoute) ([]cloudflare.IngressRule, error) {
 	return r.buildRulesFromHTTPRouteForHostnames(route, effectiveHTTPRouteHostnames(route), false)
 }
 
 func (r *CloudflareTunnelReconciler) buildRulesFromHTTPRouteForHostnames(route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool) ([]cloudflare.IngressRule, error) {
-	var rules []cloudflare.IngressRule
+	rules, err := r.buildOrderedRulesFromHTTPRoute(route, hostnames, originCAPoolMounted)
+	return flattenIngressRules(rules), err
+}
+
+func (r *CloudflareTunnelReconciler) buildOrderedRulesFromHTTPRoute(route *gateway.HTTPRoute, hostnames []gateway.Hostname, originCAPoolMounted bool) ([]orderedIngressRule, error) {
+	if err := validateHTTPRouteFeatures(route); err != nil {
+		return nil, err
+	}
 	if err := validateRouteOriginCAPool(route, originCAPoolMounted); err != nil {
 		return nil, err
 	}
-
+	var rules []orderedIngressRule
 	for _, hostname := range hostnames {
-		for _, rule := range route.Spec.Rules {
-			if len(rule.BackendRefs) == 0 {
-				continue
-			}
+		for ruleIndex, rule := range route.Spec.Rules {
 			if len(rule.BackendRefs) > 1 {
-				return nil, fmt.Errorf("route %s/%s: multiple backendRefs not supported for tunnel ingress rules",
-					route.Namespace, route.Name)
+				return nil, fmt.Errorf("route %s/%s: multiple backendRefs not supported for tunnel ingress rules", route.Namespace, route.Name)
 			}
-
-			backend := rule.BackendRefs[0]
-
-			if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
-				return nil, fmt.Errorf("route %s/%s: unsupported backend group %q",
-					route.Namespace, route.Name, *backend.Group)
-			}
-			if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
-				return nil, fmt.Errorf("route %s/%s: unsupported backend kind %q",
-					route.Namespace, route.Name, *backend.Kind)
-			}
-
-			servicePort := int32(80)
-			if backend.Port != nil {
-				servicePort = int32(*backend.Port)
-			}
-
-			backendNS := route.Namespace
-			if backend.Namespace != nil && *backend.Namespace != "" {
-				backendNS = string(*backend.Namespace)
-			}
-
-			protocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
-			if protocol != "https" {
-				protocol = "http"
-			}
-
-			service := fmt.Sprintf("%s://%s.%s.svc.cluster.local:%d",
-				protocol, backend.Name, backendNS, servicePort)
-
+			service := "http_status:500"
 			var originRequest *cloudflare.OriginRequestConfig
-			originConfig := cloudflared.BuildOriginConfig(nil, route.Annotations)
-			originRequest = cloudflaredOriginRequestToCloudflare(originConfig)
-
-			if len(rule.Matches) == 0 {
-				rules = append(rules, cloudflare.IngressRule{
-					Hostname:      string(hostname),
-					Service:       service,
-					OriginRequest: originRequest,
-				})
-				continue
+			if len(rule.BackendRefs) == 1 {
+				backend := rule.BackendRefs[0]
+				if backend.Group != nil && *backend.Group != "" {
+					return nil, fmt.Errorf("route %s/%s: unsupported backend group %q", route.Namespace, route.Name, *backend.Group)
+				}
+				if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
+					return nil, fmt.Errorf("route %s/%s: unsupported backend kind %q", route.Namespace, route.Name, *backend.Kind)
+				}
+				if backend.Weight == nil || *backend.Weight > 0 {
+					port := int32(80)
+					if backend.Port != nil {
+						port = int32(*backend.Port)
+					}
+					namespace := route.Namespace
+					if backend.Namespace != nil && *backend.Namespace != "" {
+						namespace = string(*backend.Namespace)
+					}
+					protocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
+					if protocol != "https" {
+						protocol = "http"
+					}
+					domain := r.ClusterDomain
+					if domain == "" {
+						domain = "cluster.local"
+					}
+					service = fmt.Sprintf("%s://%s.%s.svc.%s:%d", protocol, backend.Name, namespace, domain, port)
+					originRequest = cloudflaredOriginRequestToCloudflare(cloudflared.BuildOriginConfig(nil, route.Annotations))
+				}
 			}
-
-			for _, match := range rule.Matches {
+			matches := rule.Matches
+			if len(matches) == 0 {
+				matches = []gateway.HTTPRouteMatch{{}}
+			}
+			for matchIndex, match := range matches {
 				path, err := cloudflaredPathRegex(match)
 				if err != nil {
 					return nil, fmt.Errorf("route %s/%s: %w", route.Namespace, route.Name, err)
 				}
-				rules = append(rules, cloudflare.IngressRule{
-					Hostname:      string(hostname),
-					Path:          path,
-					Service:       service,
-					OriginRequest: originRequest,
-				})
+				pathType, pathLength := routePathPrecedence(match)
+				rules = append(rules, orderedIngressRule{IngressRule: cloudflare.IngressRule{Hostname: string(hostname), Path: path, Service: service, OriginRequest: originRequest}, pathType: pathType, pathLength: pathLength, created: route.CreationTimestamp, routeName: route.Namespace + "/" + route.Name, ruleIndex: ruleIndex, matchIndex: matchIndex})
 			}
 		}
 	}
-
 	return rules, nil
 }
 
@@ -900,13 +1033,11 @@ func cloudflaredPathRegex(match gateway.HTTPRouteMatch) (string, error) {
 
 	switch matchType {
 	case gateway.PathMatchPathPrefix:
-		if path == "/" {
+		path = strings.TrimRight(path, "/")
+		if path == "" {
 			return "^/.*$", nil
 		}
 		quoted := regexp.QuoteMeta(path)
-		if strings.HasSuffix(path, "/") {
-			return fmt.Sprintf("^%s.*$", quoted), nil
-		}
 		return fmt.Sprintf("^%s(?:/.*)?$", quoted), nil
 	case gateway.PathMatchExact:
 		return fmt.Sprintf("^%s$", regexp.QuoteMeta(path)), nil
@@ -941,6 +1072,23 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 		return r.removeTunnelFinalizer(ctx, tunnel)
 	}
 
+	drained, drainErr := r.drainConnector(ctx, tunnel)
+	if drainErr != nil || !drained {
+		message := "Waiting for connector Pods to terminate before remote cleanup"
+		if drainErr != nil {
+			message = drainErr.Error()
+		}
+		r.setCondition(tunnel, status.ConditionTypeReady, metav1.ConditionFalse, "CleanupBlocked", message)
+		if err := r.updateStatus(ctx, tunnel); err != nil {
+			return ctrl.Result{}, err
+		}
+		if drainErr != nil {
+			return ctrl.Result{}, fmt.Errorf("connector cleanup blocked: %w", drainErr)
+		}
+		return ctrl.Result{RequeueAfter: deletionRequeueInterval}, nil
+	}
+
+	cleanupAccountID := ""
 	if tunnel.Status.TunnelID != "" {
 		cfClient, err := r.getCloudflareClientForDeletion(ctx, tunnel)
 		if err != nil {
@@ -980,6 +1128,21 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 			return ctrl.Result{RequeueAfter: deletionRequeueInterval}, nil
 		}
 
+		cleanupAccountID = accountID
+		if err := r.verifyTunnelClaim(ctx, tunnel, accountID); err != nil {
+			// A previous attempt may have released the claim before its finalizer patch failed.
+			// Only confirmed remote absence permits completion without a claim; never mutate an unclaimed tunnel.
+			if apierrors.IsNotFound(err) {
+				remaining, readErr := cfClient.GetTunnel(ctx, accountID, tunnel.Status.TunnelID)
+				if readErr != nil {
+					return ctrl.Result{}, fmt.Errorf("confirm unclaimed tunnel absence: %w", readErr)
+				}
+				if remaining == nil {
+					return r.removeTunnelFinalizer(ctx, tunnel)
+				}
+			}
+			return ctrl.Result{}, fmt.Errorf("tunnel cleanup ownership: %w", err)
+		}
 		if err := tunnelService.Delete(ctx, accountID, tunnel.Status.TunnelID); err != nil {
 			retryElapsed := time.Since(tunnel.DeletionTimestamp.Time)
 			if retryElapsed < deletionRetryBudget {
@@ -1000,10 +1163,23 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 			return ctrl.Result{RequeueAfter: deletionRequeueInterval}, nil
 		}
 
+		remaining, err := cfClient.GetTunnel(ctx, accountID, tunnel.Status.TunnelID)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("confirm tunnel deletion: %w", err)
+		}
+		if remaining != nil {
+			return ctrl.Result{RequeueAfter: deletionRequeueInterval}, nil
+		}
 		log.Info("Deleted tunnel from Cloudflare", "tunnelID", tunnel.Status.TunnelID)
 		r.Recorder.Eventf(tunnel, nil, corev1.EventTypeNormal, "TunnelDeleted", "Delete", "Deleted tunnel %s from Cloudflare", tunnel.Status.TunnelID)
+
 	}
 
+	if tunnel.Status.TunnelID != "" {
+		if err := r.releaseTunnelClaim(ctx, tunnel, cleanupAccountID); err != nil {
+			return ctrl.Result{}, fmt.Errorf("release tunnel ownership claim: %w", err)
+		}
+	}
 	return r.removeTunnelFinalizer(ctx, tunnel)
 }
 
@@ -1045,7 +1221,9 @@ func (r *CloudflareTunnelReconciler) updateStatus(ctx context.Context, tunnel *c
 // LastSyncTime which changes on every reconciliation to avoid spurious updates.
 func tunnelStatusEqual(a, b *cfgatev1alpha1.CloudflareTunnelStatus) bool {
 	// Compare generation
-	if a.ObservedGeneration != b.ObservedGeneration {
+	if a.ObservedGeneration != b.ObservedGeneration ||
+		a.LifecycleDependencyHash != b.LifecycleDependencyHash ||
+		!a.LastFullReconcileTime.Equal(b.LastFullReconcileTime) {
 		return false
 	}
 
@@ -1104,6 +1282,9 @@ func (r *CloudflareTunnelReconciler) getCloudflareClient(ctx context.Context, tu
 		secretNamespace = tunnel.Namespace
 	}
 
+	if err := requireCredentialGrant(ctx, r.Client, tunnel.Namespace, "CloudflareTunnel", secretNamespace, tunnel.Spec.Cloudflare.SecretRef.Name); err != nil {
+		return nil, err
+	}
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      tunnel.Spec.Cloudflare.SecretRef.Name,
@@ -1112,28 +1293,7 @@ func (r *CloudflareTunnelReconciler) getCloudflareClient(ctx context.Context, tu
 		return nil, fmt.Errorf("failed to get credentials secret: %w", err)
 	}
 
-	// Use cache if available
-	if r.CredentialCache != nil {
-		return r.CredentialCache.GetOrCreate(ctx, secret, func() (cloudflare.Client, error) {
-			return r.createClientFromSecret(secret, tunnel.Spec.Cloudflare.SecretKeys.APIToken)
-		})
-	}
-
-	return r.createClientFromSecret(secret, tunnel.Spec.Cloudflare.SecretKeys.APIToken)
-}
-
-// createClientFromSecret creates a Cloudflare client from a secret.
-func (r *CloudflareTunnelReconciler) createClientFromSecret(secret *corev1.Secret, tokenKey string) (cloudflare.Client, error) {
-	if tokenKey == "" {
-		tokenKey = "CLOUDFLARE_API_TOKEN"
-	}
-
-	token, ok := secret.Data[tokenKey]
-	if !ok {
-		return nil, fmt.Errorf("API token key %q not found in secret", tokenKey)
-	}
-
-	return cloudflare.NewClient(string(token))
+	return cloudflare.NewClientFromSecret(ctx, secret, tunnel.Spec.Cloudflare.SecretKeys.APIToken, r.CredentialCache, r.ClientSettings)
 }
 
 // getCloudflareClientForDeletion returns a Cloudflare client for tunnel deletion,
@@ -1162,6 +1322,9 @@ func (r *CloudflareTunnelReconciler) getCloudflareClientForDeletion(ctx context.
 		fallbackNamespace = tunnel.Namespace
 	}
 
+	if err := requireCredentialGrant(ctx, r.Client, tunnel.Namespace, "CloudflareTunnel", fallbackNamespace, tunnel.Spec.FallbackCredentialsRef.Name); err != nil {
+		return nil, err
+	}
 	fallbackSecret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      tunnel.Spec.FallbackCredentialsRef.Name,
@@ -1176,12 +1339,7 @@ func (r *CloudflareTunnelReconciler) getCloudflareClientForDeletion(ctx context.
 		tokenKey = "CLOUDFLARE_API_TOKEN"
 	}
 
-	token, ok := fallbackSecret.Data[tokenKey]
-	if !ok {
-		return nil, fmt.Errorf("API token key %q not found in fallback secret", tokenKey)
-	}
-
-	return cloudflare.NewClient(string(token))
+	return cloudflare.NewClientFromSecret(ctx, fallbackSecret, tokenKey, r.CredentialCache, r.ClientSettings)
 }
 
 // resolveAccountID returns the Cloudflare account ID with priority:
@@ -1226,27 +1384,9 @@ func (r *CloudflareTunnelReconciler) setCondition(tunnel *cfgatev1alpha1.Cloudfl
 	meta.SetStatusCondition(&tunnel.Status.Conditions, condition)
 }
 
-// tunnelConfigHash produces a deterministic SHA-256 hex digest of a TunnelConfiguration.
-// Ingress rules are sorted by (hostname, path, service) before hashing so that
-// rule collection order does not cause spurious config updates.
+// tunnelConfigHash preserves ingress order because cloudflared uses first-match routing.
 func tunnelConfigHash(config cloudflare.TunnelConfiguration) string {
-	canonical := make([]cloudflare.IngressRule, len(config.Ingress))
-	copy(canonical, config.Ingress)
-	sort.Slice(canonical, func(i, j int) bool {
-		if canonical[i].Hostname != canonical[j].Hostname {
-			return canonical[i].Hostname < canonical[j].Hostname
-		}
-		if canonical[i].Path != canonical[j].Path {
-			return canonical[i].Path < canonical[j].Path
-		}
-		return canonical[i].Service < canonical[j].Service
-	})
-	normalized := cloudflare.TunnelConfiguration{
-		Ingress:       canonical,
-		OriginRequest: config.OriginRequest,
-		WarpRouting:   config.WarpRouting,
-	}
-	data, _ := json.Marshal(normalized)
+	data, _ := json.Marshal(config)
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%x", sum)
 }

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -103,6 +104,8 @@ func hostnameKeys(configs map[string]HostnameConfig) []string {
 // It manages DNS records for CloudflareTunnel resources or external targets
 // by watching Gateway API routes and syncing hostnames to Cloudflare DNS.
 type CloudflareDNSReconciler struct {
+	InstallationNamespace string
+	ClientSettings        cloudflare.ClientSettings
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -171,6 +174,10 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
 		return ctrl.Result{Requeue: true}, nil
+	}
+
+	if err := r.ensureDNSOwnerIdentity(ctx, &dns); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// 3. Resolve target (tunnel or external)
@@ -266,7 +273,9 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		r.Recorder.Eventf(&dns, nil, corev1.EventTypeWarning, "SyncFailed", "Sync", "%s", err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
-	if dns.Status.FailedRecords > 0 {
+	if dns.Status.PendingRecords > 0 {
+		r.setCondition(&dns, status.ConditionTypeRecordsSynced, metav1.ConditionFalse, status.ReasonRecordSyncFailed, "DNS policy skipped desired updates")
+	} else if dns.Status.FailedRecords > 0 {
 		msg := fmt.Sprintf("%d of %d records failed to sync", dns.Status.FailedRecords, dns.Status.SyncedRecords+dns.Status.FailedRecords)
 		r.setCondition(&dns, status.ConditionTypeRecordsSynced, metav1.ConditionFalse, status.ReasonRecordSyncFailed, msg)
 	} else {
@@ -285,7 +294,9 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// 9. Update overall Ready status
-	if dns.Status.FailedRecords > 0 {
+	if dns.Status.PendingRecords > 0 {
+		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonSyncPartiallyFailed, "DNS policy skipped desired updates")
+	} else if dns.Status.FailedRecords > 0 {
 		msg := fmt.Sprintf("DNS sync partially failed: %d record(s) failed", dns.Status.FailedRecords)
 		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonSyncPartiallyFailed, msg)
 	} else {
@@ -354,7 +365,7 @@ func (r *CloudflareDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findAffectedDNSByGateway),
 			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate, GatewayCreateAnnotationFilter),
 		).
-		Complete(r)
+		Complete(withReconcileProgress("cloudflaredns", r))
 }
 
 // findAffectedDNSByTunnel finds all CloudflareDNS resources that reference
@@ -490,6 +501,10 @@ func (r *CloudflareDNSReconciler) resolveTunnel(ctx context.Context, dns *cfgate
 	namespace := dns.Spec.TunnelRef.Namespace
 	if namespace == "" {
 		namespace = dns.Namespace
+	}
+
+	if err := requireReferenceGrant(ctx, r.Client, dns.Namespace, "cfgate.io", "CloudflareDNS", namespace, "cfgate.io", "CloudflareTunnel", dns.Spec.TunnelRef.Name); err != nil {
+		return nil, err
 	}
 
 	var tunnel cfgatev1alpha1.CloudflareTunnel
@@ -779,9 +794,9 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 		ownershipPrefix = dnsDefaultOwnershipPrefix
 	}
 
-	ownerID := dns.Spec.Ownership.OwnerID
+	ownerID := dns.Status.OwnerID
 	if ownerID == "" {
-		ownerID = fmt.Sprintf("%s/%s", dns.Namespace, dns.Name)
+		return fmt.Errorf("persistent DNS ownership identity is missing; reconcile identity before cleanup or use orphan deletion")
 	}
 
 	policy := cloudflare.DNSPolicy(dns.Spec.Policy)
@@ -849,7 +864,12 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 		}
 
 		// Sync record using policy
-		record, modified, err := dnsService.SyncRecordWithPolicy(ctx, zoneID, desired, ownerID, policy)
+		record, modified, err := dnsService.SyncOwnedRecord(ctx, zoneID, desired, ownerID, fmt.Sprintf("CloudflareDNS/%s/%s", dns.Namespace, dns.Name), ownershipPrefix, policy, r.shouldCreateTXTRecords(dns), dns.Annotations[adoptExistingAnnotation] == "true")
+		if errors.Is(err, cloudflare.ErrDNSRecordSkipped) {
+			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{Hostname: hostname, Type: recordType, Status: "Skipped", Error: err.Error(), RecordID: record.ID, ZoneID: zoneID})
+			pendingCount++
+			continue
+		}
 		if err != nil {
 			logger.Error(err, "failed to sync DNS record", "hostname", hostname)
 			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{
@@ -860,23 +880,6 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			})
 			failedCount++
 			continue
-		}
-
-		// Create ownership TXT record if enabled
-		if r.shouldCreateTXTRecords(dns) {
-			ownershipParams := cloudflare.OwnershipParams{
-				Hostname: hostname,
-				OwnerID:  ownerID,
-				Resource: fmt.Sprintf("CloudflareDNS/%s/%s", dns.Namespace, dns.Name),
-				Prefix:   ownershipPrefix,
-			}
-			if err := dnsService.CreateOwnershipRecord(ctx, zoneID, ownershipParams); err != nil {
-				// Non-fatal: ownership records are supplementary, don't fail sync
-				logger.V(1).Info("ownership record sync issue",
-					"hostname", hostname,
-					"error", err.Error(),
-				)
-			}
 		}
 
 		recordStatus := "Synced"
@@ -1010,11 +1013,11 @@ func (r *CloudflareDNSReconciler) deleteManagedStatusRecord(ctx context.Context,
 	}
 
 	deleted := false
-	if statusRecord.RecordID != "" {
-		if err := dnsService.DeleteRecord(ctx, zoneID, statusRecord.RecordID); err != nil {
-			return false, fmt.Errorf("delete dns record: %w", err)
+	if existingRecord != nil && statusRecord.RecordID != "" {
+		deleted, err = dnsService.DeleteOwnedRecord(ctx, zoneID, *existingRecord, ownerID, ownershipPrefix)
+		if err != nil {
+			return false, fmt.Errorf("delete owned DNS record: %w", err)
 		}
-		deleted = existingRecord != nil
 	}
 
 	if r.shouldCreateTXTRecords(dns) {
@@ -1037,9 +1040,9 @@ func (r *CloudflareDNSReconciler) verifyOwnership(ctx context.Context, dns *cfga
 		ownershipPrefix = dnsDefaultOwnershipPrefix
 	}
 
-	ownerID := dns.Spec.Ownership.OwnerID
+	ownerID := dns.Status.OwnerID
 	if ownerID == "" {
-		ownerID = fmt.Sprintf("%s/%s", dns.Namespace, dns.Name)
+		return false, fmt.Errorf("persistent DNS ownership identity is missing")
 	}
 
 	for _, hostname := range hostnames {
@@ -1175,7 +1178,7 @@ func dnsStatusEqual(a, b *cfgatev1alpha1.CloudflareDNSStatus) bool {
 	}
 
 	// Compare record counts
-	if a.SyncedRecords != b.SyncedRecords ||
+	if a.OwnerID != b.OwnerID || a.SyncedRecords != b.SyncedRecords ||
 		a.PendingRecords != b.PendingRecords ||
 		a.FailedRecords != b.FailedRecords {
 		return false
@@ -1212,7 +1215,7 @@ func (r *CloudflareDNSReconciler) getCloudflareClient(ctx context.Context, dns *
 
 	// If tunnel is available, use tunnel's credentials
 	if tunnel != nil {
-		return r.getClientFromTunnel(ctx, tunnel)
+		return r.getClientFromTunnel(ctx, dns, tunnel)
 	}
 
 	// Otherwise, use DNS resource's own credentials (external target mode)
@@ -1225,6 +1228,9 @@ func (r *CloudflareDNSReconciler) getCloudflareClient(ctx context.Context, dns *
 		secretNamespace = dns.Namespace
 	}
 
+	if err := requireCredentialGrant(ctx, r.Client, dns.Namespace, "CloudflareDNS", secretNamespace, dns.Spec.Cloudflare.SecretRef.Name); err != nil {
+		return nil, err
+	}
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      dns.Spec.Cloudflare.SecretRef.Name,
@@ -1238,23 +1244,22 @@ func (r *CloudflareDNSReconciler) getCloudflareClient(ctx context.Context, dns *
 		tokenKey = dns.Spec.Cloudflare.SecretKeys.APIToken
 	}
 
-	// Use cache if available
-	if r.CredentialCache != nil {
-		return r.CredentialCache.GetOrCreate(ctx, secret, func() (cloudflare.Client, error) {
-			return r.createClientFromSecret(secret, tokenKey)
-		})
-	}
-
-	return r.createClientFromSecret(secret, tokenKey)
+	return cloudflare.NewClientFromSecret(ctx, secret, tokenKey, r.CredentialCache, r.ClientSettings)
 }
 
 // getClientFromTunnel creates a Cloudflare client from tunnel credentials.
-func (r *CloudflareDNSReconciler) getClientFromTunnel(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (cloudflare.Client, error) {
+func (r *CloudflareDNSReconciler) getClientFromTunnel(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, tunnel *cfgatev1alpha1.CloudflareTunnel) (cloudflare.Client, error) {
 	secretNamespace := tunnel.Spec.Cloudflare.SecretRef.Namespace
 	if secretNamespace == "" {
 		secretNamespace = tunnel.Namespace
 	}
 
+	if err := requireCredentialGrant(ctx, r.Client, dns.Namespace, "CloudflareDNS", secretNamespace, tunnel.Spec.Cloudflare.SecretRef.Name); err != nil {
+		return nil, err
+	}
+	if err := requireCredentialGrant(ctx, r.Client, tunnel.Namespace, "CloudflareTunnel", secretNamespace, tunnel.Spec.Cloudflare.SecretRef.Name); err != nil {
+		return nil, err
+	}
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      tunnel.Spec.Cloudflare.SecretRef.Name,
@@ -1268,28 +1273,7 @@ func (r *CloudflareDNSReconciler) getClientFromTunnel(ctx context.Context, tunne
 		tokenKey = "CLOUDFLARE_API_TOKEN"
 	}
 
-	// Use cache if available
-	if r.CredentialCache != nil {
-		return r.CredentialCache.GetOrCreate(ctx, secret, func() (cloudflare.Client, error) {
-			return r.createClientFromSecret(secret, tokenKey)
-		})
-	}
-
-	return r.createClientFromSecret(secret, tokenKey)
-}
-
-// createClientFromSecret creates a Cloudflare client from a secret.
-func (r *CloudflareDNSReconciler) createClientFromSecret(secret *corev1.Secret, tokenKey string) (cloudflare.Client, error) {
-	if tokenKey == "" {
-		tokenKey = "CLOUDFLARE_API_TOKEN"
-	}
-
-	token, ok := secret.Data[tokenKey]
-	if !ok {
-		return nil, fmt.Errorf("API token key %q not found in secret", tokenKey)
-	}
-
-	return cloudflare.NewClient(string(token))
+	return cloudflare.NewClientFromSecret(ctx, secret, tokenKey, r.CredentialCache, r.ClientSettings)
 }
 
 // getCloudflareClientWithFallback tries tunnel credentials, then fallback credentials.
@@ -1303,7 +1287,7 @@ func (r *CloudflareDNSReconciler) getCloudflareClientWithFallback(ctx context.Co
 	if dns.Spec.TunnelRef != nil {
 		tunnel, err := r.resolveTunnel(ctx, dns)
 		if err == nil {
-			cfClient, err := r.getClientFromTunnel(ctx, tunnel)
+			cfClient, err := r.getClientFromTunnel(ctx, dns, tunnel)
 			if err == nil {
 				logger.V(1).Info("credential path resolved", "path", "tunnel", "tunnel", tunnel.Namespace+"/"+tunnel.Name)
 				return cfClient, nil
@@ -1342,6 +1326,9 @@ func (r *CloudflareDNSReconciler) getCloudflareClientWithFallback(ctx context.Co
 		fallbackNamespace = dns.Namespace
 	}
 
+	if err := requireCredentialGrant(ctx, r.Client, dns.Namespace, "CloudflareDNS", fallbackNamespace, dns.Spec.FallbackCredentialsRef.Name); err != nil {
+		return nil, err
+	}
 	fallbackSecret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
 		Name:      dns.Spec.FallbackCredentialsRef.Name,
@@ -1351,14 +1338,7 @@ func (r *CloudflareDNSReconciler) getCloudflareClientWithFallback(ctx context.Co
 		return nil, fmt.Errorf("all credential paths failed: tunnel=[%v], dns-own=[%v], fallback=[%v]", tunnelErr, dnsOwnErr, fallbackErr)
 	}
 
-	token, ok := fallbackSecret.Data["CLOUDFLARE_API_TOKEN"]
-	if !ok {
-		fallbackErr = fmt.Errorf("CLOUDFLARE_API_TOKEN key missing in secret %s/%s", fallbackNamespace, dns.Spec.FallbackCredentialsRef.Name)
-		return nil, fmt.Errorf("all credential paths failed: tunnel=[%v], dns-own=[%v], fallback=[%v]", tunnelErr, dnsOwnErr, fallbackErr)
-	}
-
-	logger.V(1).Info("credential path resolved", "path", "fallback", "secret", fallbackNamespace+"/"+dns.Spec.FallbackCredentialsRef.Name)
-	return cloudflare.NewClient(string(token))
+	return cloudflare.NewClientFromSecret(ctx, fallbackSecret, cloudflare.DefaultAPITokenKey, r.CredentialCache, r.ClientSettings)
 }
 
 // cleanupRecordsWithFallback deletes managed DNS records using fallback credentials if needed.
@@ -1375,9 +1355,9 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 
 	dnsService := cloudflare.NewDNSService(cfClient, logger)
 
-	ownerID := dns.Spec.Ownership.OwnerID
+	ownerID := dns.Status.OwnerID
 	if ownerID == "" {
-		ownerID = fmt.Sprintf("%s/%s", dns.Namespace, dns.Name)
+		return fmt.Errorf("persistent DNS ownership identity is missing; reconcile identity before cleanup or use orphan deletion")
 	}
 
 	ownershipPrefix := dns.Spec.Ownership.TXTRecord.Prefix
@@ -1517,17 +1497,15 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 			)
 
 			for _, record := range records {
-				// OnlyManaged nil defaults to true (only delete managed records)
-				onlyManaged := dns.Spec.CleanupPolicy.OnlyManaged == nil || *dns.Spec.CleanupPolicy.OnlyManaged
-				if cloudflare.IsOwnedByCfgate(&record, ownerID) || !onlyManaged {
-					if err := dnsService.DeleteRecord(ctx, zoneID, record.ID); err != nil {
+				if cloudflare.IsOwnedByCfgate(&record, ownerID) {
+					if deleted, err := dnsService.DeleteOwnedRecord(ctx, zoneID, record, ownerID, ownershipPrefix); err != nil {
 						logger.Error(err, "failed to delete DNS record",
 							"record", record.Name,
 							"recordID", record.ID,
 							"type", record.Type,
 						)
 						deleteErrors = append(deleteErrors, fmt.Sprintf("record %s: %v", record.Name, err))
-					} else {
+					} else if deleted {
 						totalDeleted++
 						logger.Info("deleted DNS record",
 							"record", record.Name,

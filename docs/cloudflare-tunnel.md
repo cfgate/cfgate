@@ -26,7 +26,7 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.cloudflare.secretRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the credentials Secret. Defaults to the tunnel's namespace. Max 63 chars. |
 | `spec.cloudflare.secretKeys.apiToken` | `string` | `CLOUDFLARE_API_TOKEN` | No | Key name within the Secret for the Cloudflare API token. Max 253 chars. |
 | `spec.cloudflared.replicas` | `int32` | `2` | No | Number of cloudflared replicas. Min 1, max 10. Each replica establishes an independent connection for high availability. |
-| `spec.cloudflared.image` | `string` | `ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1` | No | Container image for the cloudflared daemon. See [Image](#image) below. Max 255 chars. |
+| `spec.cloudflared.image` | `string` | `ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1` | No | Container image for the cloudflared daemon. See [Image](#image) below. Max 255 chars. |
 | `spec.cloudflared.imagePullPolicy` | `string` | `IfNotPresent` | No | Image pull policy. One of: `Always`, `Never`, `IfNotPresent`. |
 | `spec.cloudflared.protocol` | `string` | `auto` | No | Tunnel transport protocol. One of: `auto`, `quic`, `http2`. |
 | `spec.cloudflared.resources` | `corev1.ResourceRequirements` | *none* | No | Resource requests and limits for cloudflared containers. Standard Kubernetes resource spec. |
@@ -34,8 +34,8 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.cloudflared.tolerations` | `[]corev1.Toleration` | *none* | No | Tolerations for cloudflared pods. Max 20 items. |
 | `spec.cloudflared.podAnnotations` | `map[string]string` | *none* | No | Annotations added to cloudflared pods. Max 50 entries. |
 | `spec.cloudflared.extraArgs` | `[]string` | *none* | No | Additional CLI arguments passed to cloudflared. Max 20 items. |
-| `spec.cloudflared.metrics.enabled` | `bool` | `true` | No | Enables the Prometheus-compatible metrics endpoint on cloudflared pods. |
-| `spec.cloudflared.metrics.port` | `int32` | `44483` | No | Port for the metrics endpoint. Min 1, max 65535. Metrics available at `http://localhost:{port}/metrics`. |
+| `spec.cloudflared.metrics.enabled` | `bool` | `true` | No | Declares the metrics container port for scraping; the shared health listener remains enabled. |
+| `spec.cloudflared.metrics.port` | `int32` | `44483` | No | Port for the metrics endpoint. Min 1, max 65535. The pod listener serves both `/metrics` and health probes. |
 | `spec.originDefaults.connectTimeout` | `string` | `30s` | No | Timeout for connecting to origin/backend services. Format: `^[0-9]+(s|m|h)$`. |
 | `spec.originDefaults.noTLSVerify` | `bool` | `false` | No | Disables TLS certificate verification for origin connections. Use with caution in production. |
 | `spec.originDefaults.http2Origin` | `bool` | `false` | No | Enables HTTP/2 for connections to origin services. |
@@ -100,7 +100,7 @@ Controls the cloudflared daemon Deployment. The controller creates a Deployment 
 
 **Protocol selection:** The `auto` default lets cloudflared negotiate the best protocol. Use `quic` for UDP-based transport (lower latency, better for unstable connections) or `http2` for environments where UDP is blocked.
 
-**Metrics:** Enabled by default on port 44483. The endpoint serves Prometheus-compatible metrics at `/metrics` on each cloudflared pod. When `metrics.enabled: false`, cfgate omits the `--metrics` flag, container port, and cloudflared HTTP probes. Use `podAnnotations` to configure Prometheus scraping.
+**Metrics:** Enabled by default on port 44483. The endpoint serves Prometheus-compatible metrics at `/metrics` on each cloudflared pod. When `metrics.enabled: false`, cfgate omits the declared metrics container port but retains the shared listener and HTTP probes. The listener binds to pod interfaces so kubelet probes remain reachable; disabling scraping does not firewall metrics or diagnostic endpoints. Use `podAnnotations` to configure Prometheus scraping and administrator-managed NetworkPolicies to restrict network access. Generated connector Pods disable service-account-token mounting because they do not use the Kubernetes API.
 
 Generated cloudflared pods are compatible with Kubernetes `restricted` Pod Security by default. cfgate runs them as non-root, uses the runtime-default seccomp profile, disables privilege escalation, and drops all Linux capabilities.
 
@@ -135,7 +135,7 @@ spec:
 
 #### Image
 
-The default image is `ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1`, a fork of [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) maintained at [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared). The fork adds `h2cOrigin` support for HTTP/2 cleartext origin connections; upstream cloudflared does not support this feature ([cloudflare/cloudflared#1304](https://github.com/cloudflare/cloudflared/issues/1304)).
+The default image is `ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1`, a fork of [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) maintained at [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared). The fork adds `h2cOrigin` support for HTTP/2 cleartext origin connections; upstream cloudflared does not support this feature ([cloudflare/cloudflared#1304](https://github.com/cloudflare/cloudflared/issues/1304)).
 
 Users who do not need h2c can override the image to upstream:
 
@@ -201,8 +201,12 @@ spec:
 | `status.readyReplicas` | `int32` | Number of ready cloudflared replicas. |
 | `status.observedGeneration` | `int64` | Last `.metadata.generation` observed by the controller. |
 | `status.lastSyncTime` | `metav1.Time` | Last time the tunnel configuration was synced to Cloudflare. |
+| `status.lastFullReconcileTime` | `metav1.Time` | Last successful credentials, tunnel, Deployment, and configuration reconciliation; configuration-only passes do not advance it. |
+| `status.lifecycleDependencyHash` | `string` | Digest of checked Secret identities/revisions and Deployment generation; contains no Secret data. |
 | `status.connectedRouteCount` | `int32` | Number of routes currently connected to this tunnel. |
 | `status.conditions` | `[]metav1.Condition` | Standard Kubernetes conditions (see below). |
+
+The controller checks the full tunnel lifecycle at least every 30 minutes when reconciliation can complete. A full pass reads the remote configuration, including `h2cOrigin`, and repairs drift even when the local configuration hash matches. Applied hashes include both account and tunnel identity, so a replacement tunnel cannot inherit a prior tunnel's applied state. Between these checks, it may synchronize configuration without repeating credential, tunnel, and Deployment operations. Changes to the referenced credential, connector-token, or origin-CA Secret, or the connector Deployment generation, invalidate this optimization. Missing dependencies also force a full reconciliation. Existing resources without the lifecycle status fields receive a full reconciliation on upgrade. The fallback deletion credential is resolved during deletion, which never uses this optimization.
 
 ### Status Conditions
 
@@ -218,7 +222,7 @@ spec:
 
 | Column | JSONPath | Description |
 |--------|----------|-------------|
-| Ready | `.status.conditions[?(@.type=='Ready')].status` | Whether the tunnel is fully operational (`True`/`False`/`Unknown`). |
+| Ready | `.status.conditions[?(@.type=='Ready')].status` | Whether configuration is synchronized and all desired connector replicas are available (`True`/`False`/`Unknown`); origin reachability is not tested. |
 | Tunnel ID | `.status.tunnelId` | Cloudflare tunnel ID. |
 | Replicas | `.status.readyReplicas` | Number of ready cloudflared replicas. |
 | Age | `.metadata.creationTimestamp` | Age of the resource. |
@@ -331,3 +335,35 @@ To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate
 kubectl annotate cloudflaretunnel my-tunnel -n cfgate-system \
   cfgate.io/deletion-policy=orphan
 ```
+
+## Runtime checks and cleanup
+
+The manager's `/healthz` checks process responsiveness. Its `/readyz` additionally waits for the controller cache to synchronize; neither endpoint tests Cloudflare or origin reachability. Connector `/healthcheck` and `/ready` distinguish process health from edge connectivity. Tunnel `Ready` additionally requires the current Deployment generation and all desired replicas to be ready and available. A partial token rollout remains unready until these conditions hold.
+
+Connector token changes update the managed Secret before changing a controlled Pod-template revision annotation. The annotation contains only the Secret UID and resource version. An unchanged token does not restart Pods; a failed Secret write does not start a rollout.
+
+Normal tunnel deletion first scales the owned connector Deployment to zero and waits for matching Pods to terminate before deleting Cloudflare connections and the tunnel. Matching orphan or foreign Pods block cleanup rather than being deleted. Cleanup remains retryable and failures retain the finalizer. The explicit `cfgate.io/deletion-policy: orphan` escape skips remote cleanup and permits Kubernetes garbage collection of owned resources.
+
+ReferenceGrant discovery distinguishes a missing optional API from authorization or connectivity failures. Transient failures receive bounded retries with a five-second request timeout; exhausted failures and missing required Gateway API resources fail startup clearly. Restart the manager after installing or removing Gateway API CRDs.
+
+## Operator settings
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--cluster-domain` | `cluster.local` | Kubernetes DNS suffix used in generated backend Service URLs; a final dot is normalized. |
+| `--installation-namespace` | `POD_NAMESPACE` | Namespace whose persistent UID identifies the installation for DNS ownership. Explicitly set this when running outside Kubernetes. |
+| `--cloudflare-request-timeout` | `30s` | Positive maximum duration of each Cloudflare API attempt; earlier caller deadlines still apply. |
+| `--max-ingress-rules` | `1000` | Positive maximum rules per tunnel configuration, including the fallback. |
+| `--max-configuration-bytes` | `1048576` | Positive maximum serialized tunnel configuration size. |
+
+Each reconciliation has a two-minute deadline. The SDK performs at most two retries, and API operations and pagination preserve cancellation. The metric `cfgate_controller_last_completed_reconcile_timestamp_seconds`, labeled by controller name, records completed iterations including handled failures. It measures worker progress rather than successful Cloudflare changes. Tunnel `lastFullReconcileTime` separately records successful full lifecycle checks. Dependency events may fan out to multiple tunnels; the work limits constrain configuration construction and publication, not the number of Kubernetes objects watched.
+
+See [Connector hardening](connector-hardening.md) for network isolation guidance and its prerequisites.
+
+## Ownership and upgrade migration
+
+Existing local connector Secrets and Deployments must carry the expected controller owner UID. cfgate does not overwrite foreign or unowned objects merely because their names match. Existing remote tunnels require an immutable claim ConfigMap in the installation namespace, keyed by account and tunnel ID; conflicting claims or another CloudflareTunnel referencing that identity are rejected. New tunnels acquire claims automatically. A remote lookup failure never permits adoption or deletion.
+
+For inspected legacy tunnels, `cfgate.io/adopt-existing: "true"` permits acquiring an absent claim. It cannot replace a foreign claim. Claims serialize ownership only within the same installation namespace; they are not a Cloudflare-wide lock. Normal deletion verifies the claim, drains connectors, confirms remote absence, then deletes the claim with UID/resourceVersion preconditions. Orphan deletion retains the claim for explicit recovery.
+
+Cross-namespace Gateway-to-Tunnel and credential references require explicit ReferenceGrants. See [authorization and ownership](authorization-and-ownership.md) for administrator RBAC, migration steps, and coordination limits.

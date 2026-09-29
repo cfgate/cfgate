@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -38,6 +39,7 @@ const accessApplicationTag = "cfgate"
 
 // CloudflareAccessApplicationReconciler reconciles Gateway targets into Access Applications.
 type CloudflareAccessApplicationReconciler struct {
+	ClientSettings cloudflare.ClientSettings
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -58,9 +60,10 @@ type accessApplicationTarget struct {
 }
 
 type accessApplicationCredentials struct {
-	Service             *cloudflare.AccessService
-	AccountID           string
-	CredentialSecretRef *cfgatev1alpha1.SecretReference
+	Service              *cloudflare.AccessService
+	AccountID            string
+	CredentialSecretRef  *cfgatev1alpha1.SecretReference
+	CredentialSecretKeys cfgatev1alpha1.SecretKeys
 }
 
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccessapplications,verbs=get;list;watch;create;update;patch;delete
@@ -144,6 +147,7 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 	}
 	app.Status.AccountID = creds.AccountID
 	app.Status.CredentialSecretRef = creds.CredentialSecretRef
+	app.Status.CredentialSecretKeys = creds.CredentialSecretKeys
 	app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
 		status.NewCondition(status.ConditionTypeCredentialsValid, metav1.ConditionTrue, status.ReasonCredentialsValid, "Credentials validated successfully.", app.Generation),
 	)
@@ -472,7 +476,7 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationCredentials(ct
 	var first *accessApplicationCredentials
 	var firstTarget accessApplicationTarget
 	for _, target := range targets {
-		creds, err := r.resolveInheritedApplicationCredentials(ctx, target)
+		creds, err := r.resolveInheritedApplicationCredentials(ctx, app.Namespace, target)
 		if err != nil {
 			return nil, err
 		}
@@ -489,7 +493,7 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationCredentials(ct
 	return first, nil
 }
 
-func (r *CloudflareAccessApplicationReconciler) resolveInheritedApplicationCredentials(ctx context.Context, target accessApplicationTarget) (*accessApplicationCredentials, error) {
+func (r *CloudflareAccessApplicationReconciler) resolveInheritedApplicationCredentials(ctx context.Context, appNamespace string, target accessApplicationTarget) (*accessApplicationCredentials, error) {
 	gateway, err := r.gatewayForApplicationTarget(ctx, target)
 	if err != nil {
 		return nil, err
@@ -502,6 +506,13 @@ func (r *CloudflareAccessApplicationReconciler) resolveInheritedApplicationCrede
 	if err != nil {
 		return nil, fmt.Errorf("invalid tunnel reference %q: %w", tunnelRef, err)
 	}
+	if err := requireReferenceGrant(ctx, r.Client, gateway.Namespace, gwapiv1.GroupName, "Gateway", tunnelNS, "cfgate.io", "CloudflareTunnel", tunnelName); err != nil {
+		return nil, err
+	}
+	if err := requireReferenceGrant(ctx, r.Client, appNamespace, "cfgate.io", "CloudflareAccessApplication", tunnelNS, "cfgate.io", "CloudflareTunnel", tunnelName); err != nil {
+		return nil, err
+	}
+
 	var tunnel cfgatev1alpha1.CloudflareTunnel
 	if err := r.Get(ctx, types.NamespacedName{Name: tunnelName, Namespace: tunnelNS}, &tunnel); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -511,6 +522,7 @@ func (r *CloudflareAccessApplicationReconciler) resolveInheritedApplicationCrede
 	}
 	secretRef := cfgatev1alpha1.CloudflareSecretRef{
 		Name:        tunnel.Spec.Cloudflare.SecretRef.Name,
+		SecretKeys:  tunnel.Spec.Cloudflare.SecretKeys,
 		AccountID:   tunnel.Spec.Cloudflare.AccountID,
 		AccountName: tunnel.Spec.Cloudflare.AccountName,
 	}
@@ -520,7 +532,15 @@ func (r *CloudflareAccessApplicationReconciler) resolveInheritedApplicationCrede
 	if secretRef.AccountID == "" {
 		secretRef.AccountID = tunnel.Status.AccountID
 	}
-	return r.resolveCloudflareRefCredentials(ctx, tunnel.Namespace, &secretRef)
+	secretNamespace := tunnel.Spec.Cloudflare.SecretRef.Namespace
+	if secretNamespace == "" {
+		secretNamespace = tunnel.Namespace
+	}
+	secretRef.Namespace = &secretNamespace
+	if err := requireCredentialGrant(ctx, r.Client, tunnel.Namespace, "CloudflareTunnel", secretNamespace, secretRef.Name); err != nil {
+		return nil, err
+	}
+	return r.resolveCloudflareRefCredentials(ctx, appNamespace, &secretRef)
 }
 
 func (r *CloudflareAccessApplicationReconciler) resolveCloudflareRefCredentials(ctx context.Context, defaultNamespace string, ref *cfgatev1alpha1.CloudflareSecretRef) (*accessApplicationCredentials, error) {
@@ -533,8 +553,9 @@ func (r *CloudflareAccessApplicationReconciler) resolveCloudflareRefCredentials(
 		secretNamespace = *ref.Namespace
 	}
 	return &accessApplicationCredentials{
-		Service:   cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
-		AccountID: accountID,
+		Service:              cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
+		CredentialSecretKeys: cfgatev1alpha1.SecretKeys{APIToken: cloudflare.APITokenKey(ref.SecretKeys.APIToken)},
+		AccountID:            accountID,
 		CredentialSecretRef: &cfgatev1alpha1.SecretReference{
 			Name:      ref.Name,
 			Namespace: secretNamespace,
@@ -554,6 +575,9 @@ func (r *CloudflareAccessApplicationReconciler) gatewayForApplicationTarget(ctx 
 	if target.Kind == "Gateway" {
 		var gateway gwapiv1.Gateway
 		if err := r.Get(ctx, types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, &gateway); err != nil {
+			return nil, err
+		}
+		if err := r.requireManagedApplicationGateway(ctx, &gateway); err != nil {
 			return nil, err
 		}
 		return &gateway, nil
@@ -578,14 +602,53 @@ func (r *CloudflareAccessApplicationReconciler) gatewayForApplicationTarget(ctx 
 		}
 		var gateway gwapiv1.Gateway
 		if err := r.Get(ctx, types.NamespacedName{Name: string(parent.Name), Namespace: namespace}, &gateway); err != nil {
-			continue
+			if apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, err
 		}
 		if annotations.GetAnnotation(&gateway, annotations.AnnotationTunnelRef) == "" {
+			continue
+		}
+		if err := r.requireManagedApplicationGateway(ctx, &gateway); err != nil {
+			if errors.Is(err, errGatewayNotManaged) || apierrors.IsNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		if err := validateHTTPRouteFeatures(&route); err != nil {
+			return nil, err
+		}
+		hosts, err := acceptedRouteHostnames(ctx, r.Client, &route, &gateway, parent)
+		if err != nil {
+			return nil, err
+		}
+		if len(hosts) == 0 {
+			continue
+		}
+		resolved, err := validateHTTPRouteBackendRefs(ctx, r.Client, &route)
+		if err != nil {
+			return nil, err
+		}
+		if resolved.Status != metav1.ConditionTrue {
 			continue
 		}
 		return &gateway, nil
 	}
 	return nil, fmt.Errorf("HTTPRoute %s/%s has no resolvable cfgate Gateway parent with %s annotation", route.Namespace, route.Name, annotations.AnnotationTunnelRef)
+}
+
+var errGatewayNotManaged = errors.New("gateway is not managed by cfgate")
+
+func (r *CloudflareAccessApplicationReconciler) requireManagedApplicationGateway(ctx context.Context, gateway *gwapiv1.Gateway) error {
+	var class gwapiv1.GatewayClass
+	if err := r.Get(ctx, types.NamespacedName{Name: string(gateway.Spec.GatewayClassName)}, &class); err != nil {
+		return err
+	}
+	if string(class.Spec.ControllerName) != GatewayControllerName {
+		return errGatewayNotManaged
+	}
+	return nil
 }
 
 func (r *CloudflareAccessApplicationReconciler) getAccessApplicationCloudflareClient(ctx context.Context, defaultNamespace string, ref *cfgatev1alpha1.CloudflareSecretRef) (cloudflare.Client, string, error) {
@@ -618,24 +681,14 @@ func (r *CloudflareAccessApplicationReconciler) getCloudflareClient(ctx context.
 	if secretRef.Namespace != nil && *secretRef.Namespace != "" {
 		secretNamespace = *secretRef.Namespace
 	}
+	if err := requireCredentialGrant(ctx, r.Client, defaultNamespace, "CloudflareAccessApplication", secretNamespace, secretRef.Name); err != nil {
+		return nil, err
+	}
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: secretRef.Name, Namespace: secretNamespace}, secret); err != nil {
 		return nil, fmt.Errorf("failed to get credentials secret: %w", err)
 	}
-	if r.CredentialCache != nil {
-		return r.CredentialCache.GetOrCreate(ctx, secret, func() (cloudflare.Client, error) {
-			return r.createClientFromSecret(secret)
-		})
-	}
-	return r.createClientFromSecret(secret)
-}
-
-func (r *CloudflareAccessApplicationReconciler) createClientFromSecret(secret *corev1.Secret) (cloudflare.Client, error) {
-	token, ok := secret.Data["CLOUDFLARE_API_TOKEN"]
-	if !ok {
-		return nil, fmt.Errorf("API token key %q not found in secret", "CLOUDFLARE_API_TOKEN")
-	}
-	return cloudflare.NewClient(string(token))
+	return cloudflare.NewClientFromSecret(ctx, secret, secretRef.SecretKeys.APIToken, r.CredentialCache, r.ClientSettings)
 }
 
 func (r *CloudflareAccessApplicationReconciler) resolveApplicationPolicyRefs(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, accountID string) ([]cloudflare.ApplicationPolicyLink, error) {
@@ -952,9 +1005,10 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationDeletionCreden
 	if app.Status.AccountID != "" && app.Status.CredentialSecretRef != nil && app.Status.CredentialSecretRef.Name != "" {
 		secretNamespace := app.Status.CredentialSecretRef.Namespace
 		secretRef := cfgatev1alpha1.CloudflareSecretRef{
-			Name:      app.Status.CredentialSecretRef.Name,
-			Namespace: &secretNamespace,
-			AccountID: app.Status.AccountID,
+			Name:       app.Status.CredentialSecretRef.Name,
+			SecretKeys: app.Status.CredentialSecretKeys,
+			Namespace:  &secretNamespace,
+			AccountID:  app.Status.AccountID,
 		}
 		return r.resolveCloudflareRefCredentials(ctx, app.Namespace, &secretRef)
 	}
@@ -1004,7 +1058,8 @@ func accessApplicationStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessApplicati
 	if a.AccountID != b.AccountID || a.AttachedTargets != b.AttachedTargets || a.ObservedGeneration != b.ObservedGeneration {
 		return false
 	}
-	if !reflect.DeepEqual(a.CredentialSecretRef, b.CredentialSecretRef) ||
+	if a.CredentialSecretKeys != b.CredentialSecretKeys ||
+		!reflect.DeepEqual(a.CredentialSecretRef, b.CredentialSecretRef) ||
 		!reflect.DeepEqual(a.Applications, b.Applications) ||
 		!reflect.DeepEqual(a.Ancestors, b.Ancestors) {
 		return false
@@ -1134,5 +1189,5 @@ func (r *CloudflareAccessApplicationReconciler) SetupWithManager(mgr ctrl.Manage
 		Watches(&cfgatev1alpha1.CloudflareAccessPolicy{}, handler.EnqueueRequestsFromMapFunc(r.findApplicationsForPolicy), builder.WithPredicates(AccessPolicyReferenceChangedPredicate)).
 		Watches(&cfgatev1alpha1.CloudflareTunnel{}, handler.EnqueueRequestsFromMapFunc(r.findAllAccessApplications), builder.WithPredicates(TunnelIDChangedPredicate)).
 		Watches(&gwapiv1b1.ReferenceGrant{}, handler.EnqueueRequestsFromMapFunc(r.findAllAccessApplications)).
-		Complete(r)
+		Complete(withReconcileProgress("cloudflareaccessapplication", r))
 }

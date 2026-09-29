@@ -117,7 +117,7 @@ type CloudflaredConfig struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// Image is the cloudflared container image.
-	// +kubebuilder:default="ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1"
+	// +kubebuilder:default="ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1"
 	// +kubebuilder:validation:MaxLength=255
 	Image string `json:"image,omitempty"`
 
@@ -163,9 +163,9 @@ type CloudflaredConfig struct {
 // MetricsConfig defines the cloudflared metrics endpoint configuration.
 //
 // MetricsConfig controls the Prometheus-compatible metrics endpoint exposed by cloudflared.
-// When enabled, metrics are available at http://localhost:{Port}/metrics on each cloudflared pod.
+// Metrics and health probes share the pod listener on Port. Disabling metrics omits the declared metrics container port, not the health listener.
 type MetricsConfig struct {
-	// Enabled enables the metrics endpoint.
+	// Enabled declares the metrics container port for scraping. Health probes and their shared listener remain enabled.
 	// +kubebuilder:default=true
 	Enabled *bool `json:"enabled,omitempty"`
 
@@ -290,6 +290,16 @@ type CloudflareTunnelStatus struct {
 	// LastSyncTime is the last time the configuration was synced to Cloudflare.
 	// +optional
 	LastSyncTime *metav1.Time `json:"lastSyncTime,omitempty"`
+
+	// LastFullReconcileTime is the last successful credentials, tunnel, deployment, and configuration reconciliation.
+	// Configuration-only reconciliations do not advance this timestamp.
+	// +optional
+	LastFullReconcileTime *metav1.Time `json:"lastFullReconcileTime,omitempty"`
+
+	// LifecycleDependencyHash identifies the Secret revisions and Deployment generation checked during the last full reconciliation.
+	// It contains no Secret data.
+	// +optional
+	LifecycleDependencyHash string `json:"lifecycleDependencyHash,omitempty"`
 
 	// ConnectedRouteCount is the number of routes connected to this tunnel.
 	ConnectedRouteCount int32 `json:"connectedRouteCount,omitempty"`

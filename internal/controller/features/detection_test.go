@@ -2,6 +2,7 @@ package features
 
 import (
 	"fmt"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"reflect"
 	"testing"
 
@@ -26,12 +27,12 @@ func (m *mockDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.APIRe
 	if rl, ok := m.resources[gv]; ok {
 		return rl, nil
 	}
-	return nil, fmt.Errorf("group version %q not found", gv)
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: GatewayAPIGroup, Resource: gv}, gv)
 }
 
 func newMockDiscovery() *mockDiscovery {
 	return &mockDiscovery{
-		resources: make(map[string]*metav1.APIResourceList),
+		resources: map[string]*metav1.APIResourceList{GatewayAPIGroup + "/v1": {APIResources: []metav1.APIResource{{Name: "gatewayclasses"}, {Name: "gateways"}, {Name: "httproutes"}}}},
 		errors:    make(map[string]error),
 	}
 }
@@ -146,9 +147,10 @@ func TestCrdExists(t *testing.T) {
 
 func TestDetectFeatures(t *testing.T) {
 	tests := []struct {
-		name string
-		mock *mockDiscovery
-		want FeatureGates
+		name    string
+		mock    *mockDiscovery
+		want    FeatureGates
+		wantErr bool
 	}{
 		{
 			name: "ReferenceGrant present",
@@ -168,9 +170,10 @@ func TestDetectFeatures(t *testing.T) {
 			want: FeatureGates{ReferenceGrantCRDExists: true},
 		},
 		{
-			name: "discovery error for beta1 group",
-			mock: newMockDiscovery().withError(gvBeta1, fmt.Errorf("forbidden")),
-			want: FeatureGates{},
+			name:    "discovery error for beta1 group",
+			mock:    newMockDiscovery().withError(gvBeta1, fmt.Errorf("forbidden")),
+			wantErr: true,
+			want:    FeatureGates{},
 		},
 		{
 			name: "empty resource list for beta1",
@@ -182,6 +185,12 @@ func TestDetectFeatures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gates, err := DetectFeatures(tt.mock)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("discovery error hidden")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("DetectFeatures() error = %v", err)
 			}
@@ -262,4 +271,35 @@ func TestLogFeatures(t *testing.T) {
 		gates := &FeatureGates{}
 		gates.LogFeatures(logr.Discard())
 	})
+}
+
+type recoveringDiscovery struct {
+	*mockDiscovery
+	calls int
+}
+
+func (d *recoveringDiscovery) ServerResourcesForGroupVersion(gv string) (*metav1.APIResourceList, error) {
+	if gv == gvBeta1 {
+		d.calls++
+		if d.calls == 1 {
+			return nil, apierrors.NewServiceUnavailable("temporary")
+		}
+	}
+	return d.mockDiscovery.ServerResourcesForGroupVersion(gv)
+}
+func TestDiscoveryRetriesTransientFailureAndRequiresGatewayAPI(t *testing.T) {
+	recovering := &recoveringDiscovery{mockDiscovery: fullMock()}
+	gates, err := DetectFeatures(recovering)
+	if err != nil || !gates.ReferenceGrantCRDExists || recovering.calls != 2 {
+		t.Fatalf("recovery=%+v calls%d err%v", gates, recovering.calls, err)
+	}
+	missing := fullMock()
+	delete(missing.resources, GatewayAPIGroup+"/v1")
+	if _, err := DetectFeatures(missing); err == nil {
+		t.Fatal("missing required Gateway API ignored")
+	}
+	forbidden := fullMock().withError(gvBeta1, apierrors.NewForbidden(schema.GroupResource{Group: GatewayAPIGroup, Resource: ReferenceGrantResource}, "", fmt.Errorf("denied")))
+	if _, err := DetectFeatures(forbidden); !apierrors.IsForbidden(err) {
+		t.Fatalf("forbidden classification lost: %v", err)
+	}
 }

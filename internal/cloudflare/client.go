@@ -30,6 +30,9 @@ type TunnelOps interface {
 	// GetTunnelToken retrieves the tunnel token for cloudflared authentication.
 	GetTunnelToken(ctx context.Context, accountID, tunnelID string) (string, error)
 
+	// GetTunnelConfiguration reads the remotely applied ingress configuration.
+	GetTunnelConfiguration(ctx context.Context, accountID, tunnelID string) (*TunnelConfiguration, error)
+
 	// UpdateTunnelConfiguration updates the tunnel's ingress configuration.
 	// This is an atomic replacement of the entire configuration.
 	UpdateTunnelConfiguration(ctx context.Context, accountID, tunnelID string, config TunnelConfiguration) error
@@ -235,13 +238,13 @@ type CreateTunnelParams struct {
 // TunnelConfiguration represents the tunnel's ingress configuration.
 type TunnelConfiguration struct {
 	// Ingress is the list of ingress rules.
-	Ingress []IngressRule
+	Ingress []IngressRule `json:"ingress"`
 
 	// OriginRequest contains default origin settings.
-	OriginRequest *OriginRequestConfig
+	OriginRequest *OriginRequestConfig `json:"originRequest,omitempty"`
 
 	// WarpRouting enables WARP routing.
-	WarpRouting *WarpRoutingConfig
+	WarpRouting *WarpRoutingConfig `json:"warp-routing,omitempty"`
 }
 
 // IngressRule represents a single ingress rule.

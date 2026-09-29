@@ -242,22 +242,20 @@ type DNSTXTRecordOwnership struct {
 // DNSCommentOwnership configures comment-based ownership tracking in DNS records.
 //
 // Deprecated: since v0.1.0-alpha.13. The controller ignores both fields and always
-// writes a hardcoded "managed by cfgate" comment on managed DNS records. These fields
-// will be removed in a future cleanup release. No migration is needed; the hardcoded behavior
-// is identical to the previous default values. Remove the spec.ownership.comment section
-// from your CloudflareDNS resources to silence future validation warnings.
+// writes an exact resource owner marker on managed DNS records. These fields
+// will be removed in a future cleanup release. Legacy ownership migration is explicit.
 type DNSCommentOwnership struct {
 	// Enabled enables comment-based ownership tracking.
 	//
 	// Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-	// writes a "managed by cfgate" comment. Will be removed in a future cleanup release.
+	// writes an exact resource owner marker. Will be removed in a future cleanup release.
 	// +kubebuilder:default=false
 	Enabled bool `json:"enabled,omitempty"`
 
 	// Template is the comment template.
 	//
 	// Deprecated: since v0.1.0-alpha.13. This field is ignored. The controller always
-	// uses "managed by cfgate" as the comment. Will be removed in a future cleanup release.
+	// uses an exact resource owner marker. Will be removed in a future cleanup release.
 	// +kubebuilder:default="managed by cfgate"
 	// +kubebuilder:validation:MaxLength=255
 	Template string `json:"template,omitempty"`
@@ -266,13 +264,12 @@ type DNSCommentOwnership struct {
 // DNSOwnershipConfig defines how record ownership is tracked and verified.
 //
 // DNSOwnershipConfig supports two ownership strategies: TXT records and comments.
-// TXT record ownership is recommended for production use as it provides reliable
-// multi-cluster support. The OwnerID identifies this installation and defaults to
-// the CloudflareDNS resource's namespace/name.
+// TXT and data markers use the persistent installation namespace UID/resource UID.
+// Cloudflare has no conditional DNS writes; these checks are not a distributed lock.
 type DNSOwnershipConfig struct {
-	// OwnerID is the cluster/installation identifier used in TXT ownership records.
-	// Used to distinguish records created by different cfgate installations.
-	// Defaults to the CloudflareDNS resource's namespace/name if not specified.
+	// OwnerID is a deprecated legacy migration hint, not an ownership authority.
+	// Since v0.2.0-alpha.6 the controller persists installation/resource UIDs in status.ownerId.
+	// Setting this field cannot adopt another resource's records.
 	// +optional
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(/[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$`
@@ -305,8 +302,8 @@ type DNSCleanupPolicy struct {
 	// +optional
 	DeleteOnResourceRemoval *bool `json:"deleteOnResourceRemoval,omitempty"`
 
-	// OnlyManaged only deletes records that were created by cfgate (verified via ownership).
-	// nil defaults to true.
+	// OnlyManaged is retained for compatibility. Ownership verification is always required;
+	// setting false cannot authorize deletion of foreign or unmarked records.
 	// +optional
 	OnlyManaged *bool `json:"onlyManaged,omitempty"`
 }
@@ -371,7 +368,7 @@ type CloudflareDNSSpec struct {
 //
 // DNSRecordSyncStatus tracks individual DNS record state including the Cloudflare record ID,
 // current configuration, and sync status. The Status field indicates: Synced (successfully
-// synchronized), Pending (awaiting sync), or Failed (sync failed, see Error field).
+// synchronized), Pending (awaiting sync), Skipped (policy prevented synchronization), or Failed (sync failed, see Error field).
 type DNSRecordSyncStatus struct {
 	// Hostname is the DNS hostname.
 	Hostname string `json:"hostname"`
@@ -388,7 +385,7 @@ type DNSRecordSyncStatus struct {
 	// TTL is the record TTL.
 	TTL int32 `json:"ttl,omitempty"`
 
-	// Status is the sync status: Synced, Pending, Failed.
+	// Status is the sync status: Synced, Pending, Skipped, Failed.
 	Status string `json:"status"`
 
 	// RecordID is the Cloudflare record ID.
@@ -410,6 +407,9 @@ type DNSRecordSyncStatus struct {
 // counts of synced, pending, and failed records. The ResolvedTarget field shows the
 // actual CNAME target being used (either from tunnel or external target).
 type CloudflareDNSStatus struct {
+	// OwnerID persists the installation namespace UID and resource UID for cleanup.
+	// +optional
+	OwnerID string `json:"ownerId,omitempty"`
 	// SyncedRecords is the number of successfully synced records.
 	SyncedRecords int32 `json:"syncedRecords,omitempty"`
 

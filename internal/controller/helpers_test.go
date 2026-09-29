@@ -392,7 +392,7 @@ func TestCloudflareDNSSyncRecords(t *testing.T) {
 			return &record, nil
 		}
 
-		dns := &cfgatev1alpha1.CloudflareDNS{
+		dns := &cfgatev1alpha1.CloudflareDNS{Status: cfgatev1alpha1.CloudflareDNSStatus{OwnerID: "installation/resource"},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "dns",
 				Namespace: "default",
@@ -539,8 +539,8 @@ func TestDNSAndTunnelStatusHelpers(t *testing.T) {
 			{Hostname: "b.example.com", Service: "http://svc-b"},
 		},
 	}
-	if tunnelConfigHash(configA) != tunnelConfigHash(configB) {
-		t.Fatal("tunnelConfigHash() should be stable across ingress ordering")
+	if tunnelConfigHash(configA) == tunnelConfigHash(configB) {
+		t.Fatal("tunnelConfigHash() must change when ingress order changes")
 	}
 
 	if got := ptrTo("cfgate"); got == nil || *got != "cfgate" {

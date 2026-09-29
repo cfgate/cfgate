@@ -17,7 +17,7 @@ import (
 const (
 	// DefaultImage is the default cloudflared container image.
 	// Points to the inherent-design fork which includes h2c origin support.
-	DefaultImage = "ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1"
+	DefaultImage = "ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1"
 
 	// DefaultMetricsPort is the default port for cloudflared metrics.
 	DefaultMetricsPort = 44483
@@ -81,11 +81,9 @@ func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel
 	}
 
 	container := buildContainer(tunnel, tokenSecretName)
-	if metricsEnabled(tunnel) {
-		liveness, readiness := buildProbes(getMetricsPort(tunnel))
-		container.LivenessProbe = liveness
-		container.ReadinessProbe = readiness
-	}
+	liveness, readiness := buildProbes(getMetricsPort(tunnel))
+	container.LivenessProbe = liveness
+	container.ReadinessProbe = readiness
 
 	// Merge pod annotations from spec
 	podAnnotations := map[string]string{}
@@ -110,6 +108,7 @@ func (b *DefaultBuilder) BuildDeployment(tunnel *cfgatev1alpha1.CloudflareTunnel
 					Annotations: podAnnotations,
 				},
 				Spec: corev1.PodSpec{
+					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr.To(true),
 						SeccompProfile: &corev1.SeccompProfile{
@@ -318,9 +317,8 @@ func buildArgs(tunnel *cfgatev1alpha1.CloudflareTunnel) []string {
 		"--no-autoupdate",
 	}
 
-	if metricsEnabled(tunnel) {
-		args = append(args, "--metrics", fmt.Sprintf("0.0.0.0:%d", getMetricsPort(tunnel)))
-	}
+	// cloudflared serves process and connector health on its metrics listener.
+	args = append(args, "--metrics", fmt.Sprintf("0.0.0.0:%d", getMetricsPort(tunnel)))
 
 	// Add protocol if specified
 	if tunnel.Spec.Cloudflared.Protocol != "" && tunnel.Spec.Cloudflared.Protocol != "auto" {

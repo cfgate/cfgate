@@ -72,7 +72,8 @@
 //	    return cloudflare.NewClient(string(secret.Data["apiToken"]))
 //	})
 //
-// Cache keys are based on Secret UID and ResourceVersion for automatic invalidation.
+// Cache keys include Secret UID, ResourceVersion, the selected API token data key,
+// and normalized request timeout/configuration limits.
 //
 // # Error Handling
 //
