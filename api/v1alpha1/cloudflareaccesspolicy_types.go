@@ -61,6 +61,10 @@ type CloudflareSecretRef struct {
 	// +optional
 	Namespace *string `json:"namespace,omitempty"`
 
+	// SecretKeys selects credential data keys; omitted keys use their defaults.
+	// +optional
+	SecretKeys SecretKeys `json:"secretKeys,omitempty"`
+
 	// AccountID is the Cloudflare account ID.
 	// +optional
 	// +kubebuilder:validation:MaxLength=32
@@ -684,6 +688,10 @@ type CloudflareAccessPolicyStatus struct {
 	// CredentialSecretRef is the resolved credentials Secret used for cleanup.
 	// The namespace is always stored explicitly.
 	CredentialSecretRef *SecretReference `json:"credentialSecretRef,omitempty"`
+
+	// CredentialSecretKeys preserves selected token keys for cleanup.
+	// +optional
+	CredentialSecretKeys SecretKeys `json:"credentialSecretKeys,omitempty"`
 
 	// Reusable reports whether Cloudflare returned this policy as reusable.
 	Reusable bool `json:"reusable,omitempty"`

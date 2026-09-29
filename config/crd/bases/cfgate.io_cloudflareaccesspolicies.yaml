@@ -131,6 +131,17 @@ spec:
                   namespace:
                     description: Namespace of the secret (defaults to policy namespace).
                     type: string
+                  secretKeys:
+                    description: SecretKeys selects credential data keys; omitted
+                      keys use their defaults.
+                    properties:
+                      apiToken:
+                        default: CLOUDFLARE_API_TOKEN
+                        description: APIToken is the key name for the Cloudflare API
+                          token.
+                        maxLength: 253
+                        type: string
+                    type: object
                 required:
                 - name
                 type: object
@@ -918,6 +929,16 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              credentialSecretKeys:
+                description: CredentialSecretKeys preserves selected token keys for
+                  cleanup.
+                properties:
+                  apiToken:
+                    default: CLOUDFLARE_API_TOKEN
+                    description: APIToken is the key name for the Cloudflare API token.
+                    maxLength: 253
+                    type: string
+                type: object
               credentialSecretRef:
                 description: |-
                   CredentialSecretRef is the resolved credentials Secret used for cleanup.

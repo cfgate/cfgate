@@ -25,7 +25,7 @@ func TestSyncRecordsUsesZoneProxiedBeforeDefaults(t *testing.T) {
 		return &record, nil
 	}
 
-	dns := &cfgatev1alpha1.CloudflareDNS{
+	dns := &cfgatev1alpha1.CloudflareDNS{Status: cfgatev1alpha1.CloudflareDNSStatus{OwnerID: "installation/resource"},
 		Spec: cfgatev1alpha1.CloudflareDNSSpec{
 			Zones: []cfgatev1alpha1.DNSZoneConfig{{
 				Name:    "example.com",

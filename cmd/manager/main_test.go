@@ -2,15 +2,19 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	cfcloudflare "cfgate.io/cfgate/internal/cloudflare"
 	"github.com/go-logr/logr"
 	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
@@ -24,6 +28,11 @@ type fakeProbeManager struct {
 	healthChecks []string
 	readyChecks  []string
 }
+
+type probeCache struct{ cache.Cache }
+
+func (probeCache) WaitForCacheSync(context.Context) bool { return true }
+func (f *fakeProbeManager) GetCache() cache.Cache        { return probeCache{} }
 
 func (f *fakeProbeManager) AddHealthzCheck(name string, _ healthz.Checker) error {
 	f.healthChecks = append(f.healthChecks, name)
@@ -125,7 +134,10 @@ func TestManagerBindAddressPrecedence(t *testing.T) {
 				if key == envMetricsPort {
 					return tt.metricsEnv
 				}
-				return tt.healthEnv
+				if key == envHealthPort {
+					return tt.healthEnv
+				}
+				return ""
 			}, io.Discard)
 			if tt.wantError != "" {
 				var cliErr cliExitError
@@ -310,11 +322,11 @@ func TestRegisterControllers(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		var calls []string
-		setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache) error {
+		setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache, managerConfig) error {
 			calls = append(calls, "tunnel")
 			return nil
 		}
-		setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache) error {
+		setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache, managerConfig) error {
 			calls = append(calls, "dns")
 			return nil
 		}
@@ -330,11 +342,11 @@ func TestRegisterControllers(t *testing.T) {
 			calls = append(calls, "httproute")
 			return nil
 		}
-		setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+		setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache, managerConfig) error {
 			calls = append(calls, "access")
 			return nil
 		}
-		setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+		setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache, managerConfig) error {
 			calls = append(calls, "accessapp")
 			return nil
 		}
@@ -350,7 +362,7 @@ func TestRegisterControllers(t *testing.T) {
 	})
 
 	t.Run("wraps controller failure", func(t *testing.T) {
-		setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache) error {
+		setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache, managerConfig) error {
 			return errors.New("boom")
 		}
 
@@ -368,7 +380,7 @@ func TestRegisterControllers(t *testing.T) {
 		{
 			name: "dns failure",
 			fail: func() {
-				setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache) error { return errors.New("boom") }
+				setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache, managerConfig) error { return errors.New("boom") }
 			},
 			want: "unable to create controller CloudflareDNS",
 		},
@@ -396,7 +408,7 @@ func TestRegisterControllers(t *testing.T) {
 		{
 			name: "access policy failure",
 			fail: func() {
-				setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+				setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache, managerConfig) error {
 					return errors.New("boom")
 				}
 			},
@@ -405,7 +417,7 @@ func TestRegisterControllers(t *testing.T) {
 		{
 			name: "access application failure",
 			fail: func() {
-				setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error {
+				setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache, managerConfig) error {
 					return errors.New("boom")
 				}
 			},
@@ -413,13 +425,17 @@ func TestRegisterControllers(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache) error { return nil }
-			setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache) error { return nil }
+			setupTunnelController = func(manager.Manager, *cfcloudflare.CredentialCache, managerConfig) error { return nil }
+			setupDNSController = func(manager.Manager, *cfcloudflare.CredentialCache, managerConfig) error { return nil }
 			setupGatewayController = func(manager.Manager) error { return nil }
 			setupGatewayClassController = func(manager.Manager) error { return nil }
 			setupHTTPRouteController = func(manager.Manager) error { return nil }
-			setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error { return nil }
-			setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache) error { return nil }
+			setupAccessPolicyController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache, managerConfig) error {
+				return nil
+			}
+			setupAccessApplicationController = func(manager.Manager, *features.FeatureGates, *cfcloudflare.CredentialCache, managerConfig) error {
+				return nil
+			}
 			tt.fail()
 
 			err := registerControllers(nil, &features.FeatureGates{})
@@ -447,7 +463,7 @@ func TestExecuteManager(t *testing.T) {
 				calls = append(calls, "detectFeatures")
 				return &features.FeatureGates{ReferenceGrantCRDExists: true}, nil
 			},
-			registerControllers: func(manager.Manager, *features.FeatureGates) error {
+			registerControllers: func(manager.Manager, *features.FeatureGates, managerConfig) error {
 				calls = append(calls, "registerControllers")
 				return nil
 			},
@@ -574,5 +590,36 @@ func TestPortEnvZeroRetainsEphemeralBind(t *testing.T) {
 	addr, ok := listener.Addr().(*net.TCPAddr)
 	if !ok || addr.Port == 0 {
 		t.Fatalf("ephemeral bind address = %v", listener.Addr())
+	}
+}
+
+func TestManagerDeadlineAndCacheReadiness(t *testing.T) {
+	if got := buildManagerOptions(managerConfig{}).Controller.ReconciliationTimeout; got != 2*time.Minute {
+		t.Fatalf("reconcile timeout=%v", got)
+	}
+	request := httptest.NewRequest("GET", "/readyz", nil)
+	if err := cacheReadyCheck(func(context.Context) bool { return false })(request); err == nil {
+		t.Fatal("unsynchronized cache reported ready")
+	}
+	if err := cacheReadyCheck(func(context.Context) bool { return true })(request); err != nil {
+		t.Fatal(err)
+	}
+	if err := healthz.Ping(request); err != nil {
+		t.Fatal("process liveness unexpectedly depends on external state")
+	}
+}
+
+func TestManagerInfrastructureSettings(t *testing.T) {
+	cfg, err := parseManagerConfig([]string{"--cluster-domain=corp.internal.", "--installation-namespace=cfgate-system", "--cloudflare-request-timeout=5s", "--max-ingress-rules=200", "--max-configuration-bytes=20000"}, func(string) string { return "" }, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClusterDomain != "corp.internal" || cfg.InstallationNamespace != "cfgate-system" || cfg.ClientSettings.AttemptTimeout != 5*time.Second || cfg.ClientSettings.MaxIngressRules != 200 || cfg.ClientSettings.MaxConfigurationBytes != 20000 {
+		t.Fatalf("settings=%+v", cfg)
+	}
+	for _, args := range [][]string{{"--cluster-domain=bad/domain"}, {"--installation-namespace=BAD"}, {"--max-ingress-rules=0"}, {"--max-configuration-bytes=-1"}, {"--cloudflare-request-timeout=0s"}} {
+		if _, err := parseManagerConfig(args, func(string) string { return "" }, io.Discard); err == nil {
+			t.Fatalf("invalid settings accepted %v", args)
+		}
 	}
 }

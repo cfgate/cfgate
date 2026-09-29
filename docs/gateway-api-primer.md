@@ -179,3 +179,13 @@ If you are migrating from an Ingress-based Cloudflare operator:
 - [Annotations Reference](annotations.md)
 - [Troubleshooting](troubleshooting.md)
 - [Service Mesh Integration](service-mesh.md)
+
+## Supported HTTPRoute behavior
+
+cfgate tunnel ingress supports one Kubernetes Service backend per rule, hostname matching, and omitted, `Exact`, `PathPrefix`, or Go-compatible `RegularExpression` path matches. Any positive weight for the single backend receives all matching traffic. A zero-weight backend receives no traffic; cfgate emits an HTTP 500 response for its match so requests cannot fall through to a broader rule. A rule without a backend also returns HTTP 500. Multiple backend references cannot be forwarded because weighted distribution is not implemented; their matches return HTTP 500.
+
+Method, header, and query matches, rule or backend filters, request timeouts, retries, and session persistence are unsupported. A route using any of these fields receives `Accepted=False` with reason `UnsupportedValue` and contributes no forwarding rules. cfgate does not silently drop a restriction. Other valid HTTPRoutes remain active. Missing, unauthorized, or unsupported backend references set `ResolvedRefs=False`. Their specific matches return HTTP 500, while valid sibling rules remain active. This prevents invalid matches from falling through to a broader forwarding route. Only the canonical empty API group denotes a core Service; the literal group `core` is unsupported. A missing port defaults to 80 only when the Service actually exposes port 80.
+
+Routes are evaluated by current GatewayClass ownership, listener permissions, namespace selectors, hostname intersection, and cross-namespace backend ReferenceGrants. Existing status is not used as authorization. A transient Kubernetes read failure aborts configuration synchronization rather than publishing a partially resolved configuration.
+
+More specific hostnames precede overlapping wildcard hostnames. Within a hostname, exact paths precede regular expressions, followed by prefixes with the longest source path first. Regular-expression precedence is implementation-defined: longer expressions precede shorter expressions. Equal matches use the oldest route creation timestamp, then lexical `namespace/name`, then the first matching rule. Regular expressions remain active ahead of a catch-all prefix. For prefixes, trailing slashes are ignored: `/foo` and `/foo/` both match `/foo` and `/foo/bar`, but not `/foobar`. Exact paths retain trailing-slash significance. Configuration hashing preserves this ordered evaluation.

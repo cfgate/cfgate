@@ -11,7 +11,7 @@ Manages DNS record synchronization independently from CloudflareTunnel resources
 
 CloudflareDNS manages DNS record synchronization for Cloudflare zones. It supports two target modes: tunnel references (for tunnel-based CNAME records) and external targets (for non-tunnel DNS records such as A, AAAA, or external CNAMEs). DNS records can be sourced automatically from Gateway API HTTPRoute resources or explicitly defined in the spec.
 
-CloudflareDNS implements ownership tracking via TXT records, aligned with the external-dns pattern, to enable safe multi-cluster deployments and prevent accidental deletion of records created by other installations. Lifecycle behavior is controlled via `spec.policy` (sync, upsert-only, create-only) and `spec.cleanupPolicy`.
+CloudflareDNS verifies resource-specific ownership markers on data and TXT records before mutation. Cloudflare DNS writes do not support compare-and-swap, so competing installations still require external coordination. Lifecycle behavior is controlled via `spec.policy` (sync, upsert-only, create-only) and `spec.cleanupPolicy`.
 
 When using `tunnelRef`, credentials are inherited from the referenced [CloudflareTunnel](cloudflare-tunnel.md). When using `externalTarget`, the `cloudflare` field must be provided explicitly.
 
@@ -40,14 +40,14 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.source.explicit[].ttl` | `int32` | `1` | No | DNS record TTL in seconds. `1` = auto (Cloudflare-managed, typically 300s). Explicit range: 60-86400. |
 | `spec.defaults.proxied` | `bool` | `true` | No | Default Cloudflare proxy setting for all records. |
 | `spec.defaults.ttl` | `int32` | `1` | No | Default DNS record TTL. `1` = auto. Explicit range: 60-86400. |
-| `spec.ownership.ownerId` | `string` | *(namespace/name of the CloudflareDNS resource)* | No | Cluster/installation identifier for TXT ownership records. Max 253 chars. Pattern: `^[a-z0-9]([-a-z0-9]*[a-z0-9])?(/[a-z0-9]([-a-z0-9]*[a-z0-9])?)?$`. |
+| `spec.ownership.ownerId` | `string` | — | No | Deprecated legacy hint; cannot override `status.ownerId` or authorize adoption. Retained in the schema for compatibility. |
 | `spec.ownership.txtRecord.enabled` | `*bool` | `true` (nil defaults to true) | No | Enables TXT record-based ownership tracking. |
 | `spec.ownership.txtRecord.prefix` | `string` | `_cfgate` | No | Prefix for TXT record names. Max 63 chars. |
-| `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller always writes a fixed comment. Schema removal is deferred to a future cleanup. |
-| `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller always uses `"managed by cfgate"`. Schema removal is deferred to a future cleanup. |
+| `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes an exact owner marker. Schema removal is deferred to a future cleanup. |
+| `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes `heritage=cfgate,cfgate/owner=<owner-id>`. Schema removal is deferred to a future cleanup. |
 | `spec.cleanupPolicy.deleteOnRouteRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the source route is deleted. |
 | `spec.cleanupPolicy.deleteOnResourceRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the CloudflareDNS resource itself is deleted (finalizer cleanup). |
-| `spec.cleanupPolicy.onlyManaged` | `*bool` | `true` (nil defaults to true) | No | Only delete records that were created by cfgate, verified via ownership tracking. |
+| `spec.cleanupPolicy.onlyManaged` | `*bool` | `true` (nil defaults to true) | No | Retained for compatibility; ownership checks always apply, including when false. |
 | `spec.cloudflare.accountId` | `string` | *none* | No | Cloudflare Account ID. Required when using `externalTarget`. Inherited from tunnel when using `tunnelRef`. Max 32 chars. |
 | `spec.cloudflare.accountName` | `string` | *none* | No | Cloudflare Account name (resolved via API). Max 255 chars. |
 | `spec.cloudflare.secretRef.name` | `string` | *none* | Yes (if cloudflare set) | Name of the credentials Secret. 1-253 chars. |
@@ -198,24 +198,17 @@ spec:
 
 ### `spec.ownership`
 
-Configures ownership tracking to identify which cfgate installation created each DNS record. This is critical for safe multi-cluster deployments.
+Ownership uses `status.ownerId = <installation namespace UID>/<CloudflareDNS UID>`, persisted before external writes. The manager obtains its installation namespace from `POD_NAMESPACE` or `--installation-namespace`; out-of-cluster development must supply that flag. Renames/recreations cannot reuse an old resource identity. Deleting and recreating the installation namespace changes its identity and requires an explicit migration.
 
-**TXT record ownership (recommended):** Creates companion TXT records with the format:
-```
-heritage=cfgate,cfgate/owner=<owner-id>,cfgate/resource=cloudflaredns/<namespace>/<name>
-```
-This pattern is compatible with external-dns. The TXT record name is `{prefix}.{hostname}` (e.g., `_cfgate.app.example.com`).
+Data comments contain `heritage=cfgate,cfgate/owner=<owner-id>`. Companion TXT content also includes `cfgate/resource=cloudflaredns/<namespace>/<name>`; the default name is `_cfgate.<hostname>`. The default is to create and verify both markers. Disabling TXT creation does not disable data ownership checks or permit existing foreign TXT claims.
 
-**Comment ownership (compatibility only):** The controller writes a fixed `"managed by cfgate"` comment on all managed DNS records. This is informational only and is not used for ownership verification or conflict detection. TXT record ownership is the sole mechanism for multi-cluster safety.
+`spec.ownership.ownerId` is a deprecated legacy hint; it no longer overrides resource identity. The deprecated comment configuration is also ignored. A cosmetic `managed by cfgate` comment is not ownership evidence. Foreign or ambiguous TXT records, foreign data markers, and unmarked existing records block synchronization. `cfgate.io/adopt-existing: "true"` permits explicitly inspected, unmarked legacy data only; it never overwrites a foreign owner.
 
-> **Deprecation notice (`v0.1.0-alpha.13`):** The `spec.ownership.comment.enabled` and `spec.ownership.comment.template` fields are deprecated and ignored. The controller always writes `"managed by cfgate"` regardless of these values. The fields remain in the schema for compatibility, and schema removal is deferred to a future cleanup pass. Removing the `comment` section from `spec.ownership` produces no behavioral change.
-
-**`ownerId`:** Identifies this installation. Defaults to `{namespace}/{name}` of the CloudflareDNS resource. Override this when you need explicit control over the identity (e.g., migrating between CloudflareDNS resources).
+Fresh reads detect observable competing claims before writes and deletes. Cloudflare provides no conditional DNS mutation here; a read is not a distributed lock. Coordinate writers across clusters and installations. See [authorization and ownership migration](authorization-and-ownership.md) before upgrading legacy resources.
 
 ```yaml
 spec:
   ownership:
-    ownerId: "production/main-dns"
     txtRecord:
       enabled: true
       prefix: "_cfgate"
@@ -229,7 +222,7 @@ Controls what happens to DNS records when they are no longer needed. All fields 
 |-------|---------|-------------|
 | `deleteOnRouteRemoval` | `true` | Delete the DNS record when the source Gateway API route is deleted. |
 | `deleteOnResourceRemoval` | `true` | Delete all managed DNS records when the CloudflareDNS resource itself is deleted (finalizer-driven). |
-| `onlyManaged` | `true` | Only delete records that were created by this cfgate installation, verified via ownership tracking. Protects records created externally or by other installations. |
+| `onlyManaged` | `true` | Compatibility field; false does not bypass exact ownership verification. |
 
 ```yaml
 spec:
@@ -262,6 +255,7 @@ spec:
 |-------|------|-------------|
 | `status.syncedRecords` | `int32` | Number of DNS records successfully synchronized. |
 | `status.pendingRecords` | `int32` | Number of DNS records awaiting synchronization. |
+| `status.ownerId` | `string` | Persisted installation namespace UID/resource UID; used for cleanup. |
 | `status.failedRecords` | `int32` | Number of DNS records that failed to sync. |
 | `status.records[]` | `[]DNSRecordSyncStatus` | Per-record sync status (see below). Max 1000 entries. |
 | `status.records[].hostname` | `string` | DNS hostname of the record. |
@@ -269,7 +263,7 @@ spec:
 | `status.records[].target` | `string` | Record target/content value. |
 | `status.records[].proxied` | `bool` | Whether Cloudflare proxy is enabled for this record. |
 | `status.records[].ttl` | `int32` | Record TTL in seconds. |
-| `status.records[].status` | `string` | Sync status: `Synced`, `Pending`, or `Failed`. |
+| `status.records[].status` | `string` | Sync status: `Synced`, `Pending`, `Skipped`, or `Failed`. |
 | `status.records[].recordId` | `string` | Cloudflare DNS record ID. |
 | `status.records[].zoneId` | `string` | Cloudflare zone ID where the record was created. |
 | `status.records[].error` | `string` | Error message when status is `Failed`. |
@@ -391,7 +385,6 @@ spec:
     ttl: 1
   policy: sync
   ownership:
-    ownerId: "cluster-west/team-a-dns"
     txtRecord:
       enabled: true
   cleanupPolicy:

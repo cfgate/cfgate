@@ -102,17 +102,21 @@ func TestBuildArgs(t *testing.T) {
 		}
 	})
 
-	t.Run("metrics disabled omits metrics arg", func(t *testing.T) {
+	t.Run("metrics disabled retains health listener", func(t *testing.T) {
 		disabled := false
 		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
 			t.Spec.Cloudflared.Metrics.Enabled = &disabled
 		})
 		args := buildArgs(tunnel)
 
+		found := false
 		for _, arg := range args {
 			if arg == "--metrics" {
-				t.Errorf("args should not contain metrics when disabled, got %v", args)
+				found = true
 			}
+		}
+		if !found {
+			t.Fatalf("health listener missing: %v", args)
 		}
 	})
 
@@ -304,7 +308,7 @@ func TestBuildDeployment(t *testing.T) {
 		}
 	})
 
-	t.Run("metrics disabled omits probes", func(t *testing.T) {
+	t.Run("metrics disabled retains probes", func(t *testing.T) {
 		disabled := false
 		tunnel := newDeploymentTestTunnel("test", func(t *cfgatev1alpha1.CloudflareTunnel) {
 			t.Spec.Cloudflared.Metrics.Enabled = &disabled
@@ -312,8 +316,8 @@ func TestBuildDeployment(t *testing.T) {
 		deployment := builder.BuildDeployment(tunnel, "token-value")
 		container := deployment.Spec.Template.Spec.Containers[0]
 
-		if container.LivenessProbe != nil || container.ReadinessProbe != nil {
-			t.Fatalf("probes = (%+v, %+v), want nil", container.LivenessProbe, container.ReadinessProbe)
+		if container.LivenessProbe == nil || container.ReadinessProbe == nil {
+			t.Fatalf("probes = (%+v, %+v), want process and connector probes", container.LivenessProbe, container.ReadinessProbe)
 		}
 	})
 
@@ -1036,4 +1040,11 @@ func TestBuildArgsExtended(t *testing.T) {
 			t.Errorf("extra args (index %d) should appear before run (index %d)", extraIdx, runIdx)
 		}
 	})
+}
+
+func TestConnectorDoesNotMountKubernetesCredentials(t *testing.T) {
+	deployment := NewBuilder().BuildDeployment(newDeploymentTestTunnel("edge"), "token")
+	if v := deployment.Spec.Template.Spec.AutomountServiceAccountToken; v == nil || *v {
+		t.Fatal("connector can inherit Kubernetes credentials")
+	}
 }

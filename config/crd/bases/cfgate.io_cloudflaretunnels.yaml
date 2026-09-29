@@ -134,7 +134,7 @@ spec:
                     maxItems: 20
                     type: array
                   image:
-                    default: ghcr.io/inherent-design/cloudflared:2026.5.0-h2c.1
+                    default: ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1
                     description: Image is the cloudflared container image.
                     maxLength: 255
                     type: string
@@ -152,7 +152,9 @@ spec:
                     properties:
                       enabled:
                         default: true
-                        description: Enabled enables the metrics endpoint.
+                        description: Enabled declares the metrics container port for
+                          scraping. Health probes and their shared listener remain
+                          enabled.
                         type: boolean
                       port:
                         default: 44483
@@ -460,10 +462,21 @@ spec:
                   to this tunnel.
                 format: int32
                 type: integer
+              lastFullReconcileTime:
+                description: |-
+                  LastFullReconcileTime is the last successful credentials, tunnel, deployment, and configuration reconciliation.
+                  Configuration-only reconciliations do not advance this timestamp.
+                format: date-time
+                type: string
               lastSyncTime:
                 description: LastSyncTime is the last time the configuration was synced
                   to Cloudflare.
                 format: date-time
+                type: string
+              lifecycleDependencyHash:
+                description: |-
+                  LifecycleDependencyHash identifies the Secret revisions and Deployment generation checked during the last full reconciliation.
+                  It contains no Secret data.
                 type: string
               observedGeneration:
                 description: ObservedGeneration is the generation observed by the

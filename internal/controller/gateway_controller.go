@@ -158,7 +158,7 @@ func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findGatewaysForHTTPRoute),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		Complete(r)
+		Complete(withReconcileProgress("gateway", r))
 }
 
 // isOurGatewayClass checks if the Gateway's GatewayClass is managed by cfgate.
@@ -187,6 +187,10 @@ func (r *GatewayReconciler) resolveTunnelRef(ctx context.Context, gateway *gwapi
 	namespace, name, err := annotations.ParseNamespacedName(tunnelRef, gateway.Namespace)
 	if err != nil {
 		return nil, fmt.Errorf("invalid tunnel reference %q: %w", tunnelRef, err)
+	}
+
+	if err := requireReferenceGrant(ctx, r.Client, gateway.Namespace, gwapiv1.GroupName, "Gateway", namespace, "cfgate.io", "CloudflareTunnel", name); err != nil {
+		return nil, err
 	}
 
 	var tunnel cfgatev1alpha1.CloudflareTunnel
@@ -490,5 +494,5 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&gwapiv1.GatewayClass{},
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		Complete(r)
+		Complete(withReconcileProgress("gatewayclass", r))
 }

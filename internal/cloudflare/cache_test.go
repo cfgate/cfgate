@@ -61,7 +61,7 @@ func TestCacheKey(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := testSecret(tt.uid, tt.version)
-			if got := cacheKey(s); got != tt.want {
+			if got := cacheKey(s); got != fmt.Sprintf("%s:%s:%d:%d:%d", tt.want, DefaultAPITokenKey, DefaultClientSettings().AttemptTimeout, DefaultClientSettings().MaxIngressRules, DefaultClientSettings().MaxConfigurationBytes) {
 				t.Errorf("cacheKey() = %q, want %q", got, tt.want)
 			}
 		})

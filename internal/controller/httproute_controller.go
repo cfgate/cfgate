@@ -10,7 +10,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
@@ -22,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
-	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/controller/annotations"
@@ -202,7 +200,7 @@ func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findRoutesForAccessPolicy),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		Complete(r)
+		Complete(withReconcileProgress("httproute", r))
 }
 
 // findRoutesForGateway returns HTTPRoutes that reference the given Gateway.
@@ -394,6 +392,7 @@ func (r *HTTPRouteReconciler) validateParentRef(
 			Namespace:   &parentNS,
 			Name:        ref.Name,
 			SectionName: ref.SectionName,
+			Port:        ref.Port,
 		},
 		ControllerName: GatewayControllerName,
 		Conditions: []metav1.Condition{
@@ -429,6 +428,7 @@ func (r *HTTPRouteReconciler) validateParentRef(
 			return parentStatus
 		}
 		log.Error(err, "failed to get Gateway")
+		parentStatus.Conditions[0] = status.NewCondition(string(gwapiv1.RouteConditionAccepted), metav1.ConditionUnknown, status.ReasonNoMatchingParent, "Gateway lookup failed", route.Generation)
 		return parentStatus
 	}
 
@@ -468,6 +468,15 @@ func (r *HTTPRouteReconciler) validateParentRef(
 		return parentStatus
 	}
 
+	tunnelNS, tunnelName, parseErr := annotations.ParseNamespacedName(annotations.GetAnnotation(&gateway, annotations.AnnotationTunnelRef), gateway.Namespace)
+	if parseErr != nil {
+		parentStatus.Conditions[0] = status.NewCondition(string(gwapiv1.RouteConditionAccepted), metav1.ConditionFalse, status.ReasonNoTunnelRef, parseErr.Error(), route.Generation)
+		return parentStatus
+	}
+	if err := requireReferenceGrant(ctx, r.Client, gateway.Namespace, gwapiv1.GroupName, "Gateway", tunnelNS, "cfgate.io", "CloudflareTunnel", tunnelName); err != nil {
+		parentStatus.Conditions[0] = status.NewCondition(string(gwapiv1.RouteConditionAccepted), metav1.ConditionFalse, status.ReasonRefNotPermitted, err.Error(), route.Generation)
+		return parentStatus
+	}
 	listenerOK, reason, message := r.routeAllowedByListeners(ctx, route, &gateway, ref)
 	if !listenerOK {
 		parentStatus.Conditions[0] = status.NewCondition(
@@ -480,7 +489,7 @@ func (r *HTTPRouteReconciler) validateParentRef(
 		return parentStatus
 	}
 
-	if err := validateCloudflaredPathMatches(route); err != nil {
+	if err := validateHTTPRouteFeatures(route); err != nil {
 		parentStatus.Conditions[0] = status.NewCondition(
 			string(gwapiv1.RouteConditionAccepted),
 			metav1.ConditionFalse,
@@ -496,108 +505,9 @@ func (r *HTTPRouteReconciler) validateParentRef(
 
 // resolveBackends resolves backend Service references.
 // Returns a ResolvedRefs condition indicating success or failure.
-func (r *HTTPRouteReconciler) resolveBackends(
-	ctx context.Context,
-	route *gwapiv1.HTTPRoute,
-) metav1.Condition {
-	log := log.FromContext(ctx)
-
-	for _, rule := range route.Spec.Rules {
-		if len(rule.BackendRefs) > 1 {
-			return status.NewCondition(
-				string(gwapiv1.RouteConditionResolvedRefs),
-				metav1.ConditionFalse,
-				status.ReasonUnsupportedValue,
-				"multiple backendRefs are not supported by cfgate tunnel ingress",
-				route.Generation,
-			)
-		}
-
-		for _, backend := range rule.BackendRefs {
-			if backend.Group != nil && *backend.Group != "" && *backend.Group != "core" {
-				return status.NewCondition(
-					string(gwapiv1.RouteConditionResolvedRefs),
-					metav1.ConditionFalse,
-					status.ReasonUnsupportedValue,
-					fmt.Sprintf("unsupported backend group %q: only core Service backends are supported by cfgate tunnel ingress", *backend.Group),
-					route.Generation,
-				)
-			}
-			if backend.Kind != nil && *backend.Kind != "" && *backend.Kind != "Service" {
-				return status.NewCondition(
-					string(gwapiv1.RouteConditionResolvedRefs),
-					metav1.ConditionFalse,
-					status.ReasonUnsupportedValue,
-					fmt.Sprintf("unsupported backend kind %q: only Service backends are supported by cfgate tunnel ingress", *backend.Kind),
-					route.Generation,
-				)
-			}
-
-			// Get the Service
-			namespace := route.Namespace
-			if backend.Namespace != nil {
-				namespace = string(*backend.Namespace)
-			}
-
-			if namespace != route.Namespace {
-				permitted, err := r.backendReferencePermitted(ctx, route.Namespace, namespace, string(backend.Name))
-				if err != nil {
-					return status.NewCondition(
-						string(gwapiv1.RouteConditionResolvedRefs),
-						metav1.ConditionFalse,
-						status.ReasonRefNotPermitted,
-						fmt.Sprintf("Failed to check ReferenceGrant for Service %s/%s: %v", namespace, backend.Name, err),
-						route.Generation,
-					)
-				}
-				if !permitted {
-					return status.NewCondition(
-						string(gwapiv1.RouteConditionResolvedRefs),
-						metav1.ConditionFalse,
-						status.ReasonRefNotPermitted,
-						fmt.Sprintf("Service %s/%s is not permitted by ReferenceGrant", namespace, backend.Name),
-						route.Generation,
-					)
-				}
-			}
-
-			var svc corev1.Service
-			if err := r.Get(ctx, types.NamespacedName{
-				Name:      string(backend.Name),
-				Namespace: namespace,
-			}, &svc); err != nil {
-				if apierrors.IsNotFound(err) {
-					log.Info("backend Service not found",
-						"service", backend.Name,
-						"namespace", namespace,
-					)
-					return status.NewCondition(
-						string(gwapiv1.RouteConditionResolvedRefs),
-						metav1.ConditionFalse,
-						status.ReasonBackendNotFound,
-						fmt.Sprintf("Service %s/%s not found", namespace, backend.Name),
-						route.Generation,
-					)
-				}
-				log.Error(err, "failed to get Service")
-				return status.NewCondition(
-					string(gwapiv1.RouteConditionResolvedRefs),
-					metav1.ConditionFalse,
-					status.ReasonBackendNotFound,
-					fmt.Sprintf("Failed to get Service %s/%s: %v", namespace, backend.Name, err),
-					route.Generation,
-				)
-			}
-		}
-	}
-
-	return status.NewCondition(
-		string(gwapiv1.RouteConditionResolvedRefs),
-		metav1.ConditionTrue,
-		"ResolvedRefs",
-		"All backend references resolved",
-		route.Generation,
-	)
+func (r *HTTPRouteReconciler) resolveBackends(ctx context.Context, route *gwapiv1.HTTPRoute) metav1.Condition {
+	condition, _ := validateHTTPRouteBackendRefs(ctx, r.Client, route)
+	return condition
 }
 
 // resolveAccessPolicy resolves the referenced CloudflareAccessPolicy.
@@ -714,7 +624,7 @@ func (r *HTTPRouteReconciler) routeAllowedByListeners(
 	foundListener := false
 	hostnameMismatch := false
 	for _, listener := range gateway.Spec.Listeners {
-		if ref.SectionName != nil && listener.Name != *ref.SectionName {
+		if (ref.SectionName != nil && listener.Name != *ref.SectionName) || (ref.Port != nil && listener.Port != *ref.Port) {
 			continue
 		}
 		foundListener = true
@@ -777,40 +687,9 @@ func listenerAllowsHTTPRouteKind(listener gwapiv1.Listener) bool {
 	return false
 }
 
-func (r *HTTPRouteReconciler) listenerAllowsRouteNamespace(
-	ctx context.Context,
-	route *gwapiv1.HTTPRoute,
-	gateway *gwapiv1.Gateway,
-	listener gwapiv1.Listener,
-) bool {
-	from := gwapiv1.NamespacesFromSame
-	var selector *metav1.LabelSelector
-	if listener.AllowedRoutes != nil && listener.AllowedRoutes.Namespaces != nil {
-		if listener.AllowedRoutes.Namespaces.From != nil {
-			from = *listener.AllowedRoutes.Namespaces.From
-		}
-		selector = listener.AllowedRoutes.Namespaces.Selector
-	}
-
-	switch from {
-	case gwapiv1.NamespacesFromAll:
-		return true
-	case gwapiv1.NamespacesFromSelector:
-		if selector == nil {
-			return false
-		}
-		labelSelector, err := metav1.LabelSelectorAsSelector(selector)
-		if err != nil {
-			return false
-		}
-		var ns corev1.Namespace
-		if err := r.Get(ctx, types.NamespacedName{Name: route.Namespace}, &ns); err != nil {
-			return false
-		}
-		return labelSelector.Matches(labels.Set(ns.Labels))
-	default:
-		return route.Namespace == gateway.Namespace
-	}
+func (r *HTTPRouteReconciler) listenerAllowsRouteNamespace(ctx context.Context, route *gwapiv1.HTTPRoute, gateway *gwapiv1.Gateway, listener gwapiv1.Listener) bool {
+	allowed, _ := listenerAllowsRouteNamespace(ctx, r.Client, route, gateway, listener)
+	return allowed
 }
 
 func listenerHostnameCompatible(route *gwapiv1.HTTPRoute, listener gwapiv1.Listener) bool {
@@ -832,8 +711,8 @@ func hostnameMatches(routeHostname, listenerHostname string) bool {
 	if routeHostname == listenerHostname {
 		return true
 	}
-	if strings.HasPrefix(listenerHostname, "*.") {
-		return wildcardHostnameMatches(routeHostname, listenerHostname)
+	if strings.HasPrefix(listenerHostname, "*.") && wildcardHostnameMatches(routeHostname, listenerHostname) {
+		return true
 	}
 	if strings.HasPrefix(routeHostname, "*.") {
 		return wildcardHostnameMatches(listenerHostname, routeHostname)
@@ -846,7 +725,6 @@ func wildcardHostnameMatches(hostname, wildcard string) bool {
 	prefix := strings.TrimSuffix(hostname, suffix)
 	return prefix != "" &&
 		prefix != hostname &&
-		!strings.Contains(prefix, ".") &&
 		strings.HasSuffix(hostname, suffix)
 }
 
@@ -869,33 +747,4 @@ func validateCloudflaredPathMatch(match gwapiv1.HTTPRouteMatch) error {
 	default:
 		return fmt.Errorf("unsupported path match type %q", matchType)
 	}
-}
-
-func (r *HTTPRouteReconciler) backendReferencePermitted(ctx context.Context, fromNamespace, toNamespace, serviceName string) (bool, error) {
-	var grants gwapiv1b1.ReferenceGrantList
-	if err := r.List(ctx, &grants, client.InNamespace(toNamespace)); err != nil {
-		return false, err
-	}
-
-	for _, grant := range grants.Items {
-		fromOK := false
-		for _, from := range grant.Spec.From {
-			if from.Group == gwapiv1.GroupName && from.Kind == "HTTPRoute" && string(from.Namespace) == fromNamespace {
-				fromOK = true
-				break
-			}
-		}
-		if !fromOK {
-			continue
-		}
-		for _, to := range grant.Spec.To {
-			if to.Group != "" || to.Kind != "Service" {
-				continue
-			}
-			if to.Name == nil || string(*to.Name) == serviceName {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
 }

@@ -1,24 +1,30 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"net/netip"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-logr/logr"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Import all auth plugins for exec-entrypoint
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -54,23 +60,27 @@ var (
 )
 
 type managerConfig struct {
-	MetricsAddr          string
-	ProbeAddr            string
-	EnableLeaderElection bool
-	SecureMetrics        bool
-	ZapOptions           zap.Options
+	ClusterDomain         string
+	InstallationNamespace string
+	ClientSettings        cfcloudflare.ClientSettings
+	MetricsAddr           string
+	ProbeAddr             string
+	EnableLeaderElection  bool
+	SecureMetrics         bool
+	ZapOptions            zap.Options
 }
 
 type managerRuntime struct {
 	setLogger           func(logr.Logger)
 	createManager       func(managerConfig) (manager.Manager, *rest.Config, error)
 	detectFeatures      func(*rest.Config) (*features.FeatureGates, error)
-	registerControllers func(manager.Manager, *features.FeatureGates) error
+	registerControllers func(manager.Manager, *features.FeatureGates, managerConfig) error
 	addProbeChecks      func(manager.Manager) error
 	startManager        func(manager.Manager) error
 }
 
 type probeCheckAdder interface {
+	GetCache() cache.Cache
 	AddHealthzCheck(string, healthz.Checker) error
 	AddReadyzCheck(string, healthz.Checker) error
 }
@@ -83,20 +93,25 @@ type cliExitError struct {
 
 var (
 	// Test hooks below are intentionally swappable in serial tests; do not use with t.Parallel().
-	setupTunnelController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache) error {
+	setupTunnelController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache, cfg managerConfig) error {
 		return (&controller.CloudflareTunnelReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflaretunnel-controller"),
-			CredentialCache: credCache,
+			ClusterDomain:         cfg.ClusterDomain,
+			InstallationNamespace: cfg.InstallationNamespace,
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflaretunnel-controller"),
+			CredentialCache:       credCache,
+			ClientSettings:        cfg.ClientSettings,
 		}).SetupWithManager(mgr)
 	}
-	setupDNSController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache) error {
+	setupDNSController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache, cfg managerConfig) error {
 		return (&controller.CloudflareDNSReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflaredns-controller"),
-			CredentialCache: credCache,
+			InstallationNamespace: cfg.InstallationNamespace,
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflaredns-controller"),
+			CredentialCache:       credCache,
+			ClientSettings:        cfg.ClientSettings,
 		}).SetupWithManager(mgr)
 	}
 	setupGatewayController = func(mgr manager.Manager) error {
@@ -119,22 +134,24 @@ var (
 			Recorder: mgr.GetEventRecorder("httproute-controller"),
 		}).SetupWithManager(mgr)
 	}
-	setupAccessPolicyController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache) error {
+	setupAccessPolicyController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache, cfg managerConfig) error {
 		return (&controller.CloudflareAccessPolicyReconciler{
 			Client:          mgr.GetClient(),
 			Scheme:          mgr.GetScheme(),
 			Recorder:        mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
 			FeatureGates:    featureGates,
 			CredentialCache: credCache,
+			ClientSettings:  cfg.ClientSettings,
 		}).SetupWithManager(mgr)
 	}
-	setupAccessApplicationController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache) error {
+	setupAccessApplicationController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache, cfg managerConfig) error {
 		return (&controller.CloudflareAccessApplicationReconciler{
 			Client:          mgr.GetClient(),
 			Scheme:          mgr.GetScheme(),
 			Recorder:        mgr.GetEventRecorder("cloudflareaccessapplication-controller"),
 			FeatureGates:    featureGates,
 			CredentialCache: credCache,
+			ClientSettings:  cfg.ClientSettings,
 		}).SetupWithManager(mgr)
 	}
 )
@@ -175,7 +192,9 @@ func defaultManagerRuntime() managerRuntime {
 			return mgr, kubeConfig, nil
 		},
 		detectFeatures: func(kubeConfig *rest.Config) (*features.FeatureGates, error) {
-			dc, err := discoveryClientForConfig(kubeConfig)
+			discoveryConfig := rest.CopyConfig(kubeConfig)
+			discoveryConfig.Timeout = 5 * time.Second
+			dc, err := discoveryClientForConfig(discoveryConfig)
 			if err != nil {
 				return nil, fmt.Errorf("unable to create discovery client: %w", err)
 			}
@@ -186,7 +205,9 @@ func defaultManagerRuntime() managerRuntime {
 			}
 			return featureGates, nil
 		},
-		registerControllers: registerControllers,
+		registerControllers: func(mgr manager.Manager, gates *features.FeatureGates, cfg managerConfig) error {
+			return registerControllers(mgr, gates, cfg)
+		},
 		addProbeChecks: func(mgr manager.Manager) error {
 			return addProbeChecks(mgr)
 		},
@@ -228,7 +249,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer, runtime ma
 	}
 	featureGates.LogFeatures(setupLog)
 
-	if err := runtime.registerControllers(mgr, featureGates); err != nil {
+	if err := runtime.registerControllers(mgr, featureGates, cfg); err != nil {
 		return err
 	}
 
@@ -267,8 +288,11 @@ func execute(args []string, getenv func(string) string, stderr io.Writer, runtim
 
 func parseManagerConfig(args []string, getenv func(string) string, stderr io.Writer) (managerConfig, error) {
 	cfg := managerConfig{
-		MetricsAddr: fmt.Sprintf(":%d", defaultMetricsPort),
-		ProbeAddr:   fmt.Sprintf(":%d", defaultHealthPort),
+		ClusterDomain: "cluster.local",
+
+		ClientSettings: cfcloudflare.DefaultClientSettings(),
+		MetricsAddr:    fmt.Sprintf(":%d", defaultMetricsPort),
+		ProbeAddr:      fmt.Sprintf(":%d", defaultHealthPort),
 		ZapOptions: zap.Options{
 			Development: false,
 		},
@@ -284,6 +308,11 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 		"Enable leader election for controller manager. Enabling this will ensure there is only one active controller manager.")
 	fs.BoolVar(&cfg.SecureMetrics, "metrics-secure", false,
 		"If set, the metrics endpoint is served securely via HTTPS.")
+	fs.StringVar(&cfg.ClusterDomain, "cluster-domain", cfg.ClusterDomain, "Kubernetes cluster DNS suffix for backend Service addresses.")
+	fs.StringVar(&cfg.InstallationNamespace, "installation-namespace", cfg.InstallationNamespace, "Operator namespace used for persistent DNS ownership; defaults to POD_NAMESPACE.")
+	fs.DurationVar(&cfg.ClientSettings.AttemptTimeout, "cloudflare-request-timeout", cfg.ClientSettings.AttemptTimeout, "Maximum duration of one Cloudflare API request attempt.")
+	fs.IntVar(&cfg.ClientSettings.MaxIngressRules, "max-ingress-rules", cfg.ClientSettings.MaxIngressRules, "Maximum ingress rules per tunnel configuration, including fallback.")
+	fs.IntVar(&cfg.ClientSettings.MaxConfigurationBytes, "max-configuration-bytes", cfg.ClientSettings.MaxConfigurationBytes, "Maximum serialized tunnel configuration size in bytes.")
 	cfg.ZapOptions.BindFlags(fs)
 
 	if err := fs.Parse(args); err != nil {
@@ -293,9 +322,11 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err, printed: true}
 	}
 
-	var metricsFlag, probeFlag bool
+	var metricsFlag, probeFlag, installationFlag bool
 	fs.Visit(func(f *flag.Flag) {
 		switch f.Name {
+		case "installation-namespace":
+			installationFlag = true
 		case "metrics-bind-address":
 			metricsFlag = true
 		case "health-probe-bind-address":
@@ -317,6 +348,21 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 		cfg.ProbeAddr = fmt.Sprintf(":%d", port)
 	}
 
+	if !installationFlag {
+		cfg.InstallationNamespace = getenv("POD_NAMESPACE")
+	}
+	cfg.ClusterDomain = strings.TrimSuffix(cfg.ClusterDomain, ".")
+	if problems := validation.IsDNS1123Subdomain(cfg.ClusterDomain); len(problems) > 0 {
+		return managerConfig{}, cliExitError{code: exitCodeUsage, err: fmt.Errorf("invalid cluster-domain: %s", strings.Join(problems, ", "))}
+	}
+	if cfg.InstallationNamespace != "" {
+		if problems := validation.IsDNS1123Label(cfg.InstallationNamespace); len(problems) > 0 {
+			return managerConfig{}, cliExitError{code: exitCodeUsage, err: fmt.Errorf("invalid installation-namespace: %s", strings.Join(problems, ", "))}
+		}
+	}
+	if err := cfcloudflare.ValidateClientSettings(cfg.ClientSettings); err != nil {
+		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
+	}
 	return cfg, nil
 }
 
@@ -346,7 +392,8 @@ func parsePortEnv(getenv func(string) string, key string, fallback int) (int, er
 
 func buildManagerOptions(cfg managerConfig) ctrl.Options {
 	return ctrl.Options{
-		Scheme: scheme,
+		Scheme:     scheme,
+		Controller: controllerconfig.Controller{ReconciliationTimeout: 2 * time.Minute},
 		Metrics: metricsserver.Options{
 			BindAddress:   cfg.MetricsAddr,
 			SecureServing: cfg.SecureMetrics,
@@ -357,14 +404,18 @@ func buildManagerOptions(cfg managerConfig) ctrl.Options {
 	}
 }
 
-func registerControllers(mgr manager.Manager, featureGates *features.FeatureGates) error {
+func registerControllers(mgr manager.Manager, featureGates *features.FeatureGates, configs ...managerConfig) error {
+	cfg := managerConfig{ClusterDomain: "cluster.local", ClientSettings: cfcloudflare.DefaultClientSettings()}
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
 	credCache := cfcloudflare.NewCredentialCache(0)
 
-	if err := setupTunnelController(mgr, credCache); err != nil {
+	if err := setupTunnelController(mgr, credCache, cfg); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareTunnel: %w", err)
 	}
 
-	if err := setupDNSController(mgr, credCache); err != nil {
+	if err := setupDNSController(mgr, credCache, cfg); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareDNS: %w", err)
 	}
 
@@ -380,11 +431,11 @@ func registerControllers(mgr manager.Manager, featureGates *features.FeatureGate
 		return fmt.Errorf("unable to create controller HTTPRoute: %w", err)
 	}
 
-	if err := setupAccessPolicyController(mgr, featureGates, credCache); err != nil {
+	if err := setupAccessPolicyController(mgr, featureGates, credCache, cfg); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareAccessPolicy: %w", err)
 	}
 
-	if err := setupAccessApplicationController(mgr, featureGates, credCache); err != nil {
+	if err := setupAccessApplicationController(mgr, featureGates, credCache, cfg); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareAccessApplication: %w", err)
 	}
 
@@ -396,7 +447,7 @@ func addProbeChecks(mgr probeCheckAdder) error {
 		return fmt.Errorf("unable to set up health check: %w", err)
 	}
 
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", cacheReadyCheck(mgr.GetCache().WaitForCacheSync)); err != nil {
 		return fmt.Errorf("unable to set up ready check: %w", err)
 	}
 
@@ -405,4 +456,15 @@ func addProbeChecks(mgr probeCheckAdder) error {
 
 func discoveryClientForConfig(kubeConfig *rest.Config) (discovery.DiscoveryInterface, error) {
 	return discovery.NewDiscoveryClientForConfig(kubeConfig)
+}
+
+func cacheReadyCheck(waitForSync func(context.Context) bool) healthz.Checker {
+	return func(req *http.Request) error {
+		ctx, cancel := context.WithTimeout(req.Context(), time.Second)
+		defer cancel()
+		if !waitForSync(ctx) {
+			return errors.New("controller cache has not synchronized")
+		}
+		return nil
+	}
 }

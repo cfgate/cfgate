@@ -1,9 +1,17 @@
 package features
 
 import (
+	"errors"
+	"fmt"
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/util/retry"
+	"net"
+	"time"
 )
 
 // Gateway API group constant.
@@ -24,47 +32,60 @@ const (
 	ReferenceGrantResource = "referencegrants"
 )
 
-// FeatureGates tracks which optional Gateway API CRDs are available.
-// CRD availability is detected once at startup and cached for the
-// controller lifetime (CRDs don't change at runtime in practice).
+// FeatureGates tracks optional Gateway API resources discovered at startup.
+// Restart the manager after installing or removing Gateway API CRDs.
 type FeatureGates struct {
 	// ReferenceGrantCRDExists indicates ReferenceGrant (v1beta1) is installed.
-	// Required for cross-namespace secret/service references.
 	ReferenceGrantCRDExists bool
 }
 
-// DetectFeatures checks for the existence of optional Gateway API CRDs
-// using the discovery client. Results are cached in FeatureGates.
-// Each CRD check is independent; detection failures disable that feature.
+// DetectFeatures validates required Gateway API resources and discovers optional ReferenceGrant support.
+// Transient discovery failures are retried; authorization and exhausted transient errors fail startup.
+// Configure a finite timeout on the discovery client's REST configuration.
 func DetectFeatures(dc discovery.DiscoveryInterface) (*FeatureGates, error) {
-	gates := &FeatureGates{}
-
-	// Check ReferenceGrant (standard channel)
-	gates.ReferenceGrantCRDExists = crdExists(dc, schema.GroupVersionResource{
-		Group:    GatewayAPIGroup,
-		Version:  V1Beta1,
-		Resource: ReferenceGrantResource,
-	})
-
-	return gates, nil
+	resources, err := discoverResources(dc, GatewayAPIGroup+"/v1")
+	if err != nil {
+		return nil, fmt.Errorf("required Gateway API v1 discovery failed: %w", err)
+	}
+	for _, required := range []string{"gatewayclasses", "gateways", "httproutes"} {
+		if !containsResource(resources, required) {
+			return nil, fmt.Errorf("required Gateway API resource %s is not installed", required)
+		}
+	}
+	resources, err = discoverResources(dc, GatewayAPIGroup+"/"+V1Beta1)
+	if apierrors.IsNotFound(err) {
+		return &FeatureGates{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("ReferenceGrant discovery failed: %w", err)
+	}
+	return &FeatureGates{ReferenceGrantCRDExists: containsResource(resources, ReferenceGrantResource)}, nil
 }
 
-// crdExists checks if a CRD is installed by attempting to list its resources.
-// Returns true if the resource exists, false otherwise.
-func crdExists(dc discovery.DiscoveryInterface, gvr schema.GroupVersionResource) bool {
-	resources, err := dc.ServerResourcesForGroupVersion(gvr.GroupVersion().String())
-	if err != nil {
-		// Group/version not found means CRD not installed
+func discoverResources(dc discovery.DiscoveryInterface, groupVersion string) (resources *metav1.APIResourceList, err error) {
+	err = retry.OnError(wait.Backoff{Duration: 100 * time.Millisecond, Factor: 2, Steps: 4}, func(err error) bool {
+		var networkError net.Error
+		return apierrors.IsTimeout(err) || apierrors.IsServerTimeout(err) || apierrors.IsTooManyRequests(err) || apierrors.IsServiceUnavailable(err) || errors.As(err, &networkError)
+	}, func() error { resources, err = dc.ServerResourcesForGroupVersion(groupVersion); return err })
+	return resources, err
+}
+
+func containsResource(resources *metav1.APIResourceList, name string) bool {
+	if resources == nil {
 		return false
 	}
-
-	// Verify the specific resource exists within the group
-	for _, r := range resources.APIResources {
-		if r.Name == gvr.Resource {
+	for _, resource := range resources.APIResources {
+		if resource.Name == name {
 			return true
 		}
 	}
 	return false
+}
+
+// crdExists is used by focused discovery tests; production detection preserves errors.
+func crdExists(dc discovery.DiscoveryInterface, gvr schema.GroupVersionResource) bool {
+	resources, err := discoverResources(dc, gvr.GroupVersion().String())
+	return err == nil && containsResource(resources, gvr.Resource)
 }
 
 // HasReferenceGrantSupport returns true if ReferenceGrant CRD is available.

@@ -2,12 +2,16 @@ package cloudflare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/go-logr/logr"
 	"golang.org/x/net/publicsuffix"
 )
+
+// ErrDNSRecordSkipped reports a desired update intentionally blocked by DNS policy.
+var ErrDNSRecordSkipped = errors.New("DNS record update skipped by policy")
 
 // Error code constants for DNS operations.
 const (
@@ -202,11 +206,6 @@ func (s *DNSService) SyncRecordWithPolicy(ctx context.Context, zoneID string, de
 		return existing, false, nil
 	}
 
-	if ownerID != "" && isLegacyCommentOwnership(existing) {
-		s.log.V(1).Info("record matched via legacy comment ownership, consider enabling TXT ownership for multi-cluster safety",
-			"name", existing.Name, "type", existing.Type)
-	}
-
 	if recordsMatch(existing, &desired) {
 		return existing, false, nil
 	}
@@ -300,9 +299,11 @@ func (s *DNSService) FindRecordByName(ctx context.Context, zoneID, name, recordT
 	var result *DNSRecord
 	for _, record := range records {
 		if record.Name == name && record.Type == recordType {
+			if result != nil {
+				return nil, fmt.Errorf("ambiguous DNS records for %s %s", name, recordType)
+			}
 			recordCopy := record
 			result = &recordCopy
-			break
 		}
 	}
 
@@ -313,83 +314,36 @@ func (s *DNSService) FindRecordByName(ctx context.Context, zoneID, name, recordT
 	return result, nil
 }
 
-// ListManagedRecords lists DNS records managed by cfgate for the given owner.
-// When ownershipPrefix is non-empty and ownerID is non-empty, non-TXT records
-// matched only by comment ("managed by cfgate") are cross-referenced against
-// TXT ownership records. If a TXT record exists for the hostname but belongs to
-// a different owner, the non-TXT record is excluded. This prevents one
-// CloudflareDNS resource's cleanup from deleting another resource's records.
+// ListManagedRecords returns records with an exact resource owner marker.
+// Foreign or ambiguous companion TXT records exclude both data and claim records.
 func (s *DNSService) ListManagedRecords(ctx context.Context, zoneID, ownerID, ownershipPrefix string) ([]DNSRecord, error) {
 	records, err := s.client.ListDNSRecords(ctx, zoneID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list DNS records: %w", err)
 	}
-
-	// Build TXT ownership index: hostname -> ownerID from all cfgate TXT records
-	// in the zone, regardless of owner. Used to cross-reference non-TXT records.
-	txtOwnerByHostname := make(map[string]string)
-	if ownerID != "" && ownershipPrefix != "" {
-		prefix := ownershipPrefix + "."
-		for _, record := range records {
-			if record.Type == "TXT" && strings.HasPrefix(record.Content, "heritage=cfgate") && strings.HasPrefix(record.Name, prefix) {
-				hostname := strings.TrimPrefix(record.Name, prefix)
-				meta, _ := ParseOwnershipRecord(record.Content)
-				if meta != nil && meta.OwnerID != "" {
-					txtOwnerByHostname[hostname] = meta.OwnerID
-				}
-			}
+	claims := make(map[string][]DNSRecord)
+	prefix := ownershipPrefix + "."
+	for _, record := range records {
+		if record.Type == "TXT" && ownershipPrefix != "" && strings.HasPrefix(record.Name, prefix) {
+			host := strings.TrimPrefix(record.Name, prefix)
+			claims[host] = append(claims[host], record)
 		}
 	}
-
 	var managed []DNSRecord
 	for _, record := range records {
-		if ownerID == "" {
-			if !IsOwnedByCfgate(&record, ownerID) {
-				continue
-			}
-			managed = append(managed, record)
+		if !IsOwnedByCfgate(&record, ownerID) {
 			continue
 		}
-
+		host := record.Name
 		if record.Type == "TXT" {
-			if !IsOwnedByCfgate(&record, ownerID) {
-				continue
-			}
-			managed = append(managed, record)
+			host = strings.TrimPrefix(host, prefix)
+		}
+		claim := claims[host]
+		if len(claim) > 1 || (len(claim) == 1 && !IsOwnedByCfgate(&claim[0], ownerID)) {
 			continue
 		}
-
-		if !isLegacyCommentOwnership(&record) {
-			if !IsOwnedByCfgate(&record, ownerID) {
-				continue
-			}
-			managed = append(managed, record)
-			continue
-		}
-
-		// Comment-only ownership is ambiguous in owner-scoped cleanup. Only
-		// include these records when there is a companion TXT ownership record
-		// proving the same owner.
-		txtOwner, hasTXT := txtOwnerByHostname[record.Name]
-		if !hasTXT {
-			s.log.V(1).Info("skipping comment-only managed record without companion TXT ownership",
-				"record", record.Name,
-				"requestedOwner", ownerID,
-			)
-			continue
-		}
-		if txtOwner != ownerID {
-			s.log.V(1).Info("skipping record owned by different resource",
-				"record", record.Name,
-				"txtOwner", txtOwner,
-				"requestedOwner", ownerID,
-			)
-			continue
-		}
-
 		managed = append(managed, record)
 	}
-
 	return managed, nil
 }
 
@@ -405,6 +359,9 @@ func (s *DNSService) CreateOwnershipRecord(ctx context.Context, zoneID string, p
 	}
 
 	if existing != nil {
+		if !IsOwnedByCfgate(existing, params.OwnerID) {
+			return fmt.Errorf("ownership conflict for %s", params.Hostname)
+		}
 		// Record exists - check if update needed
 		if existing.Content == record.Content && existing.Comment == record.Comment {
 			return nil // Already up to date
@@ -423,7 +380,14 @@ func (s *DNSService) CreateOwnershipRecord(ctx context.Context, zoneID string, p
 	if err != nil {
 		// Handle duplicate error (race condition)
 		if IsDuplicateRecordError(err) {
-			s.log.V(1).Info("ownership record created by another process", "hostname", params.Hostname)
+			fresh := NewDNSService(s.client, s.log)
+			found, readErr := fresh.FindRecordByName(ctx, zoneID, record.Name, "TXT")
+			if readErr != nil {
+				return readErr
+			}
+			if !IsOwnedByCfgate(found, params.OwnerID) {
+				return fmt.Errorf("ownership conflict for %s after concurrent create", params.Hostname)
+			}
 			return nil
 		}
 		return fmt.Errorf("failed to create ownership record: %w", err)
@@ -451,7 +415,8 @@ func (s *DNSService) DeleteOwnershipRecord(ctx context.Context, zoneID, hostname
 		return nil
 	}
 
-	return s.DeleteRecord(ctx, zoneID, record.ID)
+	_, err = s.DeleteOwnedRecord(ctx, zoneID, *record, ownerID, prefix)
+	return err
 }
 
 // ResolveZone resolves a zone name to a Zone.
@@ -536,48 +501,27 @@ func BuildOwnershipTXTRecord(hostname, ownerID, resource, prefix string) DNSReco
 	}
 }
 
-// IsOwnedByCfgate checks if a DNS record is managed by cfgate.
-// TXT ownership records (heritage=cfgate in Content) are the authoritative ownership
-// mechanism with ownerID verification for multi-cluster safety. When ownerID is provided,
-// the content is split on commas and the cfgate/owner field must match exactly to prevent
-// substring false-positives (e.g., "ns/foo" must not match "ns/foobar").
-// Comment-based detection ("managed by cfgate") is a cosmetic fallback that matches
-// any cfgate installation without owner discrimination.
+// IsOwnedByCfgate requires an exact nonempty owner marker in a data comment or
+// ownership TXT value. Cosmetic comments and unfiltered ownership are insufficient.
 func IsOwnedByCfgate(record *DNSRecord, ownerID string) bool {
-	if record == nil {
+	if record == nil || ownerID == "" {
 		return false
 	}
-
-	// TXT ownership record: heritage=cfgate with ownerID verification
-	if strings.HasPrefix(record.Content, "heritage=cfgate") {
-		if ownerID == "" {
-			return true
+	content := record.Comment
+	if record.Type == "TXT" {
+		content = record.Content
+	}
+	if !strings.HasPrefix(content, "heritage=cfgate,") {
+		return false
+	}
+	owners := 0
+	for _, field := range strings.Split(content, ",") {
+		if strings.HasPrefix(field, "cfgate/owner=") {
+			owners++
 		}
-		// Exact field match: split comma-delimited content and compare the full field.
-		ownerField := fmt.Sprintf("cfgate/owner=%s", ownerID)
-		for _, field := range strings.Split(record.Content, ",") {
-			if field == ownerField {
-				return true
-			}
-		}
-		return false
 	}
-
-	// Comment-based detection: cosmetic signal only, no owner verification.
-	// Any record with "managed by cfgate" in the comment is treated as ours.
-	// For multi-cluster owner discrimination, enable TXT ownership records.
-	return strings.Contains(record.Comment, "managed by cfgate")
-}
-
-// isLegacyCommentOwnership returns true if the record relies on comment-only
-// ownership (no companion TXT record). These records lack multi-cluster owner
-// discrimination. The warning in SyncRecordWithPolicy recommends enabling TXT ownership.
-func isLegacyCommentOwnership(record *DNSRecord) bool {
-	if record == nil {
-		return false
-	}
-	return !strings.HasPrefix(record.Content, "heritage=cfgate") &&
-		strings.Contains(record.Comment, "managed by cfgate")
+	metadata, err := ParseOwnershipRecord(content)
+	return owners == 1 && err == nil && metadata.OwnerID == ownerID
 }
 
 // ParseOwnershipRecord parses ownership metadata from TXT record content.
@@ -634,4 +578,95 @@ func IsRecordNotFoundError(err error) bool {
 		return true
 	}
 	return hasErrorCode(err, ErrCodeRecordNotFound)
+}
+
+// OwnershipComment identifies the installation and Kubernetes resource owning data records.
+func OwnershipComment(ownerID string) string { return "heritage=cfgate,cfgate/owner=" + ownerID }
+
+// SyncOwnedRecord checks both data and TXT ownership before mutation. The API does
+// not provide compare-and-swap, so these checks cannot act as a distributed lock.
+func (s *DNSService) SyncOwnedRecord(ctx context.Context, zoneID string, desired DNSRecord, ownerID, resource, prefix string, policy DNSPolicy, createTXT, adoptUnmarked bool) (*DNSRecord, bool, error) {
+	if ownerID == "" {
+		return nil, false, fmt.Errorf("persistent DNS owner identity is required")
+	}
+	fresh := NewDNSService(s.client, s.log)
+	existing, err := fresh.FindRecordByName(ctx, zoneID, desired.Name, desired.Type)
+	if err != nil {
+		return nil, false, err
+	}
+	txt, err := fresh.FindRecordByName(ctx, zoneID, prefix+"."+desired.Name, "TXT")
+	if err != nil {
+		return nil, false, err
+	}
+	if txt != nil && !IsOwnedByCfgate(txt, ownerID) {
+		return nil, false, fmt.Errorf("ownership conflict for %s", desired.Name)
+	}
+	if existing != nil && !IsOwnedByCfgate(existing, ownerID) {
+		if !adoptUnmarked || strings.Contains(existing.Comment, "cfgate/owner=") || strings.HasPrefix(existing.Content, "heritage=cfgate,") {
+			return nil, false, fmt.Errorf("unowned or foreign DNS record %s; explicit legacy adoption is required for unmarked records", desired.Name)
+		}
+		if !(&PolicyChecker{policy: policy}).AllowsUpdate() {
+			return nil, false, fmt.Errorf("DNS policy prevents adoption of %s", desired.Name)
+		}
+	}
+	desired.Comment = OwnershipComment(ownerID)
+	if existing != nil && IsOwnedByCfgate(existing, ownerID) && !recordsMatch(existing, &desired) && !(&PolicyChecker{policy: policy}).AllowsUpdate() {
+		return existing, false, ErrDNSRecordSkipped
+	}
+	if createTXT {
+		if err := fresh.CreateOwnershipRecord(ctx, zoneID, OwnershipParams{Hostname: desired.Name, OwnerID: ownerID, Resource: resource, Prefix: prefix}); err != nil {
+			return nil, false, err
+		}
+		claim, err := fresh.FindRecordByName(ctx, zoneID, prefix+"."+desired.Name, "TXT")
+		if err != nil {
+			return nil, false, err
+		}
+		if !IsOwnedByCfgate(claim, ownerID) {
+			return nil, false, fmt.Errorf("ownership conflict for %s after claiming", desired.Name)
+		}
+	}
+	// Recheck the actual data record after claiming; another process may have won creation.
+	current, err := fresh.FindRecordByName(ctx, zoneID, desired.Name, desired.Type)
+	if err != nil {
+		return nil, false, err
+	}
+	if current != nil && !IsOwnedByCfgate(current, ownerID) {
+		if existing == nil || current.ID != existing.ID || !recordsMatch(current, existing) || !adoptUnmarked || strings.Contains(current.Comment, "cfgate/owner=") {
+			return nil, false, fmt.Errorf("DNS ownership changed while claiming %s", desired.Name)
+		}
+		desired.Comment = OwnershipComment(ownerID)
+		return fresh.updateRecord(ctx, zoneID, current.ID, desired)
+	}
+	desired.Comment = OwnershipComment(ownerID)
+	record, changed, err := fresh.SyncRecordWithPolicy(ctx, zoneID, desired, ownerID, policy)
+	if err == nil && !IsOwnedByCfgate(record, ownerID) {
+		return nil, false, fmt.Errorf("DNS ownership changed during synchronization of %s", desired.Name)
+	}
+	return record, changed, err
+}
+
+// DeleteOwnedRecord rechecks the record identity and ownership immediately before deletion.
+// A changed or missing record is skipped; this is not an API compare-and-swap.
+func (s *DNSService) DeleteOwnedRecord(ctx context.Context, zoneID string, record DNSRecord, ownerID, ownershipPrefix string) (bool, error) {
+	fresh := NewDNSService(s.client, s.log)
+	current, err := fresh.FindRecordByName(ctx, zoneID, record.Name, record.Type)
+	if err != nil {
+		return false, err
+	}
+	if current == nil || current.ID != record.ID || !IsOwnedByCfgate(current, ownerID) {
+		return false, nil
+	}
+	if current.Type != "TXT" && ownershipPrefix != "" {
+		claim, err := fresh.FindRecordByName(ctx, zoneID, ownershipPrefix+"."+record.Name, "TXT")
+		if err != nil {
+			return false, err
+		}
+		if claim != nil && !IsOwnedByCfgate(claim, ownerID) {
+			return false, fmt.Errorf("foreign DNS ownership claim for %s", record.Name)
+		}
+	}
+	if err := s.DeleteRecord(ctx, zoneID, current.ID); err != nil {
+		return false, err
+	}
+	return true, nil
 }

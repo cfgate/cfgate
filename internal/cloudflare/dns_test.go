@@ -322,25 +322,25 @@ func TestIsOwnedByCfgate(t *testing.T) {
 		},
 		{
 			name:    "TXT heritage, no filter",
-			record:  &DNSRecord{Content: "heritage=cfgate,cfgate/owner=c1,cfgate/resource=hr/ns/r"},
+			record:  &DNSRecord{Type: "TXT", Content: "heritage=cfgate,cfgate/owner=c1,cfgate/resource=hr/ns/r"},
 			ownerID: "",
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "TXT heritage, matching owner",
-			record:  &DNSRecord{Content: "heritage=cfgate,cfgate/owner=cluster-a,cfgate/resource=x"},
+			record:  &DNSRecord{Type: "TXT", Content: "heritage=cfgate,cfgate/owner=cluster-a,cfgate/resource=x"},
 			ownerID: "cluster-a",
 			want:    true,
 		},
 		{
 			name:    "TXT heritage, non-matching owner",
-			record:  &DNSRecord{Content: "heritage=cfgate,cfgate/owner=cluster-b,cfgate/resource=x"},
+			record:  &DNSRecord{Type: "TXT", Content: "heritage=cfgate,cfgate/owner=cluster-b,cfgate/resource=x"},
 			ownerID: "cluster-a",
 			want:    false,
 		},
 		{
 			name:    "substring prevention",
-			record:  &DNSRecord{Content: "heritage=cfgate,cfgate/owner=ns/foobar,cfgate/resource=x"},
+			record:  &DNSRecord{Type: "TXT", Content: "heritage=cfgate,cfgate/owner=ns/foobar,cfgate/resource=x"},
 			ownerID: "ns/foo",
 			want:    false,
 		},
@@ -348,13 +348,13 @@ func TestIsOwnedByCfgate(t *testing.T) {
 			name:    "comment-only ownership",
 			record:  &DNSRecord{Content: "some-content", Comment: "managed by cfgate"},
 			ownerID: "",
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "comment-only ownership with ownerID",
 			record:  &DNSRecord{Content: "some-content", Comment: "managed by cfgate"},
 			ownerID: "cluster-a",
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "no ownership signals",
@@ -370,42 +370,21 @@ func TestIsOwnedByCfgate(t *testing.T) {
 		},
 		{
 			name:    "heritage without owner field, ownerID provided",
-			record:  &DNSRecord{Content: "heritage=cfgate"},
+			record:  &DNSRecord{Type: "TXT", Content: "heritage=cfgate"},
 			ownerID: "c1",
 			want:    false,
 		},
 		{
 			name:    "heritage without owner field, no filter",
-			record:  &DNSRecord{Content: "heritage=cfgate"},
+			record:  &DNSRecord{Type: "TXT", Content: "heritage=cfgate"},
 			ownerID: "",
-			want:    true,
+			want:    false,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := IsOwnedByCfgate(tt.record, tt.ownerID); got != tt.want {
 				t.Errorf("IsOwnedByCfgate() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestIsLegacyCommentOwnership(t *testing.T) {
-	tests := []struct {
-		name   string
-		record *DNSRecord
-		want   bool
-	}{
-		{"nil record", nil, false},
-		{"legacy comment ownership", &DNSRecord{Content: "cname.target", Comment: "managed by cfgate"}, true},
-		{"heritage record", &DNSRecord{Content: "heritage=cfgate,cfgate/owner=c1", Comment: "managed by cfgate"}, false},
-		{"no ownership", &DNSRecord{Content: "content", Comment: "some comment"}, false},
-		{"empty record", &DNSRecord{}, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := isLegacyCommentOwnership(tt.record); got != tt.want {
-				t.Errorf("isLegacyCommentOwnership() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -533,7 +512,7 @@ func TestListManagedRecords(t *testing.T) {
 		}
 	})
 
-	t.Run("includes comment-only record with matching companion txt", func(t *testing.T) {
+	t.Run("excludes comment-only data despite matching companion txt", func(t *testing.T) {
 		mock := NewMockClient()
 		mock.ListDNSRecordsFunc = func(context.Context, string) ([]DNSRecord, error) {
 			return []DNSRecord{
@@ -558,8 +537,8 @@ func TestListManagedRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ListManagedRecords() error = %v", err)
 		}
-		if len(records) != 2 {
-			t.Fatalf("len(ListManagedRecords()) = %d, want 2", len(records))
+		if len(records) != 1 || records[0].Type != "TXT" {
+			t.Fatalf("ListManagedRecords() = %+v, want only exact-owner TXT", records)
 		}
 	})
 

@@ -31,6 +31,7 @@ Key fields:
 |---|---|
 | `targetRef` / `targetRefs` | Gateway API `Gateway` or `HTTPRoute` targets. Exactly one of these fields is allowed. |
 | `cloudflareRef` | Optional credentials. If omitted, credentials are inherited from the target Gateway or from an HTTPRoute's cfgate Gateway parent (`cfgate.io/tunnel-ref`) through the CloudflareTunnel chain. With multiple targets, all targets must inherit the same Cloudflare account. Use explicit `spec.cloudflareRef` when binding targets that should share one account regardless of their Gateway/Tunnel chain. |
+| `cloudflareRef.secretKeys.apiToken` | Secret data key containing the API token. Defaults to `CLOUDFLARE_API_TOKEN`. Inherited credentials preserve the tunnel's `spec.cloudflare.secretKeys.apiToken` selection. |
 | `application` | Access Application settings shared by generated apps. `path` overrides derived target paths. |
 | `policyRefs` | Required reusable policies to attach. Omit `precedence` on every ref to use list order starting at `1`, or set `precedence` on every ref for custom ordering. Do not mix modes; explicit precedence values must be unique. Duplicate namespace/name pairs in one list are invalid. |
 
@@ -61,11 +62,12 @@ Cross-namespace target references require a `ReferenceGrant` in the target names
 | `applications[]` | Created Cloudflare app IDs, AUDs, domains, and target refs. |
 | `accountId` | Resolved Cloudflare account ID cached for cleanup. |
 | `credentialSecretRef` | Resolved credentials Secret cached for cleanup. Namespace is always stored explicitly. |
+| `credentialSecretKeys` | Selected credential data keys cached for cleanup; `apiToken` is stored explicitly. |
 | `attachedTargets` | Count of attached host/path targets. |
 | `ancestors[]` | Target attachment status. |
 | `observedGeneration` | Last reconciled generation. |
 
-Automatic Cloudflare cleanup uses the cached `accountId` and `credentialSecretRef` so target resources do not need to outlive the `CloudflareAccessApplication`. Cleanup deletes managed Access Applications and the per-resource owner tag; the shared `cfgate` tag is retained. The referenced Secret must still exist for cleanup; restore it or set `cfgate.io/deletion-policy=orphan` if credentials are intentionally removed first.
+Automatic Cloudflare cleanup uses the cached `accountId`, `credentialSecretRef`, and `credentialSecretKeys` so target resources do not need to outlive the `CloudflareAccessApplication`. Cleanup deletes managed Access Applications and the per-resource owner tag; the shared `cfgate` tag is retained. The referenced Secret must still exist for cleanup; restore it or set `cfgate.io/deletion-policy=orphan` if credentials are intentionally removed first.
 
 Conditions:
 
@@ -130,3 +132,5 @@ spec:
     - group: cfgate.io
       kind: CloudflareAccessPolicy
 ```
+
+Inherited credentials retain the Tunnel's Secret namespace, selected `secretKeys.apiToken`, and account. Cross-namespace inheritance requires explicit application-to-Tunnel and application-to-Secret grants, in addition to the owning Tunnel's Secret grant. Gateway-to-Tunnel references require their own grant. These checks apply during cleanup using persisted credential metadata. See [authorization and ownership](authorization-and-ownership.md).

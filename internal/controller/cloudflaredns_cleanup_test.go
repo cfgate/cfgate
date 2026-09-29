@@ -132,7 +132,7 @@ func TestCleanupRecordsWithFallbackUsesStatusInventory(t *testing.T) {
 				Name:    name,
 				Type:    recordType,
 				Content: "target.example.com",
-				Comment: "managed by cfgate",
+				Comment: cloudflare.OwnershipComment("installation/resource"),
 			}}, nil
 		case name == "_cfgate.mine.example.com" && recordType == "TXT":
 			return nil, nil
@@ -162,7 +162,7 @@ func TestCleanupRecordsWithFallbackUsesStatusInventory(t *testing.T) {
 				},
 			},
 		},
-		Status: cfgatev1alpha1.CloudflareDNSStatus{
+		Status: cfgatev1alpha1.CloudflareDNSStatus{OwnerID: "installation/resource",
 			Records: []cfgatev1alpha1.DNSRecordSyncStatus{{
 				Hostname: "mine.example.com",
 				Type:     "CNAME",
@@ -199,7 +199,7 @@ func TestCleanupRecordsWithFallbackSkipsFailedStatusRecordsWithoutMaterializedRe
 				Name:    name,
 				Type:    recordType,
 				Content: "target.example.com",
-				Comment: "managed by cfgate",
+				Comment: cloudflare.OwnershipComment("installation/resource"),
 			}}, nil
 		case name == "_cfgate.good.example.com" && recordType == "TXT":
 			return nil, nil
@@ -235,7 +235,7 @@ func TestCleanupRecordsWithFallbackSkipsFailedStatusRecordsWithoutMaterializedRe
 				},
 			},
 		},
-		Status: cfgatev1alpha1.CloudflareDNSStatus{
+		Status: cfgatev1alpha1.CloudflareDNSStatus{OwnerID: "installation/resource",
 			Records: []cfgatev1alpha1.DNSRecordSyncStatus{
 				{
 					Hostname: "good.example.com",
@@ -299,7 +299,7 @@ func TestReconcileDeleteSkipsCleanupWhenDeleteOnResourceRemovalFalse(t *testing.
 				DeleteOnResourceRemoval: &cleanupDisabled,
 			},
 		},
-		Status: cfgatev1alpha1.CloudflareDNSStatus{
+		Status: cfgatev1alpha1.CloudflareDNSStatus{OwnerID: "installation/resource",
 			Records: []cfgatev1alpha1.DNSRecordSyncStatus{{
 				Hostname: "app.example.com",
 				Type:     "CNAME",

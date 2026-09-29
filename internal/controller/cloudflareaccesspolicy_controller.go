@@ -40,6 +40,7 @@ const (
 
 // CloudflareAccessPolicyReconciler reconciles reusable Cloudflare Access policies.
 type CloudflareAccessPolicyReconciler struct {
+	ClientSettings cloudflare.ClientSettings
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -50,9 +51,10 @@ type CloudflareAccessPolicyReconciler struct {
 }
 
 type accessPolicyCredentials struct {
-	Service             *cloudflare.AccessService
-	AccountID           string
-	CredentialSecretRef *cfgatev1alpha1.SecretReference
+	Service              *cloudflare.AccessService
+	AccountID            string
+	CredentialSecretRef  *cfgatev1alpha1.SecretReference
+	CredentialSecretKeys cfgatev1alpha1.SecretKeys
 }
 
 // +kubebuilder:rbac:groups=cfgate.io,resources=cloudflareaccesspolicies,verbs=get;list;watch;create;update;patch;delete
@@ -99,6 +101,7 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 	policy.Status.AccountID = creds.AccountID
 	policy.Status.CredentialSecretRef = creds.CredentialSecretRef
+	policy.Status.CredentialSecretKeys = creds.CredentialSecretKeys
 	policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
 		status.NewCondition(status.ConditionTypeCredentialsValid, metav1.ConditionTrue,
 			status.ReasonCredentialsValid, "Credentials validated successfully.", policy.Generation),
@@ -200,8 +203,9 @@ func (r *CloudflareAccessPolicyReconciler) resolveCloudflareRefCredentials(ctx c
 		secretNamespace = *secretRef.Namespace
 	}
 	return &accessPolicyCredentials{
-		Service:   cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
-		AccountID: accountID,
+		Service:              cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
+		CredentialSecretKeys: cfgatev1alpha1.SecretKeys{APIToken: cloudflare.APITokenKey(secretRef.SecretKeys.APIToken)},
+		AccountID:            accountID,
 		CredentialSecretRef: &cfgatev1alpha1.SecretReference{
 			Name:      secretRef.Name,
 			Namespace: secretNamespace,
@@ -472,6 +476,9 @@ func (w *k8sSecretWriter) WriteSecret(ctx context.Context, name string, data map
 	if err != nil {
 		return err
 	}
+	if err := requireControllerOwner(existing, w.owner); err != nil {
+		return err
+	}
 	if err := controllerutil.SetControllerReference(w.owner, existing, w.scheme); err != nil {
 		var ownedErr *controllerutil.AlreadyOwnedError
 		if errors.As(err, &ownedErr) {
@@ -490,6 +497,9 @@ func (w *k8sSecretWriter) ServiceTokenSecretNeedsRefresh(ctx context.Context, _ 
 		return true, nil
 	}
 	if err != nil {
+		return false, err
+	}
+	if err := requireControllerOwner(&secret, w.owner); err != nil {
 		return false, err
 	}
 	storedClientID := secret.Data["CF_ACCESS_CLIENT_ID"]
@@ -536,9 +546,10 @@ func (r *CloudflareAccessPolicyReconciler) resolvePolicyDeletionCredentials(ctx 
 	if policy.Status.AccountID != "" && policy.Status.CredentialSecretRef != nil && policy.Status.CredentialSecretRef.Name != "" {
 		secretNamespace := policy.Status.CredentialSecretRef.Namespace
 		secretRef := cfgatev1alpha1.CloudflareSecretRef{
-			Name:      policy.Status.CredentialSecretRef.Name,
-			Namespace: &secretNamespace,
-			AccountID: policy.Status.AccountID,
+			Name:       policy.Status.CredentialSecretRef.Name,
+			SecretKeys: policy.Status.CredentialSecretKeys,
+			Namespace:  &secretNamespace,
+			AccountID:  policy.Status.AccountID,
 		}
 		creds, err := r.resolveCloudflareRefCredentials(ctx, policy.Namespace, &secretRef)
 		if err == nil {
@@ -609,7 +620,7 @@ func accessPolicyStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessPolicyStatus) 
 	if !reflect.DeepEqual(a.ServiceTokenIDs, b.ServiceTokenIDs) {
 		return false
 	}
-	if !reflect.DeepEqual(a.CredentialSecretRef, b.CredentialSecretRef) {
+	if a.CredentialSecretKeys != b.CredentialSecretKeys || !reflect.DeepEqual(a.CredentialSecretRef, b.CredentialSecretRef) {
 		return false
 	}
 	return conditionsEqual(a.Conditions, b.Conditions)
@@ -636,24 +647,14 @@ func (r *CloudflareAccessPolicyReconciler) getCloudflareClient(ctx context.Conte
 	if secretRef.Namespace != nil && *secretRef.Namespace != "" {
 		secretNamespace = *secretRef.Namespace
 	}
+	if err := requireCredentialGrant(ctx, r.Client, policyNamespace, "CloudflareAccessPolicy", secretNamespace, secretRef.Name); err != nil {
+		return nil, err
+	}
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: secretRef.Name, Namespace: secretNamespace}, secret); err != nil {
 		return nil, fmt.Errorf("failed to get credentials secret: %w", err)
 	}
-	if r.CredentialCache != nil {
-		return r.CredentialCache.GetOrCreate(ctx, secret, func() (cloudflare.Client, error) {
-			return r.createClientFromSecret(secret)
-		})
-	}
-	return r.createClientFromSecret(secret)
-}
-
-func (r *CloudflareAccessPolicyReconciler) createClientFromSecret(secret *corev1.Secret) (cloudflare.Client, error) {
-	token, ok := secret.Data["CLOUDFLARE_API_TOKEN"]
-	if !ok {
-		return nil, fmt.Errorf("API token key %q not found in secret", "CLOUDFLARE_API_TOKEN")
-	}
-	return cloudflare.NewClient(string(token))
+	return cloudflare.NewClientFromSecret(ctx, secret, secretRef.SecretKeys.APIToken, r.CredentialCache, r.ClientSettings)
 }
 
 func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -661,5 +662,5 @@ func (r *CloudflareAccessPolicyReconciler) SetupWithManager(mgr ctrl.Manager) er
 		WithOptions(ctrlcontroller.Options{MaxConcurrentReconciles: 4}).
 		For(&cfgatev1alpha1.CloudflareAccessPolicy{}, builder.WithPredicates(GenerationOrDeletionPredicate)).
 		Owns(&corev1.Secret{}).
-		Complete(r)
+		Complete(withReconcileProgress("cloudflareaccesspolicy", r))
 }

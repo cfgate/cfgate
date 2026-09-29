@@ -162,6 +162,7 @@ Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) is se
 
 | Document | Description |
 |----------|-------------|
+| [Authorization and ownership](docs/authorization-and-ownership.md) | Administrator/tenant boundaries, grants, and alpha.6 migration |
 | [Gateway API Primer](docs/gateway-api-primer.md) | Gateway API concepts for Ingress users |
 | [CloudflareTunnel](docs/cloudflare-tunnel.md) | Full CRD reference |
 | [CloudflareDNS](docs/cloudflare-dns.md) | Full CRD reference, annotationFilter, ownership |
