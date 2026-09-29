@@ -268,7 +268,7 @@ Eventually(func() error {
     if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(tunnel), &current); err != nil {
         return err
     }
-    current.Spec.Cloudflared.Image = "cloudflare/cloudflared:2026.3.0"
+    current.Spec.Cloudflared.Replicas = 2
     return k8sClient.Update(ctx, &current)
 }, DefaultTimeout, DefaultInterval).Should(Succeed())
 ```
@@ -319,7 +319,9 @@ The E2E suite includes release-critical checks for behavior that is easy to regr
 - CloudflareTunnel CEL validation rejects mutually exclusive `originDefaults.http2Origin` and `originDefaults.h2cOrigin`.
 - CloudflareTunnel deployment tests assert the default cloudflared image points at the inherent-design h2c fork.
 
-These checks cover control-plane config propagation. A public data-plane h2c smoke test is intentionally separate because it depends on DNS propagation and an externally reachable h2c backend.
+The `Maintenance external effects` specs additionally exercise grant revocation/restoration, annotation watches, remote drift repair, Access-required policy/application changes, a Secret-only connector rollout, missing Deployment repair, and deletion held by a nonterminal connector Pod. The h2c spec builds a disposable origin that reports its received protocol, publishes only a run-owned hostname, and verifies HTTP/2 at that origin. It requires Docker, kind, DNS propagation and live Cloudflare credentials. This establishes neither QUIC trailer support nor atomic edge protection.
+
+Suite-managed clusters use a dedicated kubeconfig and an immutable Kubernetes 1.37.0 node image. `E2E_KIND_NODE_IMAGE` may select another digest-pinned image for explicit compatibility testing. Existing-cluster mode requires both `KUBECONFIG` and `CLUSTER_NAME`; the suite compares the selected kind API address and certificate authority before installing resources. Cleanup deletes only the suite-owned cluster and temporary kubeconfig, preserving unrelated contexts.
 
 #### Resource Creators
 

@@ -50,12 +50,12 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 
 ### `spec.tunnel`
 
-Defines the tunnel identity. The controller uses the `name` field to look up or create the tunnel in Cloudflare. This is the core idempotent pathway: if a tunnel with the given name already exists in the account, the controller adopts it. If not, it creates a new one. The resolved tunnel ID is stored in `.status.tunnelId`.
+Defines the tunnel identity. The controller creates a tunnel when its name does not exist in the account. An existing unclaimed tunnel requires explicit `cfgate.io/adopt-existing: "true"` migration opt-in; a conflicting ownership claim is rejected. The resolved tunnel ID is stored in `.status.tunnelId`. See [authorization and ownership](authorization-and-ownership.md) for the installation-scoped claim and migration requirements.
 
 **Constraints:**
 - Name must be lowercase alphanumeric with hyphens (DNS subdomain-like pattern).
 - Max 63 characters.
-- Multiple CRs with the same tunnel name adopt the same Cloudflare tunnel.
+- A tunnel ownership claim admits one resource within the installation namespace; it is not a cross-cluster lock.
 
 ```yaml
 spec:
@@ -142,10 +142,10 @@ Users who do not need h2c can override the image to upstream:
 ```yaml
 spec:
   cloudflared:
-    image: cloudflare/cloudflared:2026.5.0
+    image: cloudflare/cloudflared:2026.9.3
 ```
 
-The upstream image is a no-h2c mode override only. The `h2cOrigin` field and `cfgate.io/origin-h2c` annotation require the cfgate fork image.
+The upstream image is a no-h2c mode override only. Selecting the known `cloudflare/cloudflared` Docker repository, including its Docker Hub aliases, replaces h2c forwarding matches with `http_status:503` and emits an `IncompatibleConnectorImage` warning event. Ordinary HTTP routes remain enabled. Global h2c defaults also block forwarding fallbacks. Restoring the fork image or removing the h2c configuration restores eligible forwarding. Custom images remain administrator-owned compatibility choices; their names do not prove h2c support.
 
 ### `spec.originDefaults`
 
@@ -338,7 +338,7 @@ kubectl annotate cloudflaretunnel my-tunnel -n cfgate-system \
 
 ## Runtime checks and cleanup
 
-The manager's `/healthz` checks process responsiveness. Its `/readyz` additionally waits for the controller cache to synchronize; neither endpoint tests Cloudflare or origin reachability. Connector `/healthcheck` and `/ready` distinguish process health from edge connectivity. Tunnel `Ready` additionally requires the current Deployment generation and all desired replicas to be ready and available. A partial token rollout remains unready until these conditions hold.
+The manager's `/healthz` checks process responsiveness. Its `/readyz` additionally waits for the controller cache to synchronize; neither endpoint tests Cloudflare or origin reachability. Connector `/healthcheck` and `/ready` distinguish process health from edge connectivity. Tunnel `Ready` additionally requires the current Deployment generation, exactly the desired total and updated replicas, and all desired replicas to be ready and available. Old healthy replicas or extra surge replicas do not establish completion of the current template rollout. A partial token rollout remains unready until these conditions hold.
 
 Connector token changes update the managed Secret before changing a controlled Pod-template revision annotation. The annotation contains only the Secret UID and resource version. An unchanged token does not restart Pods; a failed Secret write does not start a rollout.
 

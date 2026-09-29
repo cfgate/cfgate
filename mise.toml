@@ -205,6 +205,7 @@ cleanup() {
 trap cleanup EXIT
 if [ "$E2E_USE_EXISTING_CLUSTER" = "true" ]; then
   : "${CLUSTER_NAME:?Set CLUSTER_NAME to an explicitly selected disposable kind cluster}"
+  export KUBECONFIG="${KUBECONFIG:-${HOME}/.kube/config}"
   target_context="kind-${CLUSTER_NAME}"
   current_context="$(kubectl config current-context 2>/dev/null || true)"
   if ! kubectl config get-contexts "$target_context" >/dev/null 2>&1; then

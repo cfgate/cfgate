@@ -688,6 +688,10 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		}
 	}
 
+	if blocked := applyConnectorCompatibility(tunnel, &config); blocked > 0 && r.Recorder != nil {
+		r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "IncompatibleConnectorImage", "Publish", "stock cloudflared does not support h2cOrigin; blocked %d HTTP origin rules", blocked)
+	}
+
 	if err := cloudflare.ValidateTunnelConfiguration(config, r.ClientSettings); err != nil {
 		return err
 	}

@@ -100,11 +100,11 @@ func (r *CloudflareTunnelReconciler) observeConnectorDeployment(tunnel *cfg.Clou
 	if deployment.Spec.Replicas != nil {
 		desired = *deployment.Spec.Replicas
 	}
-	if desired > 0 && deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.ReadyReplicas >= desired && deployment.Status.AvailableReplicas >= desired {
-		r.setCondition(tunnel, status.ConditionTypeCloudflaredDeployed, metav1.ConditionTrue, status.ReasonDeploymentReady, "All desired connector replicas are ready and available")
+	if desired > 0 && deployment.Status.ObservedGeneration >= deployment.Generation && deployment.Status.UpdatedReplicas == desired && deployment.Status.Replicas == desired && deployment.Status.ReadyReplicas >= desired && deployment.Status.AvailableReplicas >= desired {
+		r.setCondition(tunnel, status.ConditionTypeCloudflaredDeployed, metav1.ConditionTrue, status.ReasonDeploymentReady, "All desired connector replicas run the current template and are ready and available")
 		return
 	}
-	r.setCondition(tunnel, status.ConditionTypeCloudflaredDeployed, metav1.ConditionFalse, status.ReasonDeploymentNotReady, fmt.Sprintf("Waiting for connector rollout: %d/%d replicas ready and %d available", deployment.Status.ReadyReplicas, desired, deployment.Status.AvailableReplicas))
+	r.setCondition(tunnel, status.ConditionTypeCloudflaredDeployed, metav1.ConditionFalse, status.ReasonDeploymentNotReady, fmt.Sprintf("Waiting for connector rollout: %d/%d current, %d total, %d ready and %d available", deployment.Status.UpdatedReplicas, desired, deployment.Status.Replicas, deployment.Status.ReadyReplicas, deployment.Status.AvailableReplicas))
 }
 
 func (r *CloudflareTunnelReconciler) updateTunnelReadiness(tunnel *cfg.CloudflareTunnel) {
