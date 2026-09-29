@@ -3,7 +3,7 @@ apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.20.1
+    controller-gen.kubebuilder.io/version: v0.22.0
   name: cloudflarednses.cfgate.io
 spec:
   group: cfgate.io
@@ -174,16 +174,11 @@ spec:
                 description: ExternalTarget specifies a non-tunnel DNS target.
                 properties:
                   type:
-                    allOf:
-                    - enum:
-                      - CNAME
-                      - A
-                      - AAAA
-                    - enum:
-                      - CNAME
-                      - A
-                      - AAAA
                     description: Type is the DNS record type.
+                    enum:
+                    - CNAME
+                    - A
+                    - AAAA
                     type: string
                   value:
                     description: |-
@@ -265,17 +260,12 @@ spec:
                     type: object
                 type: object
               policy:
-                allOf:
-                - enum:
-                  - sync
-                  - upsert-only
-                  - create-only
-                - enum:
-                  - sync
-                  - upsert-only
-                  - create-only
                 default: sync
                 description: Policy controls DNS record lifecycle.
+                enum:
+                - sync
+                - upsert-only
+                - create-only
                 type: string
               source:
                 description: Source defines where to get hostnames to sync.

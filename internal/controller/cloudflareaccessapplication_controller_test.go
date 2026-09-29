@@ -227,8 +227,8 @@ func TestAccessApplicationReconcileAddsFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if !resultRequeues(result) {
-		t.Fatalf("Reconcile() Requeue = false, want true")
+	if result.RequeueAfter <= 0 || result.RequeueAfter > time.Second {
+		t.Fatalf("Reconcile() RequeueAfter = %s, want a retry within one second", result.RequeueAfter)
 	}
 	var current cfgatev1alpha1.CloudflareAccessApplication
 	if err := reconciler.Get(ctx, types.NamespacedName{Name: "app", Namespace: "app"}, &current); err != nil {
@@ -1261,10 +1261,6 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func resultRequeues(result ctrl.Result) bool {
-	return reflect.ValueOf(result).FieldByName("Requeue").Bool()
 }
 
 func setDeletionTimestamp(obj client.Object) {

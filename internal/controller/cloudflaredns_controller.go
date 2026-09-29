@@ -173,7 +173,7 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.Patch(ctx, &dns, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 	}
 
 	if err := r.ensureDNSOwnerIdentity(ctx, &dns); err != nil {

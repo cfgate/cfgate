@@ -3,8 +3,9 @@
 package v1alpha1
 
 import (
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/controller-runtime/pkg/scheme"
 )
 
 var (
@@ -15,7 +16,7 @@ var (
 
 	// SchemeBuilder is used to register cfgate types with a Kubernetes scheme.
 	// Call SchemeBuilder.AddToScheme to add cfgate types to your scheme.
-	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
+	SchemeBuilder = runtime.NewSchemeBuilder(addKnownTypes)
 
 	// AddToScheme adds the cfgate v1alpha1 types to a Kubernetes scheme.
 	// This function is typically called during controller initialization to register
@@ -23,3 +24,14 @@ var (
 	// CloudflareAccessApplication types.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
+
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(GroupVersion,
+		&CloudflareTunnel{}, &CloudflareTunnelList{},
+		&CloudflareDNS{}, &CloudflareDNSList{},
+		&CloudflareAccessApplication{}, &CloudflareAccessApplicationList{},
+		&CloudflareAccessPolicy{}, &CloudflareAccessPolicyList{},
+	)
+	metav1.AddToGroupVersion(scheme, GroupVersion)
+	return nil
+}

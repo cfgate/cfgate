@@ -33,8 +33,8 @@ func TestAccessPolicyReconcileAddsFinalizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if !resultRequeues(result) {
-		t.Fatalf("Requeue = false, want true")
+	if result.RequeueAfter <= 0 || result.RequeueAfter > time.Second {
+		t.Fatalf("RequeueAfter = %s, want a retry within one second", result.RequeueAfter)
 	}
 	var current cfgatev1alpha1.CloudflareAccessPolicy
 	if err := reconciler.Get(context.Background(), types.NamespacedName{Name: "policy", Namespace: "app"}, &current); err != nil {

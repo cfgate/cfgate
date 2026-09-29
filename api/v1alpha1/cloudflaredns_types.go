@@ -485,7 +485,3 @@ type CloudflareDNSList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []CloudflareDNS `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&CloudflareDNS{}, &CloudflareDNSList{})
-}

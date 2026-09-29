@@ -28,7 +28,7 @@ Define a CloudflareTunnel, point a Gateway at it, and attach HTTPRoutes to the G
 **Kustomize**
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/standard-install.yaml
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml
 
 kubectl apply -f https://github.com/cfgate/cfgate/releases/latest/download/install.yaml
 ```
@@ -202,9 +202,11 @@ Create a token at [Cloudflare Dashboard → API Tokens](https://dash.cloudflare.
 
 ### Kubernetes
 
-- Kubernetes 1.26+
-- Gateway API v1.5.1+ CRDs installed
+- Kubernetes compatible with the installed Gateway API bundle; the standard bundle below requires Kubernetes 1.30 or later
+- Gateway API CRDs installed; this release pins validation to v1.6.2
 - cluster-admin access for CRD installation
+
+The bundle's API minimum is not a cfgate-tested version range. See the [compatibility and release validation policy](docs/compatibility.md) for component pins, tested combinations and upgrade requirements.
 
 ## Related Repositories
 

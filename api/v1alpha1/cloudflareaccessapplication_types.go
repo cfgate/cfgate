@@ -139,7 +139,3 @@ type CloudflareAccessApplicationList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []CloudflareAccessApplication `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&CloudflareAccessApplication{}, &CloudflareAccessApplicationList{})
-}
