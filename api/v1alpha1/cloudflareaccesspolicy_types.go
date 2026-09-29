@@ -753,7 +753,3 @@ type CloudflareAccessPolicyList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []CloudflareAccessPolicy `json:"items"`
 }
-
-func init() {
-	SchemeBuilder.Register(&CloudflareAccessPolicy{}, &CloudflareAccessPolicyList{})
-}

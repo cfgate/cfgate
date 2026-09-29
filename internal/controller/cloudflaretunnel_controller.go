@@ -143,7 +143,7 @@ func (r *CloudflareTunnelReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if err := r.Patch(ctx, &tunnel, patch); err != nil {
 			return ctrl.Result{}, fmt.Errorf("failed to add finalizer: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 	}
 
 	tunnelLifecycleUnchanged, err := r.canSkipTunnelLifecycle(ctx, &tunnel)
