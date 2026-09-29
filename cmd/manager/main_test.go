@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"net"
 	"strings"
 	"testing"
 
@@ -75,6 +76,86 @@ func TestCLIExitError(t *testing.T) {
 	empty := cliExitError{}
 	if got := empty.Error(); got != "" {
 		t.Fatalf("Error() = %q, want empty string", got)
+	}
+}
+
+func TestServiceLinkPortEnv(t *testing.T) {
+	for _, value := range []string{"tcp://10.96.0.1:8080", "tcp://[fd00::1]:8081"} {
+		t.Run(value, func(t *testing.T) {
+			port, err := parsePortEnv(func(string) string { return value }, envMetricsPort, defaultMetricsPort)
+			if err != nil || port != defaultMetricsPort {
+				t.Fatalf("parsePortEnv() = %d, %v, want %d, nil", port, err, defaultMetricsPort)
+			}
+		})
+	}
+	for _, value := range []string{
+		"bad", "tcp://metrics:8080", "http://10.96.0.1:8080", "udp://10.96.0.1:8080",
+		"tcp://10.96.0.1", "tcp://10.96.0.1:0", "tcp://10.96.0.1:65536",
+		"tcp://10.96.0.1:8080/", "tcp://10.96.0.1:8080?x=1", "tcp://10.96.0.1:8080#x",
+		"tcp://user@10.96.0.1:8080", "tcp://[fd00::1%eth0]:8080", " tcp://10.96.0.1:8080",
+	} {
+		t.Run(value, func(t *testing.T) {
+			_, err := parsePortEnv(func(string) string { return value }, envMetricsPort, defaultMetricsPort)
+			if err == nil || !strings.Contains(err.Error(), envMetricsPort) {
+				t.Fatalf("parsePortEnv() error = %v, want %s error", err, envMetricsPort)
+			}
+		})
+	}
+}
+
+func TestManagerBindAddressPrecedence(t *testing.T) {
+	for _, tt := range []struct {
+		name, metricsEnv, healthEnv, wantMetrics, wantHealth, wantError string
+		args                                                            []string
+	}{
+		{name: "IPv4 service links", metricsEnv: "tcp://10.96.0.1:9191", healthEnv: "tcp://10.96.0.2:9292", wantMetrics: ":8080", wantHealth: ":8081"},
+		{name: "IPv6 service links", metricsEnv: "tcp://[fd00::1]:9191", healthEnv: "tcp://[fd00::2]:9292", wantMetrics: ":8080", wantHealth: ":8081"},
+		{name: "numeric ports preserved", metricsEnv: "9191", healthEnv: "9292", wantMetrics: ":9191", wantHealth: ":9292"},
+		{name: "metrics flag only", metricsEnv: "bad", healthEnv: "9292", args: []string{"--metrics-bind-address=:8443"}, wantMetrics: ":8443", wantHealth: ":9292"},
+		{name: "health flag only", metricsEnv: "9191", healthEnv: "bad", args: []string{"--health-probe-bind-address", ":9443"}, wantMetrics: ":9191", wantHealth: ":9443"},
+		{name: "explicit default overrides env", metricsEnv: "bad", healthEnv: "bad", args: []string{"--metrics-bind-address=:8080", "--health-probe-bind-address=:8081"}, wantMetrics: ":8080", wantHealth: ":8081"},
+		{name: "disable metrics", metricsEnv: "bad", healthEnv: "tcp://10.96.0.1:9292", args: []string{"--metrics-bind-address=0"}, wantMetrics: "0", wantHealth: ":8081"},
+		{name: "IPv6 bind flag", metricsEnv: "bad", args: []string{"--metrics-bind-address=[::1]:8443"}, wantMetrics: "[::1]:8443", wantHealth: ":8081"},
+		{name: "metrics override cannot hide health error", metricsEnv: "bad", healthEnv: "bad", args: []string{"--metrics-bind-address=0"}, wantError: envHealthPort},
+		{name: "health override cannot hide metrics error", metricsEnv: "bad", healthEnv: "bad", args: []string{"--health-probe-bind-address=:9443"}, wantError: envMetricsPort},
+		{name: "repeated flag uses last", metricsEnv: "bad", args: []string{"--metrics-bind-address=:9090", "--metrics-bind-address=0"}, wantMetrics: "0", wantHealth: ":8081"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := parseManagerConfig(tt.args, func(key string) string {
+				if key == envMetricsPort {
+					return tt.metricsEnv
+				}
+				return tt.healthEnv
+			}, io.Discard)
+			if tt.wantError != "" {
+				var cliErr cliExitError
+				if !errors.As(err, &cliErr) || cliErr.code != exitCodeUsage || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("parseManagerConfig() error = %v, want usage error for %s", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.MetricsAddr != tt.wantMetrics || cfg.ProbeAddr != tt.wantHealth {
+				t.Fatalf("bind addresses = %q, %q, want %q, %q", cfg.MetricsAddr, cfg.ProbeAddr, tt.wantMetrics, tt.wantHealth)
+			}
+		})
+	}
+}
+
+func TestManagerHelpIgnoresPortEnvironment(t *testing.T) {
+	for _, arg := range []string{"--help", "-h"} {
+		t.Run(arg, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := execute([]string{arg}, func(string) string {
+				t.Fatal("help must not read port environment")
+				return "bad"
+			}, &stderr, managerRuntime{})
+			if code != exitCodeSuccess || !strings.Contains(stderr.String(), "Usage of cfgate") {
+				t.Fatalf("help exit = %d, stderr = %q", code, stderr.String())
+			}
+		})
 	}
 }
 
@@ -454,4 +535,44 @@ func TestExecuteManager(t *testing.T) {
 			t.Fatalf("stderr = %q, want unknown flag error", output)
 		}
 	})
+}
+
+func TestPortEnvRange(t *testing.T) {
+	for _, value := range []string{"-1", "65536"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parsePortEnv(func(string) string { return value }, envMetricsPort, defaultMetricsPort); err == nil {
+				t.Fatalf("accepted out-of-range port %q", value)
+			}
+		})
+	}
+	for _, value := range []string{"0", "1", "65535"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := parsePortEnv(func(string) string { return value }, envMetricsPort, defaultMetricsPort); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestPortEnvZeroRetainsEphemeralBind(t *testing.T) {
+	cfg, err := parseManagerConfig(nil, func(string) string { return "0" }, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MetricsAddr != ":0" || cfg.ProbeAddr != ":0" {
+		t.Fatalf("env zero bind addresses = %q, %q", cfg.MetricsAddr, cfg.ProbeAddr)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1"+cfg.MetricsAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := listener.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok || addr.Port == 0 {
+		t.Fatalf("ephemeral bind address = %v", listener.Addr())
+	}
 }

@@ -1,5 +1,15 @@
 # Troubleshooting
 
+## Manager Fails to Start with a Port Environment Error
+
+Kubernetes Service links can inject `CFGATE_METRICS_PORT` or `CFGATE_HEALTH_PORT` as a value such as `tcp://10.96.0.1:8080`. Older cfgate versions try to parse these values as integers and exit before processing command-line flags.
+
+The manager resolves each bind address independently. An explicit `--metrics-bind-address` or `--health-probe-bind-address` takes precedence over its corresponding environment variable. Without that flag, a numeric `CFGATE_METRICS_PORT` or `CFGATE_HEALTH_PORT` from 0 through 65535 supplies the port; an unset variable uses `:8080` for metrics or `:8081` for health probes. An environment port of `0` retains an ephemeral bind port (`:0`); `--metrics-bind-address=0` disables metrics. Help flags work without validating environment variables.
+
+A Service-link-shaped value containing `tcp://`, a numeric IPv4 or bracketed IPv6 address, and a port from 1 through 65535 uses the corresponding default bind address. This exception does not accept hostnames, other schemes, credentials, paths, queries, fragments, or scoped IPv6 addresses. Other malformed environment values still produce a usage error unless their corresponding bind flag is supplied.
+
+The bundled manager Deployment sets `spec.template.spec.enableServiceLinks: false` to prevent these collisions. Apply the same setting to custom manager Deployments. Kubernetes Service discovery through DNS remains available.
+
 ## DNS Records Not Syncing
 
 *For full field documentation, see [CloudflareDNS Reference](cloudflare-dns.md).*
