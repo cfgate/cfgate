@@ -60,6 +60,7 @@ var (
 )
 
 type managerConfig struct {
+	accessLocks           *controller.AccessLocks
 	ClusterDomain         string
 	InstallationNamespace string
 	ClientSettings        cfcloudflare.ClientSettings
@@ -95,6 +96,8 @@ var (
 	// Test hooks below are intentionally swappable in serial tests; do not use with t.Parallel().
 	setupTunnelController = func(mgr manager.Manager, credCache *cfcloudflare.CredentialCache, cfg managerConfig) error {
 		return (&controller.CloudflareTunnelReconciler{
+			AccessLocks:           cfg.accessLocks,
+			APIReader:             mgr.GetAPIReader(),
 			ClusterDomain:         cfg.ClusterDomain,
 			InstallationNamespace: cfg.InstallationNamespace,
 			Client:                mgr.GetClient(),
@@ -136,22 +139,28 @@ var (
 	}
 	setupAccessPolicyController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache, cfg managerConfig) error {
 		return (&controller.CloudflareAccessPolicyReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
-			FeatureGates:    featureGates,
-			CredentialCache: credCache,
-			ClientSettings:  cfg.ClientSettings,
+			InstallationNamespace: cfg.InstallationNamespace,
+			AccessLocks:           cfg.accessLocks,
+			APIReader:             mgr.GetAPIReader(),
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
+			FeatureGates:          featureGates,
+			CredentialCache:       credCache,
+			ClientSettings:        cfg.ClientSettings,
 		}).SetupWithManager(mgr)
 	}
 	setupAccessApplicationController = func(mgr manager.Manager, featureGates *features.FeatureGates, credCache *cfcloudflare.CredentialCache, cfg managerConfig) error {
 		return (&controller.CloudflareAccessApplicationReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflareaccessapplication-controller"),
-			FeatureGates:    featureGates,
-			CredentialCache: credCache,
-			ClientSettings:  cfg.ClientSettings,
+			InstallationNamespace: cfg.InstallationNamespace,
+			AccessLocks:           cfg.accessLocks,
+			APIReader:             mgr.GetAPIReader(),
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflareaccessapplication-controller"),
+			FeatureGates:          featureGates,
+			CredentialCache:       credCache,
+			ClientSettings:        cfg.ClientSettings,
 		}).SetupWithManager(mgr)
 	}
 )
@@ -410,6 +419,7 @@ func registerControllers(mgr manager.Manager, featureGates *features.FeatureGate
 		cfg = configs[0]
 	}
 	credCache := cfcloudflare.NewCredentialCache(0)
+	cfg.accessLocks = controller.NewAccessLocks()
 
 	if err := setupTunnelController(mgr, credCache, cfg); err != nil {
 		return fmt.Errorf("unable to create controller CloudflareTunnel: %w", err)

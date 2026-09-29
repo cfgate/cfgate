@@ -372,7 +372,8 @@ spec:
                 properties:
                   name:
                     description: |-
-                      Name is the tunnel name in Cloudflare. If tunnel with this name exists, adopt it.
+                      Name is the tunnel name in Cloudflare. Existing tunnels require explicit
+                      cfgate.io/adopt-existing=true and an exclusive installation ownership claim.
                       If not, create it. Tunnel ID is stored in status after resolution/creation.
                     maxLength: 63
                     minLength: 1
@@ -393,6 +394,61 @@ spec:
               status, and reconciliation state. The TunnelDomain field provides the CNAME target
               ({tunnelId}.cfargotunnel.com) that CloudflareDNS uses for DNS record creation.
             properties:
+              accessDependencies:
+                description: |-
+                  AccessDependencies track applications needed by current or possibly applied configurations.
+                  Entries are cleared only after remote configuration withdrawal is confirmed.
+                items:
+                  description: TunnelAccessDependency records possibly active application
+                    and policy protection.
+                  properties:
+                    accountId:
+                      type: string
+                    hostnames:
+                      items:
+                        type: string
+                      maxItems: 64
+                      type: array
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    pending:
+                      description: Pending records an unconfirmed publication attempt;
+                        protection cannot be removed until a later confirmed sync.
+                      type: boolean
+                    policies:
+                      items:
+                        description: TunnelAccessPolicyDependency retains policy identity
+                          until remote withdrawal is verified.
+                        properties:
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          policyId:
+                            type: string
+                          uid:
+                            type: string
+                        required:
+                        - name
+                        - namespace
+                        type: object
+                      maxItems: 64
+                      type: array
+                    tunnelId:
+                      type: string
+                    uid:
+                      type: string
+                  required:
+                  - accountId
+                  - hostnames
+                  - name
+                  - namespace
+                  - tunnelId
+                  type: object
+                maxItems: 256
+                type: array
               accountId:
                 description: AccountID is the resolved Cloudflare account ID.
                 type: string

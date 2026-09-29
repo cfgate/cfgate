@@ -74,6 +74,10 @@ const (
 	// Read from: Routes
 	AnnotationAccessPolicy = AnnotationPrefix + "access-policy"
 
+	// AnnotationAccessRequired explicitly names a required Access application as namespace/name.
+	// It enforces a controller dependency; strict authentication still belongs at the origin.
+	AnnotationAccessRequired = AnnotationPrefix + "access-required"
+
 	// AnnotationHostname overrides the route hostname when set.
 	// Optional for HTTPRoute and ignored when not supported by the controller.
 	// Values: RFC 1123 hostname

@@ -134,3 +134,7 @@ spec:
 ```
 
 Inherited credentials retain the Tunnel's Secret namespace, selected `secretKeys.apiToken`, and account. Cross-namespace inheritance requires explicit application-to-Tunnel and application-to-Secret grants, in addition to the owning Tunnel's Secret grant. Gateway-to-Tunnel references require their own grant. These checks apply during cleanup using persisted credential metadata. See [authorization and ownership](authorization-and-ownership.md).
+
+## Required protection dependency
+
+HTTPRoutes can opt into an explicit `cfgate.io/access-required: namespace/name` dependency. See [Access-required routing](access-required.md) for the supported subset, grants, remote checks, deletion ordering and asynchronous limitations. Existing routes remain public unless explicitly opted in.

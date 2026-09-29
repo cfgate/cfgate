@@ -431,8 +431,9 @@ func applyApplicationExtras(app *AccessApplication, raw string) error {
 	var extra struct {
 		Tags         []string `json:"tags"`
 		Destinations []struct {
-			Type string `json:"type"`
-			URI  string `json:"uri"`
+			Type      string          `json:"type"`
+			URI       string          `json:"uri"`
+			Overrides json.RawMessage `json:"overrides"`
 		} `json:"destinations"`
 		Policies []struct {
 			ID         string `json:"id"`
@@ -444,6 +445,9 @@ func applyApplicationExtras(app *AccessApplication, raw string) error {
 	}
 	app.Tags = extra.Tags
 	for _, destination := range extra.Destinations {
+		if destination.Type != "public" || (len(destination.Overrides) > 0 && string(destination.Overrides) != "null" && string(destination.Overrides) != "[]") {
+			app.UnsupportedProtection = true
+		}
 		if destination.Type == "public" && destination.URI != "" {
 			app.Destinations = append(app.Destinations, destination.URI)
 		}

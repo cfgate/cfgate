@@ -44,6 +44,9 @@ type ServiceTokenSecretRefreshChecker interface {
 
 // AccessApplication represents a Cloudflare Access Application.
 type AccessApplication struct {
+	// UnsupportedProtection records destination/policy shapes that the narrow Access-required gate cannot evaluate.
+	UnsupportedProtection bool
+
 	// ID is the unique application identifier.
 	ID string
 
