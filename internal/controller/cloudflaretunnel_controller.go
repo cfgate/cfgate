@@ -68,6 +68,7 @@ const (
 // It manages the complete tunnel lifecycle: credential validation, tunnel
 // creation/adoption, cloudflared deployment, and configuration sync.
 type CloudflareTunnelReconciler struct {
+	AccessLocks           *AccessLocks
 	InstallationNamespace string
 	// ClusterDomain is the Kubernetes DNS suffix used for backend Services.
 	ClusterDomain  string
@@ -298,6 +299,8 @@ func (r *CloudflareTunnelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate),
 		).
 		Watches(&corev1.Secret{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForCredentialSecret)).
+		Watches(&cfgatev1alpha1.CloudflareAccessApplication{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency)).
+		Watches(&cfgatev1alpha1.CloudflareAccessPolicy{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency)).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency)).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency), builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Watches(&gateway.GatewayClass{}, handler.EnqueueRequestsFromMapFunc(r.findTunnelsForDependency), builder.WithPredicates(predicate.GenerationChangedPredicate{}))
@@ -636,8 +639,19 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		return fmt.Errorf("tunnel ID not set in status")
 	}
 
-	// Collect ingress rules from HTTPRoutes
-	rules, routeCount, err := r.collectIngressRules(ctx, tunnel)
+	ctx, releaseAccess, err := r.beginAccessSync(ctx, tunnel)
+	if err != nil {
+		return err
+	}
+	defer releaseAccess()
+	collector := *r
+	accessState, hasAccess := ctx.Value(accessSyncContextKey{}).(*accessSyncState)
+	if hasAccess {
+		collector.Client = directReadClient{Client: r.Client, reader: r.lifecycleReader()}
+	}
+
+	// Collect ingress rules from HTTPRoutes using fresh authorization reads for Access dependencies.
+	rules, routeCount, err := collector.collectIngressRules(ctx, tunnel)
 	if err != nil {
 		return fmt.Errorf("failed to collect ingress rules: %w", err)
 	}
@@ -694,9 +708,27 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		return err
 	}
 
+	var desiredAccess []cfgatev1alpha1.TunnelAccessDependency
+	if hasAccess {
+		desiredAccess, err = normalizedAccessDependencies(accessState.dependencies, accountID, tunnel.Status.TunnelID)
+		if err != nil {
+			return err
+		}
+		pending, err := normalizedAccessDependencies(append(append([]cfgatev1alpha1.TunnelAccessDependency(nil), tunnel.Status.AccessDependencies...), desiredAccess...), accountID, tunnel.Status.TunnelID)
+		if err != nil {
+			return err
+		}
+		for i := range pending {
+			pending[i].Pending = true
+		}
+		if err := r.persistAccessDependencies(ctx, tunnel, pending); err != nil {
+			return err
+		}
+	}
+
 	desiredHash := appliedTunnelConfigHash(accountID, tunnel.Status.TunnelID, config)
 	currentHash := tunnel.Annotations[configHashAnnotation]
-	verifyRemote := (len(forceVerification) > 0 && forceVerification[0]) || tunnel.Status.LastFullReconcileTime == nil || time.Since(tunnel.Status.LastFullReconcileTime.Time) >= fullLifecycleInterval
+	verifyRemote := hasAccess || (len(forceVerification) > 0 && forceVerification[0]) || tunnel.Status.LastFullReconcileTime == nil || time.Since(tunnel.Status.LastFullReconcileTime.Time) >= fullLifecycleInterval
 	if desiredHash == currentHash && !verifyRemote {
 		log.V(1).Info("tunnel configuration unchanged, skipping update",
 			"tunnelID", tunnel.Status.TunnelID)
@@ -727,6 +759,19 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 			return fmt.Errorf("failed to update tunnel configuration: %w", err)
 		}
 
+	}
+
+	if hasAccess {
+		observed, err := cfClient.GetTunnelConfiguration(ctx, accountID, tunnel.Status.TunnelID)
+		if err != nil {
+			return fmt.Errorf("confirm Access-dependent tunnel configuration: %w", err)
+		}
+		if observed == nil || !equivalentTunnelConfiguration(*observed, config) {
+			return fmt.Errorf("required Access-dependent tunnel configuration is not yet confirmed")
+		}
+		if err := r.persistAccessDependencies(ctx, tunnel, desiredAccess); err != nil {
+			return err
+		}
 	}
 
 	annotationTunnel := tunnel.DeepCopy()
@@ -867,6 +912,15 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 		if err != nil {
 			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules", "skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
 			continue
+		}
+		if err := r.requiredAccessAllows(ctx, tunnel, resolvedRoute, hostnames); err != nil {
+			for i := range routeRules {
+				routeRules[i].Service = "http_status:503"
+				routeRules[i].OriginRequest = nil
+			}
+			if r.Recorder != nil {
+				r.Recorder.Eventf(&route, nil, corev1.EventTypeWarning, "AccessRequiredUnavailable", "Publish", "%s", err.Error())
+			}
 		}
 		rules = append(rules, routeRules...)
 		if len(routeRules) > 0 {
@@ -1220,6 +1274,9 @@ func (r *CloudflareTunnelReconciler) updateStatus(ctx context.Context, tunnel *c
 // tunnelStatusEqual compares two CloudflareTunnel statuses for equality, ignoring
 // LastSyncTime which changes on every reconciliation to avoid spurious updates.
 func tunnelStatusEqual(a, b *cfgatev1alpha1.CloudflareTunnelStatus) bool {
+	if !reflect.DeepEqual(a.AccessDependencies, b.AccessDependencies) {
+		return false
+	}
 	// Compare generation
 	if a.ObservedGeneration != b.ObservedGeneration ||
 		a.LifecycleDependencyHash != b.LifecycleDependencyHash ||

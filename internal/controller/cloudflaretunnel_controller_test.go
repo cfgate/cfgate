@@ -23,6 +23,7 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 
 	storedTunnel := &cfgatev1alpha1.CloudflareTunnel{
 		ObjectMeta: metav1.ObjectMeta{
+			UID:       "tunnel-uid",
 			Name:      "edge",
 			Namespace: "default",
 		},

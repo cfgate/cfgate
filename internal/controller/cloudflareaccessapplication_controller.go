@@ -39,7 +39,10 @@ const accessApplicationTag = "cfgate"
 
 // CloudflareAccessApplicationReconciler reconciles Gateway targets into Access Applications.
 type CloudflareAccessApplicationReconciler struct {
-	ClientSettings cloudflare.ClientSettings
+	AccessLocks           *AccessLocks
+	InstallationNamespace string
+	APIReader             client.Reader
+	ClientSettings        cloudflare.ClientSettings
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -89,6 +92,12 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get CloudflareAccessApplication: %w", err)
 	}
+
+	ctx, releaseAccess, err := r.beginApplicationMutation(ctx, &app)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	defer releaseAccess()
 
 	if !app.DeletionTimestamp.IsZero() {
 		return r.reconcileApplicationDelete(ctx, &app)
@@ -553,7 +562,7 @@ func (r *CloudflareAccessApplicationReconciler) resolveCloudflareRefCredentials(
 		secretNamespace = *ref.Namespace
 	}
 	return &accessApplicationCredentials{
-		Service:              cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
+		Service:              cloudflare.NewAccessService(guardAccessMutations(ctx, cfClient), log.FromContext(ctx)),
 		CredentialSecretKeys: cfgatev1alpha1.SecretKeys{APIToken: cloudflare.APITokenKey(ref.SecretKeys.APIToken)},
 		AccountID:            accountID,
 		CredentialSecretRef: &cfgatev1alpha1.SecretReference{

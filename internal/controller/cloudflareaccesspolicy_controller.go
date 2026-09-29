@@ -40,7 +40,10 @@ const (
 
 // CloudflareAccessPolicyReconciler reconciles reusable Cloudflare Access policies.
 type CloudflareAccessPolicyReconciler struct {
-	ClientSettings cloudflare.ClientSettings
+	AccessLocks           *AccessLocks
+	InstallationNamespace string
+	APIReader             client.Reader
+	ClientSettings        cloudflare.ClientSettings
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder events.EventRecorder
@@ -75,6 +78,12 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		}
 		return ctrl.Result{}, fmt.Errorf("failed to get CloudflareAccessPolicy: %w", err)
 	}
+
+	ctx, releaseAccess, err := r.beginPolicyMutation(ctx, &policy)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	defer releaseAccess()
 
 	if !policy.DeletionTimestamp.IsZero() {
 		return r.reconcileDelete(ctx, &policy)
@@ -203,7 +212,7 @@ func (r *CloudflareAccessPolicyReconciler) resolveCloudflareRefCredentials(ctx c
 		secretNamespace = *secretRef.Namespace
 	}
 	return &accessPolicyCredentials{
-		Service:              cloudflare.NewAccessService(cfClient, log.FromContext(ctx)),
+		Service:              cloudflare.NewAccessService(guardAccessMutations(ctx, cfClient), log.FromContext(ctx)),
 		CredentialSecretKeys: cfgatev1alpha1.SecretKeys{APIToken: cloudflare.APITokenKey(secretRef.SecretKeys.APIToken)},
 		AccountID:            accountID,
 		CredentialSecretRef: &cfgatev1alpha1.SecretReference{

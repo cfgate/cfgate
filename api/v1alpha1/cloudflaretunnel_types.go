@@ -8,13 +8,12 @@ import (
 
 // TunnelIdentity defines the tunnel identification configuration for CloudflareTunnel.
 //
-// TunnelIdentity uses a single idempotent pathway: the controller resolves the tunnel
-// by name and creates it if it does not exist. The resolved tunnel ID is stored in the
-// CloudflareTunnelStatus after resolution. This design ensures that multiple CloudflareTunnel
-// resources with the same tunnel name will adopt the same Cloudflare tunnel rather than
-// creating duplicates.
+// TunnelIdentity names the remote tunnel. Creation records its ID in status and
+// acquires an exclusive installation ownership claim. Existing tunnels require
+// explicit adoption; matching names alone never authorize shared ownership.
 type TunnelIdentity struct {
-	// Name is the tunnel name in Cloudflare. If tunnel with this name exists, adopt it.
+	// Name is the tunnel name in Cloudflare. Existing tunnels require explicit
+	// cfgate.io/adopt-existing=true and an exclusive installation ownership claim.
 	// If not, create it. Tunnel ID is stored in status after resolution/creation.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -260,12 +259,40 @@ type CloudflareTunnelSpec struct {
 	FallbackCredentialsRef *SecretReference `json:"fallbackCredentialsRef,omitempty"`
 }
 
+// TunnelAccessPolicyDependency retains policy identity until remote withdrawal is verified.
+type TunnelAccessPolicyDependency struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	UID       string `json:"uid,omitempty"`
+	PolicyID  string `json:"policyId,omitempty"`
+}
+
+// TunnelAccessDependency records possibly active application and policy protection.
+type TunnelAccessDependency struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
+	UID       string `json:"uid,omitempty"`
+	AccountID string `json:"accountId"`
+	TunnelID  string `json:"tunnelId"`
+	// +kubebuilder:validation:MaxItems=64
+	Hostnames []string `json:"hostnames"`
+	// +kubebuilder:validation:MaxItems=64
+	Policies []TunnelAccessPolicyDependency `json:"policies,omitempty"`
+	// Pending records an unconfirmed publication attempt; protection cannot be removed until a later confirmed sync.
+	Pending bool `json:"pending,omitempty"`
+}
+
 // CloudflareTunnelStatus defines the observed state of a CloudflareTunnel resource.
 //
 // CloudflareTunnelStatus captures the tunnel's Cloudflare-assigned identifiers, deployment
 // status, and reconciliation state. The TunnelDomain field provides the CNAME target
 // ({tunnelId}.cfargotunnel.com) that CloudflareDNS uses for DNS record creation.
 type CloudflareTunnelStatus struct {
+	// AccessDependencies track applications needed by current or possibly applied configurations.
+	// Entries are cleared only after remote configuration withdrawal is confirmed.
+	// +kubebuilder:validation:MaxItems=256
+	AccessDependencies []TunnelAccessDependency `json:"accessDependencies,omitempty"`
+
 	// TunnelID is the Cloudflare tunnel ID.
 	TunnelID string `json:"tunnelId,omitempty"`
 

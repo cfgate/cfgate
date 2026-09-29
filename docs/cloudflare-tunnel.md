@@ -367,3 +367,7 @@ Existing local connector Secrets and Deployments must carry the expected control
 For inspected legacy tunnels, `cfgate.io/adopt-existing: "true"` permits acquiring an absent claim. It cannot replace a foreign claim. Claims serialize ownership only within the same installation namespace; they are not a Cloudflare-wide lock. Normal deletion verifies the claim, drains connectors, confirms remote absence, then deletes the claim with UID/resourceVersion preconditions. Orphan deletion retains the claim for explicit recovery.
 
 Cross-namespace Gateway-to-Tunnel and credential references require explicit ReferenceGrants. See [authorization and ownership](authorization-and-ownership.md) for administrator RBAC, migration steps, and coordination limits.
+
+## Required protection dependency
+
+HTTPRoutes can opt into an explicit `cfgate.io/access-required: namespace/name` dependency. See [Access-required routing](access-required.md) for the supported subset, grants, remote checks, deletion ordering and asynchronous limitations. Existing routes remain public unless explicitly opted in.

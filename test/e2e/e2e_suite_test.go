@@ -142,8 +142,9 @@ type E2ETestEnv struct {
 }
 
 type e2eBootstrapData struct {
-	KubeconfigPath string `json:"kubeconfigPath"`
-	RunID          string `json:"runID"`
+	KubeconfigPath  string `json:"kubeconfigPath"`
+	RunID           string `json:"runID"`
+	KindClusterName string `json:"kindClusterName"`
 }
 
 type e2eCleanupOptions struct {
@@ -238,9 +239,11 @@ var _ = SynchronizedBeforeSuite(
 
 		// Initialize shared credential cache for all CF-facing reconcilers (B3 + F3).
 		credCache := cfcloudflare.NewCredentialCache(0) // 0 = default TTL
+		accessLocks := controller.NewAccessLocks()
 
 		// Register all 6 controllers.
 		tunnelReconciler := &controller.CloudflareTunnelReconciler{
+			AccessLocks:           accessLocks,
 			Client:                mgr.GetClient(),
 			Scheme:                mgr.GetScheme(),
 			Recorder:              mgr.GetEventRecorder("cloudflaretunnel-controller"),
@@ -261,20 +264,26 @@ var _ = SynchronizedBeforeSuite(
 		Expect(dnsReconciler.SetupWithManager(mgr)).To(Succeed(), "Failed to setup DNS controller")
 
 		accessReconciler := &controller.CloudflareAccessPolicyReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
-			FeatureGates:    featureGates,
-			CredentialCache: credCache,
+			AccessLocks:           accessLocks,
+			APIReader:             mgr.GetAPIReader(),
+			InstallationNamespace: e2eSystemNamespace(),
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflareaccesspolicy-controller"),
+			FeatureGates:          featureGates,
+			CredentialCache:       credCache,
 		}
 		Expect(accessReconciler.SetupWithManager(mgr)).To(Succeed(), "Failed to setup access policy controller")
 
 		accessApplicationReconciler := &controller.CloudflareAccessApplicationReconciler{
-			Client:          mgr.GetClient(),
-			Scheme:          mgr.GetScheme(),
-			Recorder:        mgr.GetEventRecorder("cloudflareaccessapplication-controller"),
-			FeatureGates:    featureGates,
-			CredentialCache: credCache,
+			AccessLocks:           accessLocks,
+			APIReader:             mgr.GetAPIReader(),
+			InstallationNamespace: e2eSystemNamespace(),
+			Client:                mgr.GetClient(),
+			Scheme:                mgr.GetScheme(),
+			Recorder:              mgr.GetEventRecorder("cloudflareaccessapplication-controller"),
+			FeatureGates:          featureGates,
+			CredentialCache:       credCache,
 		}
 		Expect(accessApplicationReconciler.SetupWithManager(mgr)).To(Succeed(), "Failed to setup access application controller")
 
@@ -315,8 +324,9 @@ var _ = SynchronizedBeforeSuite(
 
 		By("E2E test environment ready (Process 1)")
 		data, err := json.Marshal(e2eBootstrapData{
-			KubeconfigPath: kubeconfigPath,
-			RunID:          testRunID,
+			KubeconfigPath:  kubeconfigPath,
+			RunID:           testRunID,
+			KindClusterName: testEnv.KindClusterName,
 		})
 		Expect(err).NotTo(HaveOccurred(), "Failed to marshal E2E bootstrap data")
 		return data
@@ -347,6 +357,9 @@ var _ = SynchronizedBeforeSuite(
 
 		// Load test environment (env vars available in all processes).
 		testEnv = loadTestEnv()
+		// Preserve the cluster selected by Process 1; loadTestEnv generates a
+		// fresh timestamp name that must not redirect image loading or cleanup.
+		testEnv.KindClusterName = bootstrap.KindClusterName
 
 		// Set up context for all processes.
 		ctx, cancel = context.WithCancel(context.Background())
