@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/go-logr/logr"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Import all auth plugins for exec-entrypoint
@@ -264,19 +266,9 @@ func execute(args []string, getenv func(string) string, stderr io.Writer, runtim
 }
 
 func parseManagerConfig(args []string, getenv func(string) string, stderr io.Writer) (managerConfig, error) {
-	metricsPort, err := parsePortEnv(getenv, envMetricsPort, defaultMetricsPort)
-	if err != nil {
-		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
-	}
-
-	probePort, err := parsePortEnv(getenv, envHealthPort, defaultHealthPort)
-	if err != nil {
-		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
-	}
-
 	cfg := managerConfig{
-		MetricsAddr: fmt.Sprintf(":%d", metricsPort),
-		ProbeAddr:   fmt.Sprintf(":%d", probePort),
+		MetricsAddr: fmt.Sprintf(":%d", defaultMetricsPort),
+		ProbeAddr:   fmt.Sprintf(":%d", defaultHealthPort),
 		ZapOptions: zap.Options{
 			Development: false,
 		},
@@ -301,6 +293,30 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err, printed: true}
 	}
 
+	var metricsFlag, probeFlag bool
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "metrics-bind-address":
+			metricsFlag = true
+		case "health-probe-bind-address":
+			probeFlag = true
+		}
+	})
+	if !metricsFlag {
+		port, err := parsePortEnv(getenv, envMetricsPort, defaultMetricsPort)
+		if err != nil {
+			return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
+		}
+		cfg.MetricsAddr = fmt.Sprintf(":%d", port)
+	}
+	if !probeFlag {
+		port, err := parsePortEnv(getenv, envHealthPort, defaultHealthPort)
+		if err != nil {
+			return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
+		}
+		cfg.ProbeAddr = fmt.Sprintf(":%d", port)
+	}
+
 	return cfg, nil
 }
 
@@ -309,10 +325,20 @@ func parsePortEnv(getenv func(string) string, key string, fallback int) (int, er
 	if value == "" {
 		return fallback, nil
 	}
+	// Kubernetes Service links share these environment names but contain endpoints, not bind ports.
+	if endpoint, ok := strings.CutPrefix(value, "tcp://"); ok {
+		if address, err := netip.ParseAddrPort(endpoint); err == nil && address.Port() != 0 && address.Addr().Zone() == "" {
+			return fallback, nil
+		}
+	}
 
 	port, err := strconv.Atoi(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s must be a valid integer: %w", key, err)
+	}
+
+	if port < 0 || port > 65535 {
+		return 0, fmt.Errorf("%s must be between 0 and 65535", key)
 	}
 
 	return port, nil
