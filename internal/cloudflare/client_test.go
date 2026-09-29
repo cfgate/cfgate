@@ -2,6 +2,8 @@ package cloudflare
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,80 @@ import (
 	"github.com/cloudflare/cloudflare-go/v6/option"
 	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
 )
+
+type tunnelConfigCaptureTransport struct {
+	body []byte
+}
+
+func (c *tunnelConfigCaptureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, err := io.ReadAll(req.Body)
+	closeErr := req.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	c.body = body
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"success":true,"result":{},"errors":[],"messages":[]}`)),
+		Request:    req,
+	}, nil
+}
+
+func TestUpdateTunnelConfigurationPreservesH2cWireFields(t *testing.T) {
+	// Main emits only true h2c overrides; an unset per-rule field still inherits global true.
+	for _, tt := range []struct {
+		name         string
+		global, rule bool
+	}{
+		{name: "global", global: true},
+		{name: "per rule", rule: true},
+		{name: "both", global: true, rule: true},
+		{name: "neither"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			transport := &tunnelConfigCaptureTransport{}
+			client, err := NewClient("test-token", WithHTTPClient(&http.Client{Transport: transport}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			config := TunnelConfiguration{
+				OriginRequest: &OriginRequestConfig{H2cOrigin: tt.global},
+				Ingress: []IngressRule{
+					{Hostname: "h2c.example.com", Service: "http://backend:8080", OriginRequest: &OriginRequestConfig{H2cOrigin: tt.rule}},
+					{Service: "http_status:404"},
+				},
+			}
+			if err := client.UpdateTunnelConfiguration(context.Background(), "test-account", "test-tunnel", config); err != nil {
+				t.Fatal(err)
+			}
+			var payload struct {
+				Config struct {
+					OriginRequest struct{ H2cOrigin bool }
+					Ingress       []struct {
+						Service       string
+						OriginRequest struct{ H2cOrigin bool }
+					}
+				}
+			}
+			if err := json.Unmarshal(transport.body, &payload); err != nil {
+				t.Fatal(err)
+			}
+			if len(payload.Config.Ingress) != 2 {
+				t.Fatalf("SDK ingress count = %d, want 2", len(payload.Config.Ingress))
+			}
+			if payload.Config.OriginRequest.H2cOrigin != tt.global || payload.Config.Ingress[0].OriginRequest.H2cOrigin != tt.rule {
+				t.Fatalf("SDK request lost h2c origin fields: %s", transport.body)
+			}
+			if payload.Config.Ingress[1].Service != "http_status:404" || payload.Config.Ingress[1].OriginRequest.H2cOrigin {
+				t.Fatalf("SDK request changed catch-all rule: %s", transport.body)
+			}
+		})
+	}
+}
 
 func TestAPIErrorError(t *testing.T) {
 	err := &APIError{
