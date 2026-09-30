@@ -639,19 +639,19 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		return fmt.Errorf("tunnel ID not set in status")
 	}
 
-	ctx, releaseAccess, err := r.beginAccessSync(ctx, tunnel)
+	accessState, releaseAccess, err := r.beginAccessSync(ctx, tunnel)
 	if err != nil {
 		return err
 	}
 	defer releaseAccess()
 	collector := *r
-	accessState, hasAccess := ctx.Value(accessSyncContextKey{}).(*accessSyncState)
+	hasAccess := accessState != nil
 	if hasAccess {
 		collector.Client = directReadClient{Client: r.Client, reader: r.lifecycleReader()}
 	}
 
 	// Collect ingress rules from HTTPRoutes using fresh authorization reads for Access dependencies.
-	rules, routeCount, err := collector.collectIngressRules(ctx, tunnel)
+	rules, routeCount, err := collector.collectIngressRules(ctx, tunnel, accessState)
 	if err != nil {
 		return fmt.Errorf("failed to collect ingress rules: %w", err)
 	}
@@ -798,7 +798,7 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 }
 
 // collectIngressRules collects ingress rules from HTTPRoutes that reference this tunnel.
-func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) ([]cloudflare.IngressRule, int, error) {
+func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel, accessState *accessSyncSession) ([]cloudflare.IngressRule, int, error) {
 	var rules []orderedIngressRule
 	routeCount := 0
 
@@ -917,9 +917,10 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules", "skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
 			continue
 		}
-		if err := r.requiredAccessAllows(ctx, tunnel, resolvedRoute, hostnames); err != nil {
+		if err := r.requiredAccessAllows(ctx, accessState, tunnel, resolvedRoute, hostnames); err != nil {
 			for i := range routeRules {
 				routeRules[i].Service = "http_status:503"
+				routeRules[i].accessDenied = true
 				routeRules[i].OriginRequest = nil
 			}
 			if r.Recorder != nil {

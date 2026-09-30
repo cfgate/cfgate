@@ -61,7 +61,7 @@ func TestGatewayTunnelGrantAlignsStatusAndPublication(t *testing.T) {
 			if (parent.Conditions[0].Status == metav1.ConditionTrue) != permitted {
 				t.Fatalf("parent=%+v", parent)
 			}
-			rules, _, err := (&CloudflareTunnelReconciler{Client: kube, Recorder: &fakeEventRecorder{}}).collectIngressRules(context.Background(), tunnel)
+			rules, _, err := (&CloudflareTunnelReconciler{Client: kube, Recorder: &fakeEventRecorder{}}).collectIngressRules(context.Background(), tunnel, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +183,7 @@ func TestCollectIngressRulesEnforcesCurrentReferences(t *testing.T) {
 				t.Fatal(err)
 			}
 			r := &CloudflareTunnelReconciler{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(), Recorder: &fakeEventRecorder{}}
-			rules, _, err := r.collectIngressRules(context.Background(), tunnel)
+			rules, _, err := r.collectIngressRules(context.Background(), tunnel, nil)
 			if err != nil {
 				t.Fatalf("collectIngressRules() error = %v", err)
 			}
@@ -270,7 +270,7 @@ func TestIngressValidationReadCountAndGrantRevocation(t *testing.T) {
 	}
 	c := &emissionReadClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(class, gw, other, route, service, grant).Build(), reads: map[string]int{}}
 	r := &CloudflareTunnelReconciler{Client: c, Recorder: &fakeEventRecorder{}}
-	rules, count, err := r.collectIngressRules(context.Background(), tunnel)
+	rules, count, err := r.collectIngressRules(context.Background(), tunnel, nil)
 	if err != nil || len(rules) != 4 || count != 1 {
 		t.Fatalf("collect = %v, %d rules, %d routes; want nil,4,1", err, len(rules), count)
 	}
@@ -282,7 +282,7 @@ func TestIngressValidationReadCountAndGrantRevocation(t *testing.T) {
 	if err := c.Delete(context.Background(), grant); err != nil {
 		t.Fatal(err)
 	}
-	rules, _, err = r.collectIngressRules(context.Background(), tunnel)
+	rules, _, err = r.collectIngressRules(context.Background(), tunnel, nil)
 	if err != nil || len(rules) != 4 {
 		t.Fatalf("after revocation = %v, %d rules; want four blocking responses", err, len(rules))
 	}
@@ -295,7 +295,7 @@ func TestIngressValidationReadCountAndGrantRevocation(t *testing.T) {
 	if err := c.Create(context.Background(), grant); err != nil {
 		t.Fatal(err)
 	}
-	rules, _, err = r.collectIngressRules(context.Background(), tunnel)
+	rules, _, err = r.collectIngressRules(context.Background(), tunnel, nil)
 	if err != nil || len(rules) != 4 {
 		t.Fatalf("after grant restored = %v, %d rules; want4", err, len(rules))
 	}

@@ -226,7 +226,7 @@ type DNSRecordDefaults struct {
 // DNSTXTRecordOwnership creates companion TXT records that identify which cfgate installation
 // owns each DNS record. This enables safe multi-cluster deployments and prevents accidental
 // deletion of records created by other installations. The format aligns with external-dns:
-// heritage=cfgate,cfgate/owner=<owner-id>,cfgate/resource=cloudflaredns/<namespace>/<name>
+// heritage=cfgate,cfgate/owner=<owner-id>,cfgate/resource=CloudflareDNS/<namespace>/<name>
 type DNSTXTRecordOwnership struct {
 	// Enabled enables TXT record ownership tracking.
 	// nil defaults to true.

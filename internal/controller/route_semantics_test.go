@@ -168,7 +168,7 @@ func TestRoutePrecedenceUsesSourceSemantics(t *testing.T) {
 			backend := svc.DeepCopy()
 			backend.Name = "challenger"
 			kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(tunnel, class, gw, base, other, svc, backend).Build()
-			rules, _, err := (&CloudflareTunnelReconciler{Client: kube, Recorder: &fakeEventRecorder{}}).collectIngressRules(context.Background(), tunnel)
+			rules, _, err := (&CloudflareTunnelReconciler{Client: kube, Recorder: &fakeEventRecorder{}}).collectIngressRules(context.Background(), tunnel, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -200,7 +200,7 @@ func TestZeroWeightDoesNotFallThrough(t *testing.T) {
 	fallback.Spec.Rules[0].Matches = nil
 	objects := []client.Object{tunnel, class, gw, route, fallback, svc}
 	kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(objects...).Build()
-	rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel)
+	rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +233,7 @@ func TestRouteRegexAndWildcardPrecedence(t *testing.T) {
 	regexService := svc.DeepCopy()
 	regexService.Name = "regex"
 	kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(tunnel, class, gw, route, exact, regex, svc, specificService, regexService).Build()
-	rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel)
+	rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestPositiveSingleWeightAndRuleOrder(t *testing.T) {
 	other := svc.DeepCopy()
 	other.Name = "second"
 	kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(tunnel, class, gw, route, svc, other).Build()
-	rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel)
+	rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

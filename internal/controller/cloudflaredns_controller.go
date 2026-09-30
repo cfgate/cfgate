@@ -877,6 +877,7 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 				Type:     recordType,
 				Status:   "Failed",
 				Error:    err.Error(),
+				ZoneID:   zoneID,
 			})
 			failedCount++
 			continue
@@ -1104,6 +1105,12 @@ func (r *CloudflareDNSReconciler) reconcileDelete(ctx context.Context, dns *cfga
 	// upsert-only and create-only policies never delete records.
 	shouldDeleteOnResourceRemoval := dns.Spec.CleanupPolicy.DeleteOnResourceRemoval == nil || *dns.Spec.CleanupPolicy.DeleteOnResourceRemoval
 	if dns.Spec.Policy == cfgatev1alpha1.DNSPolicySync && shouldDeleteOnResourceRemoval {
+		// Deletion can arrive between finalizer insertion and identity persistence.
+		if dns.Status.OwnerID == "" {
+			if err := r.ensureDNSOwnerIdentity(ctx, dns); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
 			retryElapsed := time.Since(dns.DeletionTimestamp.Time)
 			if retryElapsed < dnsDeletionRetryBudget {
@@ -1518,6 +1525,12 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 		}
 	}
 
+	if len(dns.Status.Records) > 0 && r.shouldCreateTXTRecords(dns) {
+		if err := r.cleanupUnrecordedOwnership(ctx, dns, dnsService, ownerID, ownershipPrefix, resolveZoneID); err != nil {
+			deleteErrors = append(deleteErrors, err.Error())
+		}
+	}
+
 	logger.V(1).Info("cleanup: finished",
 		"totalDeleted", totalDeleted,
 		"errors", len(deleteErrors),
@@ -1525,6 +1538,62 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 
 	if len(deleteErrors) > 0 {
 		return fmt.Errorf("partial cleanup failure (%d errors): %s", len(deleteErrors), strings.Join(deleteErrors, "; "))
+	}
+	return nil
+}
+
+// cleanupUnrecordedOwnership recovers claims created before a status write. It
+// never broadens data-record deletion or revisits a recorded hostname's guards.
+func (r *CloudflareDNSReconciler) cleanupUnrecordedOwnership(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, service *cloudflare.DNSService, ownerID, prefix string, resolveZoneID func(string) (string, error)) error {
+	knownHosts := make(map[string]bool)
+	seenZones := make(map[string]bool)
+	var zones []string
+	addZone := func(id string) {
+		if id != "" && !seenZones[id] {
+			seenZones[id] = true
+			zones = append(zones, id)
+		}
+	}
+	for _, record := range dns.Status.Records {
+		knownHosts[record.Hostname] = true
+		addZone(record.ZoneID)
+	}
+	for _, zone := range dns.Spec.Zones {
+		id := zone.ID
+		if id == "" {
+			var err error
+			id, err = resolveZoneID(zone.Name)
+			if err != nil {
+				return fmt.Errorf("resolve ownership cleanup zone %s: %w", zone.Name, err)
+			}
+		}
+		addZone(id)
+	}
+	type claim struct {
+		zone   string
+		record cloudflare.DNSRecord
+	}
+	var claims []claim
+	for _, zone := range zones {
+		records, err := service.ListManagedRecords(ctx, zone, ownerID, prefix)
+		if err != nil {
+			return fmt.Errorf("inventory ownership claims in zone %s: %w", zone, err)
+		}
+		for _, record := range records {
+			if record.Type != "TXT" || !strings.HasPrefix(record.Name, prefix+".") {
+				continue
+			}
+			hostname := strings.TrimPrefix(record.Name, prefix+".")
+			if hostname != "" && !knownHosts[hostname] {
+				claims = append(claims, claim{zone: zone, record: record})
+			}
+		}
+	}
+	// No recovery mutation occurs until every known zone inventory is complete.
+	for _, claim := range claims {
+		if _, err := service.DeleteOwnedRecord(ctx, claim.zone, claim.record, ownerID, prefix); err != nil {
+			return fmt.Errorf("delete unrecorded ownership claim %s: %w", claim.record.Name, err)
+		}
 	}
 	return nil
 }

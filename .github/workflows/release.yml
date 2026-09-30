@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
 
+concurrency:
+  group: cfgate-release
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -36,26 +40,36 @@ jobs:
         name: Resolve immutable release source
         run: |
           .github/scripts/validate-release-ref.sh "$RELEASE_TAG" "$RELEASE_SHA"
-          echo "sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
-          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "date=$(git show -s --format=%cI HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "sha=$RELEASE_SHA"
+            echo "tag=$RELEASE_TAG"
+            echo "version=${RELEASE_TAG#v}"
+            echo "date=$(git show -s --format=%cI HEAD)"
+          } >> "$GITHUB_OUTPUT"
           echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
       - id: channel
         run: |
           VERSION="$RELEASE_VERSION"
           if [[ "$VERSION" == *"-alpha."* ]]; then
-            echo "level=alpha" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "level=alpha"
+              echo "prerelease=true"
+            } >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" == *"-beta."* ]]; then
-            echo "level=beta" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "level=beta"
+              echo "prerelease=true"
+            } >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" == *"-rc."* ]]; then
-            echo "level=rc" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "level=rc"
+              echo "prerelease=true"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "level=stable" >> "$GITHUB_OUTPUT"
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "level=stable"
+              echo "prerelease=false"
+            } >> "$GITHUB_OUTPUT"
           fi
           IS_LATEST=false
           if [[ "$VERSION" != *"-"* ]]; then
@@ -142,6 +156,7 @@ jobs:
       - run: mise run test
       - run: mise run test:e2e-cleanup
       - run: .github/scripts/test-release-ref.sh
+      - run: .github/scripts/test-release-startup.sh
 
   build-and-scan:
     needs: resolve
@@ -209,6 +224,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
           RELEASE_SHA: ${{ needs.resolve.outputs.sha }}
+          RELEASE_BUILD_DATE: ${{ needs.resolve.outputs.date }}
         run: .github/scripts/verify-release-images.sh
       - id: scan-amd64
         name: Gate AMD64 image before publication
@@ -260,6 +276,7 @@ jobs:
             release-images/*-manifest.json
             release-images/*-attestation.json
             release-images/*-version.txt
+            release-images/*-startup.jsonl
           if-no-files-found: warn
       - name: Upload checked image archive
         uses: actions/upload-artifact@v7
@@ -365,12 +382,14 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Release Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Version: ${{ needs.resolve.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Channel: ${{ needs.resolve.outputs.level }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Latest: ${{ needs.resolve.outputs.is-latest }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.resolve.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Digest: ${{ steps.push.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Release Summary"
+            echo "- Version: ${{ needs.resolve.outputs.version }}"
+            echo "- Channel: ${{ needs.resolve.outputs.level }}"
+            echo "- Latest: ${{ needs.resolve.outputs.is-latest }}"
+            echo "- Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.resolve.outputs.version }}"
+            echo "- Digest: ${{ steps.push.outputs.digest }}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: oras-project/setup-oras@v2
 

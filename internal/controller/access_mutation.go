@@ -47,6 +47,18 @@ func (c *accessMutationClient) DeleteAccessPolicy(ctx context.Context, account, 
 	}
 	return c.Client.DeleteAccessPolicy(ctx, account, id)
 }
+func (c *accessMutationClient) DeleteServiceToken(ctx context.Context, account, id string) error {
+	if err := c.before(ctx); err != nil {
+		return err
+	}
+	return c.Client.DeleteServiceToken(ctx, account, id)
+}
+func (c *accessMutationClient) RotateServiceToken(ctx context.Context, account, id string) (*cloudflare.ServiceTokenWithSecret, error) {
+	if err := c.before(ctx); err != nil {
+		return nil, err
+	}
+	return c.Client.RotateServiceToken(ctx, account, id)
+}
 func guardAccessMutations(ctx context.Context, cfClient cloudflare.Client) cloudflare.Client {
 	if before, ok := ctx.Value(accessMutationContextKey{}).(func(context.Context) error); ok {
 		return &accessMutationClient{Client: cfClient, before: before}
@@ -103,9 +115,6 @@ func (r *CloudflareTunnelReconciler) verifyAccessWithdrawal(ctx context.Context,
 			if !wanted[dep.Namespace+"/"+dep.Name] {
 				continue
 			}
-			if dep.Pending {
-				return fmt.Errorf("required protection change waits for tunnel %s/%s to confirm its pending configuration", tunnel.Namespace, tunnel.Name)
-			}
 			cfClient, err := r.getCloudflareClient(ctx, tunnel)
 			if err != nil {
 				return err
@@ -121,6 +130,17 @@ func (r *CloudflareTunnelReconciler) verifyAccessWithdrawal(ctx context.Context,
 			claimed.Status.TunnelID = dep.TunnelID
 			if err := r.verifyTunnelClaim(ctx, claimed, account); err != nil {
 				return err
+			}
+			remoteTunnel, err := cfClient.GetTunnel(ctx, account, dep.TunnelID)
+			if err != nil {
+				return err
+			}
+			// A deleted tunnel can retain its old configuration without forwarding.
+			if remoteTunnel == nil {
+				continue
+			}
+			if dep.Pending {
+				return fmt.Errorf("required protection change waits for tunnel %s/%s to confirm its pending configuration", tunnel.Namespace, tunnel.Name)
 			}
 			remote, err := cfClient.GetTunnelConfiguration(ctx, account, dep.TunnelID)
 			if err != nil {

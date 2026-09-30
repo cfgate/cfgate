@@ -22,7 +22,7 @@ func TestAccessRequiredMissingApplicationDeniesMatchingRoute(t *testing.T) {
 	route.Annotations = map[string]string{"cfgate.io/access-required": "app/protection"}
 	c := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(class, gw, route, service).Build()
 	r := &CloudflareTunnelReconciler{Client: c, APIReader: c, Recorder: &fakeEventRecorder{}}
-	rules, _, err := r.collectIngressRules(context.Background(), tunnel)
+	rules, _, err := r.collectIngressRules(context.Background(), tunnel, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

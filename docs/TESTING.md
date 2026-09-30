@@ -69,6 +69,7 @@ Tests construct hostnames as `e2e-{run}-{type}-{node}-{line}.{CLOUDFLARE_ZONE_NA
 | `CLOUDFLARE_TEST_EMAIL` | Test email address for email rule verification |
 | `CLOUDFLARE_TEST_GROUP` | Test group name for GSuite group rule verification |
 | `E2E_SKIP_CLEANUP` | Set to `true` to skip resource cleanup after tests (for debugging) |
+| `E2E_PUBLIC_DNS_RESOLVER` | Optional `host:port` resolver for the public h2c probe, such as `1.1.1.1:53`; defaults to the system resolver and does not change system or cluster DNS |
 | `E2E_USE_EXISTING_CLUSTER` | Set to `true` to use existing kubeconfig cluster instead of creating kind |
 | `E2E_RUN_ID` | Optional 1-20 lowercase alphanumeric run ID for names and namespace labels; auto-generated when unset |
 | `E2E_ORPHAN_MIN_AGE` | Positive minimum age for explicitly enabled orphan cleanup (default: `2h`); unknown ages are preserved |
@@ -174,25 +175,11 @@ E2E_PROCS=8 mise run e2e
 
 #### Cleanup Orphaned Resources
 
-Each E2E suite run gets a run ID. When `E2E_RUN_ID` is unset, the suite auto-generates one so concurrent local runs do not share Cloudflare resource names. `SynchronizedBeforeSuite` removes stale `e2e-*` resources from older runs using `E2E_ORPHAN_MIN_AGE`; `SynchronizedAfterSuite` removes resources from the current run regardless of age.
+Each E2E suite run gets a run ID. When `E2E_RUN_ID` is unset, the suite auto-generates one so concurrent local runs do not share Cloudflare resource names. Default startup performs no Cloudflare cleanup; teardown selects only the current run.
 
-Tests that intentionally preserve a remote resource during CR deletion must register `DeferCleanup` immediately after discovering the remote ID, so failed assertions still clean up the business Cloudflare account.
+Tests that intentionally preserve a remote resource during CR deletion must register `DeferCleanup` immediately after discovering the remote ID, so failed assertions still clean up their test resources.
 
-If tests fail or `E2E_SKIP_CLEANUP=true` was set, resources may be left in Cloudflare. The cleanup utility removes them:
-
-```bash
-mise run e2e:cleanup
-```
-
-This scans for and deletes:
-- Tunnels with `e2e-` or `recovery-` name prefix
-- DNS records containing `e2e-` or `_cfgate.e2e-` in the name
-- Access applications with `e2e-` name prefix or domain prefix
-- Reusable Access policies with `e2e-` name prefix
-- Unreferenced Access owner tags matching `cfgate:<28 lowercase hex>`
-- Service tokens with `e2e-` name prefix
-
-Run cleanup before E2E tests to ensure a clean slate if previous runs left orphans.
+If tests fail or `E2E_SKIP_CLEANUP=true` was set, resources may remain in Cloudflare. `mise run e2e:cleanup` previews aged orphan candidates without deleting them. Follow the explicit opt-in procedure under Test Naming Convention below after reviewing that inventory.
 
 ### Test Structure
 
@@ -321,7 +308,7 @@ The E2E suite includes release-critical checks for behavior that is easy to regr
 
 The `Maintenance external effects` specs additionally exercise grant revocation/restoration, annotation watches, remote drift repair, Access-required policy/application changes, a Secret-only connector rollout, missing Deployment repair, and deletion held by a nonterminal connector Pod. The h2c spec builds a disposable origin that reports its received protocol, publishes only a run-owned hostname, and verifies HTTP/2 at that origin. It requires Docker, kind, DNS propagation and live Cloudflare credentials. This establishes neither QUIC trailer support nor atomic edge protection.
 
-Suite-managed clusters use a dedicated kubeconfig and an immutable Kubernetes 1.37.0 node image. `E2E_KIND_NODE_IMAGE` may select another digest-pinned image for explicit compatibility testing. Existing-cluster mode requires both `KUBECONFIG` and `CLUSTER_NAME`; the suite compares the selected kind API address and certificate authority before installing resources. Cleanup deletes only the suite-owned cluster and temporary kubeconfig, preserving unrelated contexts.
+Suite-managed clusters use a dedicated kubeconfig and an immutable Kubernetes 1.37.0 node image. `E2E_KIND_NODE_IMAGE` may select another digest-pinned image for explicit compatibility testing. Existing-cluster mode requires both `KUBECONFIG` and `CLUSTER_NAME`; the suite compares the selected kind API address and certificate authority before installing resources. Cleanup deletes only the suite-owned cluster and temporary kubeconfig, preserving unrelated contexts. The shared E2E task allows five minutes for interrupted cleanup, covering connector draining and bounded remote reconciliation. A second interrupt skips cleanup and requires explicit run-scoped recovery.
 
 #### Resource Creators
 
@@ -444,7 +431,12 @@ Quality, E2E, and image jobs check out that commit. The quality job runs lint,
 race tests, cleanup effects, bounded fuzzing, and release-ref contracts. The image job builds both architectures
 into one OCI archive, retaining BuildKit provenance and SBOM attestations. It
 extracts each platform without changing its manifest digest, verifies binary
-version/source metadata, and smoke-tests both architectures. Trivy scans the
+version/source metadata, and smoke-tests both architectures. Each image runs with
+networking disabled and an explicitly absent kubeconfig; its JSON startup record
+must contain the exact release version, source commit, and build date before the
+expected missing-kubeconfig exit. Go build metadata separately verifies the
+toolchain, operating system, and architecture. This preserves reproducible
+`-trimpath` builds, which omit linker arguments from Go build metadata. Trivy scans the
 single-platform OCI layout directories and fails on fixable HIGH or CRITICAL
 OS/library vulnerabilities. Failed scans or missing attestations block promotion.
 
@@ -458,6 +450,11 @@ both published architectures with the same severity gate.
 `bash .github/scripts/test-release-ref.sh` checks valid release channels,
 malformed versions, literal shell payloads, and mismatched tag/checkout commits
 without credentials or publication. PR CI runs this alongside cleanup regressions.
+`bash .github/scripts/test-release-startup.sh` rejects missing, duplicate or incorrect
+runtime metadata and unexpected startup exits without starting a controller.
+`bash .github/scripts/test-build-metadata.sh` uses a disposable Git repository to
+check untagged, exact-tag, later-commit and version-suffix behavior shared by local
+binary and Docker tasks. CI watches `hack/` changes and runs these contracts.
 Local OCI fixture tests establish archive mechanics only; final cfgate images
 must still pass the actual release checks after dependency updates. Creating the
 cfgate release tag remains gated on the user's final release review for alpha.6.

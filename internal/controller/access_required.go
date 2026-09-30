@@ -20,7 +20,6 @@ import (
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
 )
 
-type accessSyncContextKey struct{}
 type accessApplicationRead struct {
 	value *cloudflare.AccessApplication
 	err   error
@@ -30,7 +29,9 @@ type accessPolicyRead struct {
 	err   error
 }
 
-type accessSyncState struct {
+// accessSyncSession is confined to one locked publication attempt. It is never
+// shared across reconciliations; callers pass coordination dependencies explicitly.
+type accessSyncSession struct {
 	keys         map[string]bool
 	reader       client.Reader
 	client       cloudflare.Client
@@ -140,14 +141,14 @@ func (r *CloudflareTunnelReconciler) accessKeysForTunnel(ctx context.Context, tu
 	return out, nil
 }
 
-func (r *CloudflareTunnelReconciler) beginAccessSync(ctx context.Context, tunnel *cfg.CloudflareTunnel) (context.Context, func(), error) {
+func (r *CloudflareTunnelReconciler) beginAccessSync(ctx context.Context, tunnel *cfg.CloudflareTunnel) (*accessSyncSession, func(), error) {
 	if r.APIReader != nil {
 		var current cfg.CloudflareTunnel
 		if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(tunnel), &current); err != nil {
-			return ctx, nil, err
+			return nil, nil, err
 		}
 		if current.UID != tunnel.UID {
-			return ctx, nil, fmt.Errorf("tunnel identity changed before Access synchronization")
+			return nil, nil, fmt.Errorf("tunnel identity changed before Access synchronization")
 		}
 		tunnel.Status.AccessDependencies = current.Status.AccessDependencies
 	}
@@ -155,40 +156,40 @@ func (r *CloudflareTunnelReconciler) beginAccessSync(ctx context.Context, tunnel
 	if len(tunnel.Status.AccessDependencies) == 0 {
 		inventory, err := accessRouteInventory(ctx, r.Client)
 		if err != nil {
-			return ctx, nil, err
+			return nil, nil, err
 		}
 		if len(inventory[client.ObjectKeyFromObject(tunnel)]) == 0 {
-			return ctx, func() {}, nil
+			return nil, func() {}, nil
 		}
 	}
 	keys, err := r.accessKeysForTunnel(ctx, tunnel)
 	if err != nil {
-		return ctx, nil, err
+		return nil, nil, err
 	}
 	if len(keys) == 0 {
-		return ctx, func() {}, nil
+		return nil, func() {}, nil
 	}
 	if r.AccessLocks == nil {
-		return ctx, nil, fmt.Errorf("required Access coordination is not initialized")
+		return nil, nil, fmt.Errorf("required Access coordination is not initialized")
 	}
 	release, err := r.AccessLocks.acquire(ctx, keys)
 	if err != nil {
-		return ctx, nil, err
+		return nil, nil, err
 	}
 	current, err := r.accessKeysForTunnel(ctx, tunnel)
 	if err != nil {
 		release()
-		return ctx, nil, err
+		return nil, nil, err
 	}
 	if !reflect.DeepEqual(keys, current) {
 		release()
-		return ctx, nil, fmt.Errorf("required Access dependencies changed while awaiting publication")
+		return nil, nil, fmt.Errorf("required Access dependencies changed while awaiting publication")
 	}
-	state := &accessSyncState{reader: r.lifecycleReader(), keys: make(map[string]bool), applications: make(map[string]accessApplicationRead), policies: make(map[string]accessPolicyRead)}
+	state := &accessSyncSession{reader: r.lifecycleReader(), keys: make(map[string]bool), applications: make(map[string]accessApplicationRead), policies: make(map[string]accessPolicyRead)}
 	for _, key := range keys {
 		state.keys[key] = true
 	}
-	return context.WithValue(ctx, accessSyncContextKey{}, state), release, nil
+	return state, release, nil
 }
 
 func currentReady(conditions []metav1.Condition, generation, observed int64) bool {
@@ -203,7 +204,7 @@ func currentReady(conditions []metav1.Condition, generation, observed int64) boo
 	return false
 }
 
-func (r *CloudflareTunnelReconciler) requiredAccessAllows(ctx context.Context, tunnel *cfg.CloudflareTunnel, route *gateway.HTTPRoute, hosts []gateway.Hostname) error {
+func (r *CloudflareTunnelReconciler) requiredAccessAllows(ctx context.Context, state *accessSyncSession, tunnel *cfg.CloudflareTunnel, route *gateway.HTTPRoute, hosts []gateway.Hostname) error {
 	ref, required, err := accessRequiredReference(route)
 	if !required {
 		return nil
@@ -211,9 +212,8 @@ func (r *CloudflareTunnelReconciler) requiredAccessAllows(ctx context.Context, t
 	if err != nil {
 		return err
 	}
-	state, ok := ctx.Value(accessSyncContextKey{}).(*accessSyncState)
-	if !ok {
-		return fmt.Errorf("required Access-required publication has no coordination context")
+	if state == nil {
+		return fmt.Errorf("required Access publication has no coordination session")
 	}
 	if !state.keys[ref.String()] {
 		return fmt.Errorf("required Access dependency changed after lock acquisition")
@@ -436,7 +436,7 @@ func knownGRPCBackend(ctx context.Context, reader client.Reader, route *gateway.
 }
 
 // Remote observations are reused only within one locked configuration attempt.
-func (s *accessSyncState) readApplication(ctx context.Context, id string) (*cloudflare.AccessApplication, error) {
+func (s *accessSyncSession) readApplication(ctx context.Context, id string) (*cloudflare.AccessApplication, error) {
 	result, found := s.applications[id]
 	if !found {
 		result.value, result.err = s.client.GetAccessApplication(ctx, s.account, id)
@@ -444,7 +444,7 @@ func (s *accessSyncState) readApplication(ctx context.Context, id string) (*clou
 	}
 	return result.value, result.err
 }
-func (s *accessSyncState) readPolicy(ctx context.Context, id string) (*cloudflare.AccessPolicy, error) {
+func (s *accessSyncSession) readPolicy(ctx context.Context, id string) (*cloudflare.AccessPolicy, error) {
 	result, found := s.policies[id]
 	if !found {
 		result.value, result.err = s.client.GetAccessPolicy(ctx, s.account, id)

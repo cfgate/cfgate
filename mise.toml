@@ -63,18 +63,7 @@ description = "Build manager binary"
 depends = ["codegen"]
 run = """
 set -eu
-tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
-  version="${tag#v}"
-else
-  base="${tag#v}"
-  version="${base:-0.0.0}-dev+${commit}"
-fi
-if [ -n "${VERSION_SUFFIX:-}" ]; then
-  version="${version}${VERSION_SUFFIX}"
-fi
+. ./hack/build-metadata.sh
 mkdir -p bin
 echo "Building bin/manager ${version}"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w \
@@ -132,6 +121,7 @@ go test -race -count=1 ${TEST_ARGS:-} $packages
 [tasks."test:e2e-cleanup"]
 description = "Test E2E cleanup effects without credentials or cluster"
 run = """
+set -eu
 go test -race -count=1 ./test/e2e -run '^TestCleanup'
 go test ./internal/e2ecleanup -run '^$' -fuzz '^FuzzSelect$' -fuzztime=5s
 go test ./internal/cloudflare -run '^$' -fuzz '^FuzzTunnelConfigurationBudget$' -fuzztime=5s
@@ -238,6 +228,7 @@ ginkgo -vv \
   --keep-going \
   --silence-skips \
   --poll-progress-after=15s \
+  --grace-period=5m \
   ${focus_args:+"$focus_args"} \
   --output-dir="${tmp_dir}" \
   --json-report=e2e.json \
@@ -479,18 +470,7 @@ alias = "db"
 description = "Build Docker image"
 run = """
 set -eu
-tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
-  version="${tag#v}"
-else
-  base="${tag#v}"
-  version="${base:-0.0.0}-dev+${commit}"
-fi
-if [ -n "${VERSION_SUFFIX:-}" ]; then
-  version="${version}${VERSION_SUFFIX}"
-fi
+. ./hack/build-metadata.sh
 image="${IMG:-cfgate:local}"
 echo "Building Docker image ${image}"
 docker build \
@@ -507,18 +487,8 @@ run = """
 set -eu
 image="${IMG:-cfgate:local}"
 registry="${REGISTRY:-ghcr.io/cfgate/cfgate}"
-tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
-  version="${tag#v}"
-else
-  base="${tag#v}"
-  version="${base:-0.0.0}-dev+${commit}"
-fi
-if [ -n "${VERSION_SUFFIX:-}" ]; then
-  version="${version}${VERSION_SUFFIX}"
-fi
-if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+. ./hack/build-metadata.sh
+if [ "$is_release" = true ]; then
   docker tag "${image}" "${registry}:${version}"
   docker tag "${image}" "${registry}:latest"
   docker push "${registry}:${version}"
@@ -534,19 +504,8 @@ description = "Build multi-arch image (amd64 + arm64)"
 run = """
 set -eu
 registry="${REGISTRY:-ghcr.io/cfgate/cfgate}"
-tag="$(git describe --tags --abbrev=0 2>/dev/null || true)"
-commit="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
-  version="${tag#v}"
-else
-  base="${tag#v}"
-  version="${base:-0.0.0}-dev+${commit}"
-fi
-if [ -n "${VERSION_SUFFIX:-}" ]; then
-  version="${version}${VERSION_SUFFIX}"
-fi
-if [ -n "$tag" ] && [ "$(git describe --tags --exact-match 2>/dev/null || true)" = "$tag" ]; then
+. ./hack/build-metadata.sh
+if [ "$is_release" = true ]; then
   tags="-t ${registry}:${version} -t ${registry}:latest"
 else
   tags="-t ${registry}:dev"

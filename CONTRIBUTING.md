@@ -174,6 +174,21 @@ mise run cluster:create
 
 ## Development Workflow
 
+Local binary and Docker tasks source `hack/build-metadata.sh` for the same tag,
+short commit, UTC build date and optional `VERSION_SUFFIX`. An exact tag uses its
+version without the leading `v`; other commits use `<tag>-dev+<commit>`, or
+`0.0.0-dev+<commit>` when no tag exists. Release workflows retain their separately
+validated tag and full source SHA. Local metadata does not certify a clean tree
+or authorize publication.
+
+Keep reconciliation dependencies explicit. Access publication passes one
+`accessSyncSession` through route collection and protection verification while
+holding the acquired locks. Its observations and read caches belong to that
+attempt; do not retain them across reconciliations or hide them in context values.
+An absent session permits ordinary public routes but cannot authorize an
+Access-required route. Keep shared route acceptance helpers aligned with both
+status and emitted-configuration tests before adding another resolution layer.
+
 ### Making Changes
 
 1. Create a feature branch from `main`

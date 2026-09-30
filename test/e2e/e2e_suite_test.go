@@ -1104,12 +1104,15 @@ func createTestNamespace(prefix string) *corev1.Namespace {
 		},
 	}
 	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
-	// Explicitly authorize only this test namespace's tunnel fallback credential.
+	// Explicitly authorize only this test namespace's tunnel and DNS fallback credentials.
 	grant := &gatewayv1b1.ReferenceGrant{
 		ObjectMeta: metav1.ObjectMeta{Name: "fallback-" + ns.Name, Namespace: e2eSystemNamespace()},
 		Spec: gatewayv1b1.ReferenceGrantSpec{
-			From: []gatewayv1b1.ReferenceGrantFrom{{Group: "cfgate.io", Kind: "CloudflareTunnel", Namespace: gatewayv1b1.Namespace(ns.Name)}},
-			To:   []gatewayv1b1.ReferenceGrantTo{{Group: "", Kind: "Secret", Name: ptrTo(gatewayv1b1.ObjectName(e2eFallbackCredentialsSecret))}},
+			From: []gatewayv1b1.ReferenceGrantFrom{
+				{Group: "cfgate.io", Kind: "CloudflareTunnel", Namespace: gatewayv1b1.Namespace(ns.Name)},
+				{Group: "cfgate.io", Kind: "CloudflareDNS", Namespace: gatewayv1b1.Namespace(ns.Name)},
+			},
+			To: []gatewayv1b1.ReferenceGrantTo{{Group: "", Kind: "Secret", Name: ptrTo(gatewayv1b1.ObjectName(e2eFallbackCredentialsSecret))}},
 		},
 	}
 	Expect(k8sClient.Create(ctx, grant)).To(Succeed())

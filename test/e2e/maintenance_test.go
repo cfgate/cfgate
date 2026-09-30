@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -115,7 +116,7 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 
 		By("Publishing only the run-owned hostname and proving HTTP/2 reaches the origin")
 		updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(a map[string]string) { a["cfgate.io/dns-sync"] = "maintenance" })
-		dns := createCloudflareDNSWithGatewayRoutes(ctx, k8sClient, testID("maintenance-dns"), namespace.Name, tunnel.Name, []string{testEnv.CloudflareZoneName}, "maintenance")
+		dns := createCloudflareDNSWithGatewayRoutes(ctx, k8sClient, testID("maintenance-dns"), namespace.Name, tunnel.Name, []string{testEnv.CloudflareZoneName}, "cfgate.io/dns-sync=maintenance")
 		zoneID, err := getZoneIDByName(ctx, cfClient, testEnv.CloudflareZoneName)
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(ctx, func(g Gomega) {
@@ -127,7 +128,7 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 			record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(record).NotTo(BeNil())
-			g.Expect(record.Comment).To(Equal("heritage=cfgate,cfgate/owner=" + dns.Status.OwnerID))
+			g.Expect(record.Comment).To(Equal("cfgate/owner=" + dns.Status.OwnerID))
 			g.Expect(record.Content).To(Equal(tunnel.Status.TunnelDomain))
 			g.Expect(record.Proxied).To(BeTrue())
 			ownership, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, "_cfgate."+hostname, "TXT")
@@ -342,24 +343,23 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 		tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, LongTimeout)
 		maintenanceReadyPods(ctx, tunnel, 1)
 		const hold = "e2e.cfgate.io/hold-drain"
-		// A scheduled connector can become terminal before its finalizer clears,
-		// which correctly counts as drained. Hold a nonterminal, unschedulable
-		// connector Pod to make the unresolved termination boundary deterministic.
+		// Keep a real running connector alive during deletion. An unscheduled
+		// terminating Pod can be marked Failed by Kubernetes' Pod GC.
+		var deployment appsv1.Deployment
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: tunnel.Namespace, Name: cloudflared.DeploymentName(tunnel.Name)}, &deployment)).To(Succeed())
 		pod := corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: testID("held-connector"), Namespace: tunnel.Namespace,
 				Labels: cloudflared.Selector(tunnel.Name), Finalizers: []string{hold},
 				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(tunnel, cfgatev1alpha1.GroupVersion.WithKind("CloudflareTunnel"))},
 			},
-			Spec: corev1.PodSpec{
-				AutomountServiceAccountToken: ptrTo(false),
-				NodeSelector:                 map[string]string{"cfgate.io/e2e-unavailable": testID("absent-node")},
-				Containers:                   []corev1.Container{{Name: "held-connector", Image: cloudflared.DefaultImage}},
-			},
+			Spec: *deployment.Spec.Template.Spec.DeepCopy(),
 		}
+		pod.Spec.TerminationGracePeriodSeconds = ptrTo(int64(180))
+		pod.Spec.Containers[0].Lifecycle = &corev1.Lifecycle{PreStop: &corev1.LifecycleHandler{Sleep: &corev1.SleepAction{Seconds: 120}}}
 		Expect(k8sClient.Create(ctx, &pod)).To(Succeed())
 		releaseHold := func(cleanupCtx context.Context) {
-			Expect(client.IgnoreNotFound(k8sClient.Delete(cleanupCtx, &pod))).To(Succeed())
+			Expect(client.IgnoreNotFound(k8sClient.Delete(cleanupCtx, &pod, client.GracePeriodSeconds(0)))).To(Succeed())
 			Eventually(cleanupCtx, func() error {
 				if err := k8sClient.Get(cleanupCtx, client.ObjectKeyFromObject(&pod), &pod); err != nil {
 					return client.IgnoreNotFound(err)
@@ -379,7 +379,10 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 			defer cancel()
 			releaseHold(cleanupCtx)
 		}
-		DeferCleanup(func() { releaseHeldPod() })
+		Eventually(ctx, func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&pod), &pod)).To(Succeed())
+			g.Expect(maintenancePodReady(&pod)).To(BeTrue())
+		}, LongTimeout, DefaultInterval).Should(Succeed())
 		Expect(k8sClient.Delete(ctx, &pod)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, tunnel)).To(Succeed())
 		Eventually(ctx, func(g Gomega) {
@@ -541,7 +544,20 @@ func deployMaintenanceOrigin(ctx context.Context, service *corev1.Service) {
 }
 
 func expectMaintenanceH2C(ctx context.Context, hostname, marker string) {
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if address := os.Getenv("E2E_PUBLIC_DNS_RESOLVER"); address != "" {
+		_, _, err := net.SplitHostPort(address)
+		Expect(err).NotTo(HaveOccurred(), "E2E_PUBLIC_DNS_RESOLVER must be host:port")
+		resolverDialer := &net.Dialer{Timeout: 5 * time.Second}
+		dialer := &net.Dialer{Timeout: 15 * time.Second, Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return resolverDialer.DialContext(ctx, network, address)
+			},
+		}}
+		transport.DialContext = dialer.DialContext
+	}
+	httpClient := &http.Client{Timeout: 15 * time.Second, Transport: transport}
 	defer httpClient.CloseIdleConnections()
 	Eventually(ctx, func(g Gomega) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+hostname+"/?run="+testRunID+"&nonce="+fmt.Sprint(time.Now().UnixNano()), nil)

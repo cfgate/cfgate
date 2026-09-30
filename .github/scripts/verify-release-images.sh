@@ -3,6 +3,8 @@ set -euo pipefail
 
 : "${RELEASE_VERSION:?release version required}"
 : "${RELEASE_SHA:?release commit required}"
+: "${RELEASE_BUILD_DATE:?release build date required}"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 mkdir -p release-images
 skopeo inspect --raw oci-archive:cfgate.oci.tar > release-images/index.json
 index_digest=$(skopeo manifest-digest release-images/index.json)
@@ -25,15 +27,21 @@ for arch in amd64 arm64; do
   skopeo inspect "oci-archive:$archive" | jq -e --arg arch "$arch" --arg sha "$RELEASE_SHA" '.Architecture == $arch and .Os == "linux" and .Labels["org.opencontainers.image.revision"] == $sha'
   ref="cfgate:release-smoke-$arch"
   skopeo copy "oci-archive:$archive" "docker-daemon:$ref"
-  docker run --rm --platform "linux/$arch" "$ref" --help
+  docker run --rm --network none --platform "linux/$arch" "$ref" --help
+  # A trimmed Go binary omits linker flags from build-info metadata. Check the
+  # actual embedded values in its startup record before the expected config exit.
+  status=0
+  docker run --rm --network none --platform "linux/$arch" \
+    -e KUBECONFIG=/cfgate-release-no-kubeconfig "$ref" --zap-encoder=json \
+    > "release-images/$arch-startup.jsonl" 2>&1 || status=$?
+  "$script_dir/verify-release-startup.sh" "release-images/$arch-startup.jsonl" "$status"
   container=$(docker create --platform "linux/$arch" "$ref")
   trap 'docker rm "$container" >/dev/null' EXIT
   docker cp "$container:/manager" "release-images/$arch-manager"
   docker rm "$container" >/dev/null
   trap - EXIT
   go version -m "release-images/$arch-manager" > "release-images/$arch-version.txt"
-  grep -F -- "main.Version=$RELEASE_VERSION " "release-images/$arch-version.txt"
-  grep -E -- "main.Commit=$RELEASE_SHA([[:space:]]|\")" "release-images/$arch-version.txt"
+  grep -Fx -- "release-images/$arch-manager: $(go env GOVERSION)" "release-images/$arch-version.txt"
   grep -Fx -- $'\tbuild\tGOOS=linux' "release-images/$arch-version.txt"
   grep -Fx -- $'\tbuild\tGOARCH='"$arch" "release-images/$arch-version.txt"
 done

@@ -120,6 +120,13 @@ func (c *clientImpl) GetTunnel(ctx context.Context, accountID, tunnelID string) 
 		return nil, fmt.Errorf("failed to get tunnel: %w", err)
 	}
 
+	if tunnel == nil || tunnel.ID != tunnelID {
+		return nil, fmt.Errorf("get tunnel: response identity does not match requested tunnel")
+	}
+	// Cloudflare retains deleted tunnel tombstones with HTTP 200 and status down.
+	if !tunnel.DeletedAt.IsZero() {
+		return nil, nil
+	}
 	return tunnelFromAPI(tunnel), nil
 }
 
@@ -131,13 +138,14 @@ func (c *clientImpl) GetTunnelByName(ctx context.Context, accountID, name string
 	tunnels, err := c.api.ZeroTrust.Tunnels.Cloudflared.List(ctx, zero_trust.TunnelCloudflaredListParams{
 		AccountID: cf.F(accountID),
 		Name:      cf.F(name),
+		IsDeleted: cf.F(false),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list tunnels: %w", err)
 	}
 
 	for _, tunnel := range tunnels.Result {
-		if tunnel.Name == name && string(tunnel.Status) != "deleted" {
+		if tunnel.Name == name && tunnel.DeletedAt.IsZero() && string(tunnel.Status) != "deleted" {
 			return &Tunnel{
 				ID:         tunnel.ID,
 				Name:       tunnel.Name,

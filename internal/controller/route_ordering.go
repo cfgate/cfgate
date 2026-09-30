@@ -9,6 +9,7 @@ import (
 
 type orderedIngressRule struct {
 	cloudflare.IngressRule
+	accessDenied          bool
 	pathType              gateway.PathMatchType
 	pathLength            int
 	created               metav1.Time
@@ -70,6 +71,10 @@ func ingressRuleBefore(a, b orderedIngressRule) bool {
 	}
 	if a.pathLength != b.pathLength {
 		return a.pathLength > b.pathLength
+	}
+	// Equal matches must not let an older public route bypass required protection.
+	if a.accessDenied != b.accessDenied {
+		return a.accessDenied
 	}
 	if !a.created.Equal(&b.created) {
 		return a.created.Before(&b.created)

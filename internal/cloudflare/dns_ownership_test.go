@@ -14,7 +14,9 @@ func TestAmbiguousOwnershipMarkersNeverAuthorize(t *testing.T) {
 		{Type: "TXT", Content: "unrelated text", Comment: OwnershipComment("ours")},
 		{Type: "TXT", Content: "heritage=cfgate,cfgate/owner=foreign", Comment: OwnershipComment("ours")},
 	} {
-		if IsOwnedByCfgate(&record, "ours") { t.Fatalf("ambiguous marker authorized: %+v", record) }
+		if IsOwnedByCfgate(&record, "ours") {
+			t.Fatalf("ambiguous marker authorized: %+v", record)
+		}
 	}
 }
 
@@ -24,6 +26,8 @@ func TestDNSOwnershipConflictsHaveNoWrites(t *testing.T) {
 		records []DNSRecord
 		adopt   bool
 	}{
+		{"conflicting A", []DNSRecord{{ID: "a", Name: "app.example", Type: "A", Content: "192.0.2.1"}}, false},
+		{"conflicting AAAA", []DNSRecord{{ID: "aaaa", Name: "app.example", Type: "AAAA", Content: "2001:db8::1"}}, true},
 		{"foreign TXT", []DNSRecord{BuildOwnershipTXTRecord("app.example", "foreign", "resource", "_cfgate")}, false},
 		{"foreign TXT cannot be adopted", []DNSRecord{BuildOwnershipTXTRecord("app.example", "foreign", "resource", "_cfgate")}, true},
 		{"unmarked data", []DNSRecord{{ID: "data", Name: "app.example", Type: "CNAME", Content: "old", Comment: "managed by cfgate"}}, false},
@@ -74,12 +78,23 @@ func TestDNSPolicySkipAndForeignClaimDeletion(t *testing.T) {
 		return &record, nil
 	}
 	mock.DeleteDNSRecordFunc = func(context.Context, string, string) error { writes++; return nil }
+	mock.CreateDNSRecordFunc = func(_ context.Context, _ string, record DNSRecord) (*DNSRecord, error) {
+		if record.Type != "TXT" {
+			t.Fatal("create-only drift mutated data")
+		}
+		record.ID = "claim"
+		claim = &record
+		return claim, nil
+	}
 	svc := NewDNSService(mock, logr.Discard())
 	desired := data
 	desired.Content = "new"
 	_, changed, err := svc.SyncOwnedRecord(context.Background(), "zone", desired, "ours", "resource", "_cfgate", PolicyCreateOnly, true, false)
 	if !errors.Is(err, ErrDNSRecordSkipped) || changed || writes != 0 {
 		t.Fatalf("skipped err=%v changed=%v writes=%d", err, changed, writes)
+	}
+	if claim == nil || !IsOwnedByCfgate(claim, "ours") {
+		t.Fatal("create-only drift did not repair missing ownership claim")
 	}
 	foreign := BuildOwnershipTXTRecord(data.Name, "foreign", "resource", "_cfgate")
 	claim = &foreign

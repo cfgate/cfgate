@@ -62,6 +62,8 @@ The stricter defaults intentionally reject ambiguous ownership accepted by earli
 
 Deleting/recreating the installation namespace or CR changes its UID and requires the same inspected migration. Preserve ownership status for cleanup; do not clear it to bypass a conflict. Explicit `cfgate.io/deletion-policy: orphan` retains external resources; orphaned tunnel claims also remain until an administrator verifies no writer still owns the remote tunnel.
 
+Data records use the exact compact comment `cfgate/owner=<owner-id>` to fit Cloudflare's DNS comment limit. The persisted installation/resource owner identity and companion TXT format do not change; existing exact heritage-prefixed data comments remain recognized. A foreign or ambiguous marker never authorizes adoption or deletion.
+
 ## Coordination limits
 
 The immutable claim ConfigMap provides one winner per account/tunnel ID **within one installation namespace**. Different installation namespaces or clusters have separate Kubernetes APIs and require external coordination. Cloudflare tunnel names alone do not prove ownership, and a stored tunnel ID alone does not authorize mutation.
