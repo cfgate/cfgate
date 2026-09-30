@@ -5,27 +5,45 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"reflect"
+	"time"
 )
 
 func appliedTunnelConfigHash(accountID, tunnelID string, config cloudflare.TunnelConfiguration) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(accountID+"\x00"+tunnelID+"\x00"+tunnelConfigHash(config))))
 }
 
-func equivalentTunnelConfiguration(a, b cloudflare.TunnelConfiguration) bool {
-	normalize := func(config cloudflare.TunnelConfiguration) cloudflare.TunnelConfiguration {
+// equivalentTunnelConfiguration compares a remote read with desired API write semantics.
+func equivalentTunnelConfiguration(remote, desired cloudflare.TunnelConfiguration) bool {
+	normalize := func(config cloudflare.TunnelConfiguration, desired bool) cloudflare.TunnelConfiguration {
 		config.Ingress = append([]cloudflare.IngressRule(nil), config.Ingress...)
-		empty := func(origin *cloudflare.OriginRequestConfig) bool {
-			return origin != nil && reflect.DeepEqual(*origin, cloudflare.OriginRequestConfig{})
+		// Cloudflare returns an explicit disabled WARP block even when omitted.
+		// Enabled routing remains a meaningful difference.
+		if config.WarpRouting != nil && !config.WarpRouting.Enabled {
+			config.WarpRouting = nil
 		}
-		if empty(config.OriginRequest) {
-			config.OriginRequest = nil
-		}
-		for i := range config.Ingress {
-			if empty(config.Ingress[i].OriginRequest) {
-				config.Ingress[i].OriginRequest = nil
+		normalizeOrigin := func(origin *cloudflare.OriginRequestConfig) *cloudflare.OriginRequestConfig {
+			if origin == nil {
+				return nil
 			}
+			value := *origin
+			if desired {
+				value.ConnectTimeout = cloudflare.CanonicalOriginConnectTimeout(value.ConnectTimeout)
+			}
+			for _, duration := range []*string{&value.ConnectTimeout, &value.TLSTimeout, &value.TCPKeepAlive, &value.KeepAliveTimeout} {
+				if parsed, err := time.ParseDuration(*duration); err == nil {
+					*duration = parsed.String()
+				}
+			}
+			if reflect.DeepEqual(value, cloudflare.OriginRequestConfig{}) {
+				return nil
+			}
+			return &value
+		}
+		config.OriginRequest = normalizeOrigin(config.OriginRequest)
+		for i := range config.Ingress {
+			config.Ingress[i].OriginRequest = normalizeOrigin(config.Ingress[i].OriginRequest)
 		}
 		return config
 	}
-	return reflect.DeepEqual(normalize(a), normalize(b))
+	return reflect.DeepEqual(normalize(remote, false), normalize(desired, true))
 }

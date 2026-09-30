@@ -1,7 +1,10 @@
 package controller
 
 import (
+	"cfgate.io/cfgate/internal/cloudflare"
 	"context"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"testing"
 
 	cfg "cfgate.io/cfgate/api/v1alpha1"
@@ -51,5 +54,22 @@ func TestDNSOwnerIdentityPersistsInstallationAndResourceUID(t *testing.T) {
 	r.InstallationNamespace = ""
 	if err := r.ensureDNSOwnerIdentity(ctx, &persisted); err == nil {
 		t.Fatal("missing installation fell back to weak name identity")
+	}
+}
+
+func TestDNSEarlyDeletionInitializesOwnership(t *testing.T) {
+	ctx := context.Background()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operator", UID: "install-one"}}
+	dns := &cfg.CloudflareDNS{ObjectMeta: metav1.ObjectMeta{Name: "dns", Namespace: "app", UID: "resource-one", Finalizers: []string{dnsFinalizer}}, Spec: cfg.CloudflareDNSSpec{Policy: cfg.DNSPolicySync, Cloudflare: &cfg.CloudflareConfig{SecretRef: cfg.SecretRef{Name: "credentials"}}}}
+	kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithStatusSubresource(dns).WithObjects(ns, dns).Build()
+	r := &CloudflareDNSReconciler{Client: kube, InstallationNamespace: "operator", CFClient: cloudflare.NewMockClient(), Recorder: &fakeEventRecorder{}}
+	if err := kube.Delete(ctx, dns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(dns)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(dns), &cfg.CloudflareDNS{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("early deletion stranded finalizer: %v", err)
 	}
 }

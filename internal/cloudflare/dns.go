@@ -507,6 +507,9 @@ func IsOwnedByCfgate(record *DNSRecord, ownerID string) bool {
 	if record == nil || ownerID == "" {
 		return false
 	}
+	if record.Type != "TXT" && record.Comment == OwnershipComment(ownerID) {
+		return true
+	}
 	content := record.Comment
 	if record.Type == "TXT" {
 		content = record.Content
@@ -581,7 +584,7 @@ func IsRecordNotFoundError(err error) bool {
 }
 
 // OwnershipComment identifies the installation and Kubernetes resource owning data records.
-func OwnershipComment(ownerID string) string { return "heritage=cfgate,cfgate/owner=" + ownerID }
+func OwnershipComment(ownerID string) string { return "cfgate/owner=" + ownerID }
 
 // SyncOwnedRecord checks both data and TXT ownership before mutation. The API does
 // not provide compare-and-swap, so these checks cannot act as a distributed lock.
@@ -590,6 +593,24 @@ func (s *DNSService) SyncOwnedRecord(ctx context.Context, zoneID string, desired
 		return nil, false, fmt.Errorf("persistent DNS owner identity is required")
 	}
 	fresh := NewDNSService(s.client, s.log)
+	// Cloudflare rejects CNAMEs alongside address records. Check before claiming
+	// the hostname so a deterministic conflict cannot leave a new TXT claim.
+	var incompatible []string
+	switch desired.Type {
+	case "CNAME":
+		incompatible = []string{"A", "AAAA"}
+	case "A", "AAAA":
+		incompatible = []string{"CNAME"}
+	}
+	for _, kind := range incompatible {
+		records, err := s.client.ListDNSRecordsByNameType(ctx, zoneID, desired.Name, kind)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(records) > 0 {
+			return nil, false, fmt.Errorf("conflicting %s record for %s", kind, desired.Name)
+		}
+	}
 	existing, err := fresh.FindRecordByName(ctx, zoneID, desired.Name, desired.Type)
 	if err != nil {
 		return nil, false, err
@@ -610,9 +631,6 @@ func (s *DNSService) SyncOwnedRecord(ctx context.Context, zoneID string, desired
 		}
 	}
 	desired.Comment = OwnershipComment(ownerID)
-	if existing != nil && IsOwnedByCfgate(existing, ownerID) && !recordsMatch(existing, &desired) && !(&PolicyChecker{policy: policy}).AllowsUpdate() {
-		return existing, false, ErrDNSRecordSkipped
-	}
 	if createTXT {
 		if err := fresh.CreateOwnershipRecord(ctx, zoneID, OwnershipParams{Hostname: desired.Name, OwnerID: ownerID, Resource: resource, Prefix: prefix}); err != nil {
 			return nil, false, err
@@ -638,6 +656,9 @@ func (s *DNSService) SyncOwnedRecord(ctx context.Context, zoneID string, desired
 		return fresh.updateRecord(ctx, zoneID, current.ID, desired)
 	}
 	desired.Comment = OwnershipComment(ownerID)
+	if current != nil && IsOwnedByCfgate(current, ownerID) && !recordsMatch(current, &desired) && !(&PolicyChecker{policy: policy}).AllowsUpdate() {
+		return current, false, ErrDNSRecordSkipped
+	}
 	record, changed, err := fresh.SyncRecordWithPolicy(ctx, zoneID, desired, ownerID, policy)
 	if err == nil && !IsOwnedByCfgate(record, ownerID) {
 		return nil, false, fmt.Errorf("DNS ownership changed during synchronization of %s", desired.Name)

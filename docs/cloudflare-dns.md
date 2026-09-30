@@ -44,7 +44,7 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.ownership.txtRecord.enabled` | `*bool` | `true` (nil defaults to true) | No | Enables TXT record-based ownership tracking. |
 | `spec.ownership.txtRecord.prefix` | `string` | `_cfgate` | No | Prefix for TXT record names. Max 63 chars. |
 | `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes an exact owner marker. Schema removal is deferred to a future cleanup. |
-| `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes `heritage=cfgate,cfgate/owner=<owner-id>`. Schema removal is deferred to a future cleanup. |
+| `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes `cfgate/owner=<owner-id>`. Schema removal is deferred to a future cleanup. |
 | `spec.cleanupPolicy.deleteOnRouteRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the source route is deleted. |
 | `spec.cleanupPolicy.deleteOnResourceRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the CloudflareDNS resource itself is deleted (finalizer cleanup). |
 | `spec.cleanupPolicy.onlyManaged` | `*bool` | `true` (nil defaults to true) | No | Retained for compatibility; ownership checks always apply, including when false. |
@@ -200,7 +200,7 @@ spec:
 
 Ownership uses `status.ownerId = <installation namespace UID>/<CloudflareDNS UID>`, persisted before external writes. The manager obtains its installation namespace from `POD_NAMESPACE` or `--installation-namespace`; out-of-cluster development must supply that flag. Renames/recreations cannot reuse an old resource identity. Deleting and recreating the installation namespace changes its identity and requires an explicit migration.
 
-Data comments contain `heritage=cfgate,cfgate/owner=<owner-id>`. Companion TXT content also includes `cfgate/resource=cloudflaredns/<namespace>/<name>`; the default name is `_cfgate.<hostname>`. The default is to create and verify both markers. Disabling TXT creation does not disable data ownership checks or permit existing foreign TXT claims.
+Data comments contain the exact marker `cfgate/owner=<owner-id>`. With the persisted namespace UID/resource UID identity, this is 86 characters and fits the 100-character DNS comment limit. Existing exact `heritage=cfgate,cfgate/owner=<owner-id>` data comments remain recognized for owned updates and cleanup. Companion TXT content retains `heritage=cfgate,cfgate/owner=<owner-id>` and also includes `cfgate/resource=CloudflareDNS/<namespace>/<name>`; the default name is `_cfgate.<hostname>`. The default is to create and verify both markers. Disabling TXT creation does not disable data ownership checks or permit existing foreign TXT claims.
 
 `spec.ownership.ownerId` is a deprecated legacy hint; it no longer overrides resource identity. The deprecated comment configuration is also ignored. A cosmetic `managed by cfgate` comment is not ownership evidence. Foreign or ambiguous TXT records, foreign data markers, and unmarked existing records block synchronization. `cfgate.io/adopt-existing: "true"` permits explicitly inspected, unmarked legacy data only; it never overwrites a foreign owner.
 

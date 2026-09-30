@@ -1375,14 +1375,10 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 
 	Context("comment length regression guard", func() {
 		It("syncs DNS record with long resource name without exceeding Cloudflare 100-char comment limit", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
-			// Regression guard for alpha.13 fix.
-			// Prior to alpha.13, the comment included owner/resource metadata:
-			//   "managed by cfgate, owner=<ns>/<name>, dns=<ns>/<name>"
-			// This exceeded the Cloudflare API's 100-char comment limit with
-			// long namespace/name combinations, causing sync failures.
-			// After alpha.13, the comment is fixed: "managed by cfgate" (16 chars).
-			// This test uses a deliberately long resource name so the old format
-			// would produce a ~125-char comment, catching any regression.
+			// Full namespace/resource UID ownership uses the compact data marker
+			// "cfgate/owner=<namespace UID>/<resource UID>" (86 characters).
+			// The legacy heritage prefix made that identity exceed Cloudflare's
+			// 100-character comment limit. Long names must not inflate the marker.
 
 			By("Creating CloudflareDNS with a long resource name")
 			hostname := fmt.Sprintf("%s.%s", testID("cmtregr"), testEnv.CloudflareZoneName)
@@ -1398,6 +1394,14 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			dnsResource = waitForDNSReady(ctx, k8sClient, dnsResource.Name, namespace.Name, DefaultTimeout)
 			Expect(dnsResource.Status.SyncedRecords).To(BeNumerically(">=", 1),
 				"Record should sync successfully — if this fails, check that the DNS record comment does not exceed 100 chars")
+
+			By("Verifying the actual comment preserves full ownership within the limit")
+			record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(record).NotTo(BeNil())
+			Expect(dnsResource.Status.OwnerID).NotTo(BeEmpty())
+			Expect(record.Comment).To(Equal("cfgate/owner=" + dnsResource.Status.OwnerID))
+			Expect(len(record.Comment)).To(BeNumerically("<=", 100))
 		})
 	})
 })

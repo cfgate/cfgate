@@ -22,6 +22,11 @@ func (c *clientImpl) GetTunnelConfiguration(ctx context.Context, accountID, tunn
 	if response == nil {
 		return nil, fmt.Errorf("get tunnel configuration: empty response")
 	}
+	// Newly created remote tunnels explicitly return config:null until the first PUT.
+	// A missing or malformed field must still fail remote verification.
+	if response.JSON.Config.IsNull() && !response.JSON.Config.IsMissing() {
+		return nil, nil
+	}
 	var config TunnelConfiguration
 	if err := json.Unmarshal([]byte(response.Config.JSON.RawJSON()), &config); err != nil {
 		return nil, fmt.Errorf("decode tunnel configuration: %w", err)

@@ -108,9 +108,11 @@ jobs:
             "total_seconds": ${total}
           }
           EOF
-          echo "preflight=${preflight_duration}" >> "$GITHUB_OUTPUT"
-          echo "e2e=${e2e_duration}" >> "$GITHUB_OUTPUT"
-          echo "total=${total}" >> "$GITHUB_OUTPUT"
+          {
+            echo "preflight=${preflight_duration}"
+            echo "e2e=${e2e_duration}"
+            echo "total=${total}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload manual remote E2E artifacts
         if: always()
@@ -147,14 +149,16 @@ jobs:
           TOTAL_DURATION: ${{ steps.timing.outputs.total }}
           CODECOV_STATUS: ${{ steps.codecov.outcome }}
         run: |
-          echo "## Manual Remote E2E Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Ref: ${TEST_REF}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- SHA: ${TEST_SHA}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- E2E_PROCS: ${E2E_PROCS}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Preflight: ${PREFLIGHT_STATUS:-skipped} (${PREFLIGHT_DURATION:-0}s)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- E2E: ${E2E_STATUS:-skipped} (${E2E_DURATION:-0}s)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Total: ${TOTAL_DURATION:-0}s" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Artifact: manual-remote-e2e-${GITHUB_RUN_ID}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Manual Remote E2E Summary"
+            echo "- Ref: ${TEST_REF}"
+            echo "- SHA: ${TEST_SHA}"
+            echo "- E2E_PROCS: ${E2E_PROCS}"
+            echo "- Preflight: ${PREFLIGHT_STATUS:-skipped} (${PREFLIGHT_DURATION:-0}s)"
+            echo "- E2E: ${E2E_STATUS:-skipped} (${E2E_DURATION:-0}s)"
+            echo "- Total: ${TOTAL_DURATION:-0}s"
+            echo "- Artifact: manual-remote-e2e-${GITHUB_RUN_ID}"
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ -f out/coverage/e2e.coverprofile ]; then
             echo "- Codecov: ${CODECOV_STATUS:-success} with flags e2e,manual" >> "$GITHUB_STEP_SUMMARY"
           else

@@ -13,6 +13,7 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -290,7 +291,7 @@ func TestPolicyMutationRetainsRemovedReferenceAuthority(t *testing.T) {
 }
 func TestAccessReferenceChangeAfterLockIsDenied(t *testing.T) {
 	f := newAccessFixture(t)
-	ctx, release, err := f.r.beginAccessSync(context.Background(), f.tunnel)
+	session, release, err := f.r.beginAccessSync(context.Background(), f.tunnel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +300,7 @@ func TestAccessReferenceChangeAfterLockIsDenied(t *testing.T) {
 	if err := f.r.Update(context.Background(), f.route); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.r.requiredAccessAllows(ctx, f.tunnel, f.route, f.route.Spec.Hostnames); err == nil {
+	if err := f.r.requiredAccessAllows(context.Background(), session, f.tunnel, f.route, f.route.Spec.Hostnames); err == nil {
 		t.Fatal("unlocked replacement application authorized publication")
 	}
 }
@@ -368,6 +369,10 @@ func TestAccessWithdrawalUsesOnlyAuthorizedOwnedTunnel(t *testing.T) {
 			f := newAccessFixture(t)
 			f.sync(t)
 			remoteReads := 0
+			f.r.CFClient.(*cloudflare.MockClient).GetTunnelFunc = func(context.Context, string, string) (*cloudflare.Tunnel, error) {
+				remoteReads++
+				return nil, nil
+			}
 			f.r.CFClient.(*cloudflare.MockClient).GetTunnelConfigurationFunc = func(context.Context, string, string) (*cloudflare.TunnelConfiguration, error) {
 				remoteReads++
 				return f.remoteConfig, nil
@@ -419,12 +424,12 @@ func TestAccessSyncRecoversDependenciesFromDirectReader(t *testing.T) {
 	if err := f.r.Delete(context.Background(), f.route); err != nil {
 		t.Fatal(err)
 	}
-	ctx, release, err := f.r.beginAccessSync(context.Background(), stale)
+	session, release, err := f.r.beginAccessSync(context.Background(), stale)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer release()
-	if _, ok := ctx.Value(accessSyncContextKey{}).(*accessSyncState); !ok {
+	if session == nil {
 		t.Fatal("stale empty informer status skipped persisted dependency lock")
 	}
 	if len(stale.Status.AccessDependencies) == 0 {
@@ -523,5 +528,68 @@ func TestAccessDefaultBackendPortPreservesProtocolDenial(t *testing.T) {
 	f.sync(t)
 	if f.remoteConfig.Ingress[0].Service != "http_status:503" {
 		t.Fatal("legacy default-port backend bypassed known protocol denial")
+	}
+}
+
+func TestAccessDenialPrecedesOlderEqualPublicRoute(t *testing.T) {
+	f := newAccessFixture(t)
+	public := f.route.DeepCopy()
+	public.Name = "older-public"
+	public.ResourceVersion = ""
+	public.UID = ""
+	public.Annotations = nil
+	public.CreationTimestamp = metav1.NewTime(time.Unix(1, 0))
+	if err := f.r.Create(context.Background(), public); err != nil {
+		t.Fatal(err)
+	}
+	f.route.CreationTimestamp = metav1.NewTime(time.Unix(2, 0))
+	if err := f.r.Update(context.Background(), f.route); err != nil {
+		t.Fatal(err)
+	}
+	f.remoteApp = nil
+	f.sync(t)
+	if f.remoteConfig.Ingress[0].Service != "http_status:503" {
+		t.Fatalf("equal public route bypassed denial: %+v", f.remoteConfig.Ingress)
+	}
+}
+
+func TestSelectedPolicyTokenMutationsWaitForWithdrawal(t *testing.T) {
+	for _, operation := range []string{"delete", "rotate"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newAccessFixture(t)
+			f.sync(t)
+			f.policy.Generation++
+			if err := f.r.Update(context.Background(), f.policy); err != nil {
+				t.Fatal(err)
+			}
+			r := &CloudflareAccessPolicyReconciler{Client: f.r.Client, APIReader: f.r.APIReader, CFClient: f.r.CFClient, AccessLocks: f.r.AccessLocks, InstallationNamespace: f.r.InstallationNamespace}
+			changed := false
+			mock := f.r.CFClient.(*cloudflare.MockClient)
+			mock.DeleteServiceTokenFunc = func(context.Context, string, string) error { changed = true; return nil }
+			mock.RotateServiceTokenFunc = func(context.Context, string, string) (*cloudflare.ServiceTokenWithSecret, error) {
+				changed = true
+				return &cloudflare.ServiceTokenWithSecret{}, nil
+			}
+			attempt := func() error {
+				ctx, release, err := r.beginPolicyMutation(context.Background(), f.policy)
+				if err != nil {
+					return err
+				}
+				defer release()
+				guarded := guardAccessMutations(ctx, mock)
+				if operation == "delete" {
+					return guarded.DeleteServiceToken(ctx, "account", "token")
+				}
+				_, err = guarded.RotateServiceToken(ctx, "account", "token")
+				return err
+			}
+			if err := attempt(); err == nil || changed {
+				t.Fatal("token mutated before forwarding withdrawal")
+			}
+			f.sync(t)
+			if err := attempt(); err != nil || !changed {
+				t.Fatalf("token mutation after withdrawal: changed=%v err=%v", changed, err)
+			}
+		})
 	}
 }
