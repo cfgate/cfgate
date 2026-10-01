@@ -404,7 +404,9 @@ Deletion also inventories zones from the specification and recorded status to
 recover remote writes that succeeded before status was saved. Exact-owned data
 records for unrecorded hostnames are deleted before their companion TXT claims,
 including when older status records already exist. Data recovery also runs when
-TXT creation is disabled. Every recovery-zone inventory must succeed before
+TXT creation is disabled. Disabling TXT creation does not orphan existing owned
+claims: both recorded and recovered claims remain subject to normal cleanup.
+Every recovery-zone inventory must succeed before
 unrecorded records are deleted; a failed data deletion or a changed record
 identity retains the claims and finalizer for a fresh attempt. Recorded hostnames
 keep their status-backed record-ID checks. Foreign, ambiguous, and unmarked

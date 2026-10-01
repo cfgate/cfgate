@@ -86,7 +86,7 @@ func TestPartialDNSClaimCleanup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "owned claim" || mode == "delete retry" {
+			if mode == "owned claim" || mode == "delete retry" || mode == "ownership disabled" {
 				if len(store) != 0 || deletes == 0 {
 					t.Fatalf("owned claim leaked: status=%+v deletes=%d", dns.Status.Records, deletes)
 				}
@@ -99,7 +99,7 @@ func TestPartialDNSClaimCleanup(t *testing.T) {
 
 func TestDNSCrashBeforeStatus(t *testing.T) {
 	for _, hasOldStatus := range []bool{false, true} {
-		for _, phase := range []string{"claim only", "data with claim", "data without claim"} {
+		for _, phase := range []string{"claim only", "data with claim", "data without claim", "claim then disabled", "data then disabled"} {
 			t.Run(fmt.Sprintf("old status=%t/%s", hasOldStatus, phase), func(t *testing.T) {
 				ctx := context.Background()
 				store := map[string]cloudflare.DNSRecord{}
@@ -121,7 +121,7 @@ func TestDNSCrashBeforeStatus(t *testing.T) {
 					return result, nil
 				}
 				mock.CreateDNSRecordFunc = func(_ context.Context, _ string, r cloudflare.DNSRecord) (*cloudflare.DNSRecord, error) {
-					if r.Type != "TXT" && phase == "claim only" {
+					if r.Type != "TXT" && (phase == "claim only" || phase == "claim then disabled") {
 						panic("simulated process exit before status update")
 					}
 					r.ID = "owned-" + r.Type
@@ -161,11 +161,15 @@ func TestDNSCrashBeforeStatus(t *testing.T) {
 					_ = r.syncRecords(ctx, dns, "tunnel.example", map[string]HostnameConfig{"new.example.com": {}}, map[string]string{"example.com": "zone"}, cloudflare.NewDNSService(mock, logr.Discard()))
 				}()
 				wantRecords := 1
-				if phase == "data with claim" {
+				if phase == "data with claim" || phase == "data then disabled" {
 					wantRecords = 2
 				}
 				if !interrupted || len(store) != wantRecords {
 					t.Fatalf("interruption precondition missing: records=%v", store)
+				}
+				if phase == "claim then disabled" || phase == "data then disabled" {
+					disabled := false
+					persisted.Spec.Ownership.TXTRecord.Enabled = &disabled
 				}
 				// A restarted controller sees only the previously persisted status.
 				if err := r.cleanupRecordsWithFallback(ctx, persisted); err != nil {
@@ -262,17 +266,19 @@ func TestDNSUnrecordedRecordsInventoryAndRetry(t *testing.T) {
 }
 
 func TestDNSUnrecordedCleanupRetainsFinalizerOnFailure(t *testing.T) {
-	for _, txtEnabled := range []bool{false, true} {
+	for _, tracking := range []string{"enabled", "disabled", "disabled after claim"} {
+		txtEnabled := tracking == "enabled"
+		hasClaim := tracking != "disabled"
 		for _, failure := range []string{"inventory", "data deletion", "claim deletion", "changed data"} {
-			if !txtEnabled && failure == "claim deletion" {
+			if !hasClaim && failure == "claim deletion" {
 				continue
 			}
-			t.Run(fmt.Sprintf("TXT=%t/%s", txtEnabled, failure), func(t *testing.T) {
+			t.Run(fmt.Sprintf("TXT=%s/%s", tracking, failure), func(t *testing.T) {
 				ctx := context.Background()
 				const owner = "installation/resource"
 				data := cloudflare.DNSRecord{ID: "data", Name: "new.example.com", Type: "CNAME", Content: "target.example.com", Comment: cloudflare.OwnershipComment(owner)}
 				store := map[string]cloudflare.DNSRecord{data.ID: data}
-				if txtEnabled {
+				if hasClaim {
 					claim := cloudflare.BuildOwnershipTXTRecord(data.Name, owner, "CloudflareDNS/default/dns", "_cfgate")
 					claim.ID = "claim"
 					store[claim.ID] = claim
@@ -336,7 +342,7 @@ func TestDNSUnrecordedCleanupRetainsFinalizerOnFailure(t *testing.T) {
 				if err := k8s.Get(ctx, key, &current); err != nil || len(current.Finalizers) != 1 {
 					t.Fatalf("cleanup lost finalizer: object=%+v err=%v", current, err)
 				}
-				if len(store) == 0 || (txtEnabled && store["claim"].ID == "") {
+				if len(store) == 0 || (hasClaim && store["claim"].ID == "") {
 					t.Fatalf("failed cleanup lost recovery evidence: %v", store)
 				}
 				fail = false
