@@ -71,4 +71,26 @@ Data records use the exact compact comment `cfgate/owner=<owner-id>` to fit Clou
 
 The immutable claim ConfigMap provides one winner per account/tunnel ID **within one installation namespace**. Different installation namespaces or clusters have separate Kubernetes APIs and require external coordination. Cloudflare tunnel names alone do not prove ownership, and a stored tunnel ID alone does not authorize mutation.
 
+### Claim permissions after alpha.6
+
+The source installation manifests now grant ConfigMap `get/create/delete` through
+a Role in the manager's installation namespace, rather than through the
+cluster-wide manager role. This is an RBAC packaging change; the CRDs and
+controller's claim behavior are unchanged. Already published alpha.6 manifests
+retain their original permissions. Helm chart 1.5.0 supplies the narrower grant
+while continuing to run the alpha.6 image.
+
+Kustomize's default installation namespace is `cfgate-system`. If you separately
+override `--installation-namespace`, place the claim Role and RoleBinding in
+that existing namespace and keep the binding's service-account subject in the
+manager's actual namespace. Apply both the narrower ClusterRole and the new
+namespaced binding: adding a Role alone does not revoke the old cluster-wide
+grant. ConfigMaps elsewhere must no longer be accessible through this grant.
+
+This still permits operations on other ConfigMaps within the installation
+namespace; Kubernetes RBAC cannot select claims by name prefix. Ownership checks
+remain in the controller. Other permissions needed to manage Secrets and
+Deployments remain cluster-wide, so this change does not make a compromised
+manager harmless.
+
 DNS operations reread data and companion TXT records, reject foreign or ambiguous observable claims, and verify the record ID before deletion. Cloudflare's DNS API does not offer conditional writes for these operations. A writer can race between the last read and the write; TXT lookup is not a distributed lock. Use a single coordinated writer for a hostname across installations. Tests cover observable competing creations and ownership changes, not a nonexistent global atomic guarantee.
