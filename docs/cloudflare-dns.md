@@ -412,7 +412,7 @@ identity retains the claims and finalizer for a fresh attempt. Recorded hostname
 keep their status-backed record-ID checks. Foreign, ambiguous, and unmarked
 records remain protected by the ownership checks.
 
-If cleanup fails, the controller blocks indefinitely and requeues every 15 seconds. It never removes the finalizer automatically. Within a 1-minute retry budget, the controller emits Warning events with reason `CleanupFailed`. After the retry budget is exhausted, subsequent events escalate to reason `CleanupBlocked`.
+If cleanup fails, the controller blocks indefinitely and requeues every 15 seconds. It never removes the finalizer automatically. Before deletion has been pending for 1 minute, the controller emits Warning events with reason `CleanupFailed`. After that warning threshold, failed attempts emit `CleanupBlocked`. This threshold does not bound API calls or stop retries. Cleanup can finish on a later retry or after credentials, permissions, or connectivity are repaired.
 
 To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate.io/deletion-policy=orphan` annotation on the CloudflareDNS resource. The controller will leave DNS records in Cloudflare and remove the finalizer without attempting cleanup.
 

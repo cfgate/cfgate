@@ -2,11 +2,14 @@ package e2e_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,4 +102,76 @@ func TestCleanupStartupDefaultDoesNothing(t *testing.T) {
 	t.Setenv(EnvCleanOrphans, "")
 	// The default returns before By, client construction, or any network operation.
 	cleanOrphanedE2EResources(false)
+}
+
+// Verification helpers must not turn an expired poll into a successful absence
+// check, or lose its deadline when the SDK fetches another page.
+func TestE2EVerificationDeadlines(t *testing.T) {
+	previous := testEnv
+	t.Cleanup(func() { testEnv = previous })
+	testEnv = &E2ETestEnv{CloudflareAPIToken: "test-token"}
+	operations := map[string]func(context.Context, *cloudflare.Client) error{
+		"DNS": func(ctx context.Context, cf *cloudflare.Client) error {
+			_, err := getDNSRecordFromCloudflare(ctx, cf, "zone", "host.example.com", "CNAME")
+			return err
+		},
+		"tunnels": func(ctx context.Context, cf *cloudflare.Client) error {
+			_, err := listTunnelsByPrefixFromCloudflare(ctx, cf, "account", "e2e-")
+			return err
+		},
+		"applications": func(ctx context.Context, cf *cloudflare.Client) error {
+			_, err := getAccessApplicationFromCloudflare(ctx, cf, "account", "wanted")
+			return err
+		},
+		"tokens": func(ctx context.Context, cf *cloudflare.Client) error {
+			_, err := getServiceTokenFromCloudflare(ctx, cf, "account", "wanted")
+			return err
+		},
+	}
+	for name, operation := range operations {
+		for _, body := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/body=%t", name, body), func(t *testing.T) {
+				var calls atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if calls.Add(1) == 1 && name != "DNS" {
+						_, _ = io.WriteString(w, `{"success":true,"result":[{"id":"one","name":"other"}],"result_info":{"page":1,"total_pages":2}}`)
+						return
+					}
+					if body {
+						_, _ = io.WriteString(w, `{"success":true,"result":[`)
+						w.(http.Flusher).Flush()
+					}
+					select {
+					case <-r.Context().Done():
+					case <-time.After(2 * time.Second):
+						// Bound the fixture even if a regression loses cancellation.
+						_, _ = io.WriteString(w, `{"success":true,"result":[],"result_info":{"page":2,"total_pages":2}}`)
+					}
+				}))
+				defer server.Close()
+				defer server.CloseClientConnections()
+				cf := getCloudflareClient(option.WithBaseURL(server.URL))
+				ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+				defer cancel()
+				started := time.Now()
+				err := operation(ctx, cf)
+				// The transport's cancellation hook may win the race with the
+				// inherited deadline; both errors mean the request stopped.
+				if ctx.Err() != context.DeadlineExceeded || (!errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)) {
+					t.Fatalf("expected expired caller and canceled request, ctx=%v err=%v", ctx.Err(), err)
+				}
+				if time.Since(started) > time.Second {
+					t.Fatal("verification escaped its polling deadline")
+				}
+				wantCalls := int32(2)
+				if name == "DNS" {
+					wantCalls = 1
+				}
+				if calls.Load() != wantCalls {
+					t.Fatalf("calls=%d want=%d", calls.Load(), wantCalls)
+				}
+			})
+		}
+	}
 }

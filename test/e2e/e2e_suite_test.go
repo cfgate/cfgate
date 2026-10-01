@@ -41,6 +41,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllerconfig "sigs.k8s.io/controller-runtime/pkg/config"
 	ctrlzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -230,6 +231,7 @@ var _ = SynchronizedBeforeSuite(
 
 		mgr, err = ctrl.NewManager(cfg, ctrl.Options{
 			Scheme:                 scheme,
+			Controller:             controllerconfig.Controller{ReconciliationTimeout: controller.DefaultReconciliationTimeout},
 			LeaderElection:         false,
 			HealthProbeBindAddress: "0",
 			Metrics:                metricsserver.Options{BindAddress: "0"},
@@ -245,7 +247,7 @@ var _ = SynchronizedBeforeSuite(
 		credCache := cfcloudflare.NewCredentialCache(0) // 0 = default TTL
 		accessLocks := controller.NewAccessLocks()
 
-		// Register all 6 controllers.
+		// Register all seven controllers.
 		tunnelReconciler := &controller.CloudflareTunnelReconciler{
 			AccessLocks:           accessLocks,
 			Client:                mgr.GetClient(),
@@ -1153,7 +1155,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 	}
 
 	// Wait for DNS and Access applications to be fully deleted before policies.
-	waitForCleanupPhase(ns.Name, "DNS/AccessApplication CRs", func() bool {
+	waitForCleanupPhase(ns.Name, "DNS/AccessApplication CRs", func(ctx context.Context) bool {
 		var dCheck cfgatev1alpha1.CloudflareDNSList
 		var aCheck cfgatev1alpha1.CloudflareAccessApplicationList
 		dErr := k8sClient.List(ctx, &dCheck, client.InNamespace(ns.Name))
@@ -1176,7 +1178,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		}
 	}
 
-	waitForCleanupPhase(ns.Name, "AccessPolicy CRs", func() bool {
+	waitForCleanupPhase(ns.Name, "AccessPolicy CRs", func(ctx context.Context) bool {
 		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
 		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
 		if apierrors.IsNotFound(pErr) {
@@ -1193,7 +1195,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		}
 	}
 
-	waitForCleanupPhase(ns.Name, "Tunnel CRs", func() bool {
+	waitForCleanupPhase(ns.Name, "Tunnel CRs", func(ctx context.Context) bool {
 		var tCheck cfgatev1alpha1.CloudflareTunnelList
 		tErr := k8sClient.List(ctx, &tCheck, client.InNamespace(ns.Name))
 		if apierrors.IsNotFound(tErr) {
@@ -1220,13 +1222,21 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		"Namespace %s did not terminate", ns.Name)
 }
 
-func waitForCleanupPhase(namespace, phase string, done func() bool, describe func(string) string) {
-	Eventually(done, 120*time.Second, 1*time.Second).Should(BeTrue(), func() string {
-		return fmt.Sprintf("%s in namespace %s did not terminate\n%s", phase, namespace, describe(namespace))
+// External cleanup may wait behind an in-flight reconciliation, exhaust one
+// attempt and requeue before completing. Keep the full deletion assertion while
+// allowing the existing long-operation budget; namespace termination stays 2m.
+func waitForCleanupPhase(namespace, phase string, done func(context.Context) bool, describe func(context.Context, string) string) {
+	phaseCtx, cancel := context.WithTimeout(ctx, LongTimeout)
+	defer cancel()
+	Eventually(phaseCtx, done, LongTimeout, time.Second).Should(BeTrue(), func() string {
+		// Diagnostics need a fresh, short budget after the phase expires.
+		diagnosticCtx, diagnosticCancel := context.WithTimeout(ctx, ShortTimeout)
+		defer diagnosticCancel()
+		return fmt.Sprintf("%s in namespace %s did not terminate\n%s", phase, namespace, describe(diagnosticCtx, namespace))
 	})
 }
 
-func describeDNSAndAccessApplications(namespace string) string {
+func describeDNSAndAccessApplications(ctx context.Context, namespace string) string {
 	var b strings.Builder
 	var dnsRecords cfgatev1alpha1.CloudflareDNSList
 	if err := k8sClient.List(ctx, &dnsRecords, client.InNamespace(namespace)); err != nil && !apierrors.IsNotFound(err) {
@@ -1249,7 +1259,7 @@ func describeDNSAndAccessApplications(namespace string) string {
 	return b.String()
 }
 
-func describeAccessPolicies(namespace string) string {
+func describeAccessPolicies(ctx context.Context, namespace string) string {
 	var b strings.Builder
 	var policies cfgatev1alpha1.CloudflareAccessPolicyList
 	if err := k8sClient.List(ctx, &policies, client.InNamespace(namespace)); err != nil && !apierrors.IsNotFound(err) {
@@ -1264,7 +1274,7 @@ func describeAccessPolicies(namespace string) string {
 	return b.String()
 }
 
-func describeTunnels(namespace string) string {
+func describeTunnels(ctx context.Context, namespace string) string {
 	var b strings.Builder
 	var tunnels cfgatev1alpha1.CloudflareTunnelList
 	if err := k8sClient.List(ctx, &tunnels, client.InNamespace(namespace)); err != nil && !apierrors.IsNotFound(err) {

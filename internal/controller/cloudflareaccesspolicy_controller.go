@@ -27,11 +27,12 @@ import (
 )
 
 const (
-	accessPolicyFinalizer                = "cfgate.io/access-policy-cleanup"
-	accessPolicyRequeueAfterError        = 30 * time.Second
-	accessPolicyRequeueAfterSuccess      = 5 * time.Minute
-	AccessPolicyControllerName           = "cfgate.io/cloudflare-access-controller"
-	accessDeletionRetryBudget            = 1 * time.Minute
+	accessPolicyFinalizer           = "cfgate.io/access-policy-cleanup"
+	accessPolicyRequeueAfterError   = 30 * time.Second
+	accessPolicyRequeueAfterSuccess = 5 * time.Minute
+	AccessPolicyControllerName      = "cfgate.io/cloudflare-access-controller"
+	// accessDeletionWarningAfter changes event severity; it does not stop retries.
+	accessDeletionWarningAfter           = 1 * time.Minute
 	accessDeletionRequeueInterval        = 15 * time.Second
 	accessApplicationFinalizer           = "cfgate.io/access-application-cleanup"
 	accessApplicationRequeueAfterError   = 30 * time.Second
@@ -587,7 +588,7 @@ func (r *CloudflareAccessPolicyReconciler) blockAccessDeletion(ctx context.Conte
 	suffix := " Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer."
 	reason := "CleanupFailed"
 	message := detail + "." + suffix
-	if retryElapsed >= accessDeletionRetryBudget {
+	if retryElapsed >= accessDeletionWarningAfter {
 		reason = "CleanupBlocked"
 		message = fmt.Sprintf("%s (blocked after %s of retries).%s", detail, retryElapsed.Round(time.Second), suffix)
 	}

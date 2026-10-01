@@ -138,7 +138,7 @@ go test -race -count=1 ${TEST_ARGS:-} $packages
 description = "Test cleanup effects, bounded fuzzing, and build/release helpers without live services"
 run = """
 set -eu
-go test -race -count=1 ./test/e2e -run '^TestCleanup'
+go test -race -count=1 ./test/e2e -run '^(TestCleanup|TestE2EVerification)'
 go test ./internal/e2ecleanup -run '^$' -fuzz '^FuzzSelect$' -fuzztime=5s
 go test ./internal/cloudflare -run '^$' -fuzz '^FuzzTunnelConfigurationBudget$' -fuzztime=5s
 bash .github/scripts/test-build-metadata.sh
