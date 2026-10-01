@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	cf "github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/dns"
-	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
+	cf "github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/dns"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 )
 
 // tunnelFromAPI converts a cloudflare-go SDK tunnel response to the domain Tunnel type.
@@ -179,7 +179,7 @@ func corsHeadersFromSDK(h *zero_trust.CORSHeaders) *CORSHeadersParam {
 }
 
 // extractAllowedIdPs extracts AllowedIdPs from the SDK union response interface{}.
-// The CF SDK v6 uses apijson custom unmarshaling which may produce []string ([]AllowedIdPs)
+// The CF SDK uses apijson custom unmarshaling which may produce []string ([]AllowedIdPs)
 // instead of []interface{} depending on the response type. Handle both.
 func extractAllowedIdPs(v interface{}) []string {
 	switch idps := v.(type) {

@@ -25,11 +25,13 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
-	cloudflare "github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/dns"
-	"github.com/cloudflare/cloudflare-go/v6/option"
-	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
-	"github.com/cloudflare/cloudflare-go/v6/zones"
+	cloudflare "github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/dns"
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
+	"github.com/cloudflare/cloudflare-go/v7/zones"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -591,14 +593,19 @@ func cleanOrphanedE2EResources(includeCurrentRun bool) {
 
 // cleanOrphanedTunnels deletes e2e-* and recovery-* tunnels.
 func cleanOrphanedTunnels(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
-	iter := cfClient.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
-		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[shared.CloudflareTunnel], error) {
+		return cfClient.ZeroTrust.Tunnels.Cloudflared.List(ctx, zero_trust.TunnelCloudflaredListParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		}, opts...)
 	})
 
 	var orphaned []struct{ ID, Name string }
 	var skipped int
-	for iter.Next() {
-		t := iter.Current()
+	for t, err := range iter {
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to list tunnels: %v\n", err)
+			return
+		}
 		if !strings.HasPrefix(t.Name, "e2e-") && !strings.HasPrefix(t.Name, "recovery-") {
 			continue
 		}
@@ -607,11 +614,6 @@ func cleanOrphanedTunnels(ctx context.Context, cfClient *cloudflare.Client, opti
 		} else {
 			skipped++
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		GinkgoWriter.Printf("Warning: failed to list tunnels: %v\n", err)
-		return
 	}
 
 	if len(orphaned) == 0 {
@@ -646,14 +648,19 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client, o
 	zoneID := zoneList.Result[0].ID
 
 	// List all records and filter for E2E patterns.
-	iter := cfClient.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
-		ZoneID: cloudflare.F(zoneID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
+		return cfClient.DNS.Records.List(ctx, dns.RecordListParams{
+			ZoneID: cloudflare.F(zoneID),
+		}, opts...)
 	})
 
 	var orphaned []struct{ ID, Name string }
 	var skipped int
-	for iter.Next() {
-		r := iter.Current()
+	for r, err := range iter {
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to list DNS records: %v\n", err)
+			return
+		}
 		// Match e2e-* hostnames and _cfgate.e2e-* ownership TXT records.
 		if !strings.Contains(r.Name, "e2e-") && !strings.HasPrefix(r.Name, "_cfgate.e2e-") {
 			continue
@@ -663,11 +670,6 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client, o
 		} else {
 			skipped++
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		GinkgoWriter.Printf("Warning: failed to list DNS records: %v\n", err)
-		return
 	}
 
 	if len(orphaned) == 0 {
@@ -689,14 +691,19 @@ func cleanOrphanedDNSRecords(ctx context.Context, cfClient *cloudflare.Client, o
 // cleanOrphanedAccessApplications deletes e2e-* Access applications by name or domain.
 func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) map[string]struct{} {
 	allowedTags := map[string]struct{}{}
-	iter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
-		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
+		return cfClient.ZeroTrust.Access.Applications.List(ctx, zero_trust.AccessApplicationListParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		}, opts...)
 	})
 
 	var orphaned []struct{ ID, Name string }
 	var skipped int
-	for iter.Next() {
-		app := iter.Current()
+	for app, err := range iter {
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to list Access applications: %v\n", err)
+			return nil
+		}
 		// Match e2e-* application names and domains. Some focused Access tests use
 		// stable app names such as admin-app but e2e-* hostnames.
 		if !strings.Contains(app.Name, "e2e-") && !strings.Contains(app.Domain, "e2e-") {
@@ -713,11 +720,6 @@ func cleanOrphanedAccessApplications(ctx context.Context, cfClient *cloudflare.C
 		} else {
 			skipped++
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		GinkgoWriter.Printf("Warning: failed to list Access applications: %v\n", err)
-		return nil
 	}
 
 	if len(orphaned) == 0 {
@@ -743,26 +745,34 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client, a
 		return
 	}
 	referenced := map[string]struct{}{}
-	appIter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
-		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	appIter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
+		return cfClient.ZeroTrust.Access.Applications.List(ctx, zero_trust.AccessApplicationListParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		}, opts...)
 	})
-	for appIter.Next() {
-		for _, tag := range accesstags.ApplicationTagNames(appIter.Current().Tags) {
+	for app, err := range appIter {
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to list Access applications for tag references: %v\n", err)
+			return
+		}
+		for _, tag := range accesstags.ApplicationTagNames(app.Tags) {
 			referenced[tag] = struct{}{}
 		}
 	}
-	if err := appIter.Err(); err != nil {
-		GinkgoWriter.Printf("Warning: failed to list Access applications for tag references: %v\n", err)
-		return
-	}
 
-	tagIter := cfClient.ZeroTrust.Access.Tags.ListAutoPaging(ctx, zero_trust.AccessTagListParams{
-		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	tagIter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.Tag], error) {
+		return cfClient.ZeroTrust.Access.Tags.List(ctx, zero_trust.AccessTagListParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		}, opts...)
 	})
 
 	var orphaned []string
-	for tagIter.Next() {
-		tagName := tagIter.Current().Name
+	for item, err := range tagIter {
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to list Access tags: %v\n", err)
+			return
+		}
+		tagName := item.Name
 		if _, allowed := allowedTags[tagName]; !allowed || !accesstags.IsOwnerTag(tagName) {
 			continue
 		}
@@ -770,11 +780,6 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client, a
 			continue
 		}
 		orphaned = append(orphaned, tagName)
-	}
-
-	if err := tagIter.Err(); err != nil {
-		GinkgoWriter.Printf("Warning: failed to list Access tags: %v\n", err)
-		return
 	}
 
 	if len(orphaned) == 0 {
@@ -795,14 +800,19 @@ func cleanOrphanedAccessTags(ctx context.Context, cfClient *cloudflare.Client, a
 
 // cleanOrphanedAccessPolicies deletes e2e-* reusable Access policies.
 func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
-	iter := cfClient.ZeroTrust.Access.Policies.ListAutoPaging(ctx, zero_trust.AccessPolicyListParams{
-		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessPolicyListResponse], error) {
+		return cfClient.ZeroTrust.Access.Policies.List(ctx, zero_trust.AccessPolicyListParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		}, opts...)
 	})
 
 	var orphaned []struct{ ID, Name string }
 	var skipped int
-	for iter.Next() {
-		policy := iter.Current()
+	for policy, err := range iter {
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to list Access policies: %v\n", err)
+			return
+		}
 		if !strings.Contains(policy.Name, "e2e-") {
 			continue
 		}
@@ -811,11 +821,6 @@ func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Clien
 		} else {
 			skipped++
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		GinkgoWriter.Printf("Warning: failed to list Access policies: %v\n", err)
-		return
 	}
 
 	if len(orphaned) == 0 {
@@ -836,14 +841,19 @@ func cleanOrphanedAccessPolicies(ctx context.Context, cfClient *cloudflare.Clien
 
 // cleanOrphanedServiceTokens deletes e2e-* service tokens.
 func cleanOrphanedServiceTokens(ctx context.Context, cfClient *cloudflare.Client, options e2eCleanupOptions) {
-	iter := cfClient.ZeroTrust.Access.ServiceTokens.ListAutoPaging(ctx, zero_trust.AccessServiceTokenListParams{
-		AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.ServiceToken], error) {
+		return cfClient.ZeroTrust.Access.ServiceTokens.List(ctx, zero_trust.AccessServiceTokenListParams{
+			AccountID: cloudflare.F(testEnv.CloudflareAccountID),
+		}, opts...)
 	})
 
 	var orphaned []struct{ ID, Name string }
 	var skipped int
-	for iter.Next() {
-		token := iter.Current()
+	for token, err := range iter {
+		if err != nil {
+			GinkgoWriter.Printf("Warning: failed to list service tokens: %v\n", err)
+			return
+		}
 		// Match e2e-* token names.
 		if !strings.Contains(token.Name, "e2e-") {
 			continue
@@ -853,11 +863,6 @@ func cleanOrphanedServiceTokens(ctx context.Context, cfClient *cloudflare.Client
 		} else {
 			skipped++
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		GinkgoWriter.Printf("Warning: failed to list service tokens: %v\n", err)
-		return
 	}
 
 	if len(orphaned) == 0 {

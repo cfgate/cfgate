@@ -1,6 +1,7 @@
 package e2ecleanup
 
 import (
+	cfcloudflare "cfgate.io/cfgate/internal/cloudflare"
 	"context"
 	"fmt"
 	"io"
@@ -11,9 +12,11 @@ import (
 	"testing"
 	"time"
 
-	cloudflare "github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/option"
-	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
+	cloudflare "github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 )
 
 func TestCleanupPagerRetainsOperationCancellation(t *testing.T) {
@@ -38,15 +41,22 @@ func TestCleanupPagerRetainsOperationCancellation(t *testing.T) {
 			defer server.CloseClientConnections()
 			operation, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 			defer cancel()
-			cf := cloudflare.NewClient(option.WithAPIToken("test-token"), option.WithBaseURL(server.URL), option.WithHTTPClient(HTTPClient(operation)), option.WithMaxRetries(0), option.WithRequestTimeout(2*time.Second))
+			cf := cloudflare.NewClient(option.WithAPIToken("test-token"), option.WithBaseURL(server.URL), option.WithHTTPClient(HTTPClient(operation)), option.WithMaxRetries(2), option.WithRequestTimeout(2*time.Second))
 			started := time.Now()
-			iterator := cf.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(operation, zero_trust.TunnelCloudflaredListParams{AccountID: cloudflare.F("test-account")})
+			iterator := cfcloudflare.AllPages(operation, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[shared.CloudflareTunnel], error) {
+				return cf.ZeroTrust.Tunnels.Cloudflared.List(operation, zero_trust.TunnelCloudflaredListParams{AccountID: cloudflare.F("test-account")}, opts...)
+			})
 			count := 0
-			for iterator.Next() {
+			var pageError error
+			for _, err := range iterator {
+				if err != nil {
+					pageError = err
+					break
+				}
 				count++
 			}
-			if iterator.Err() == nil || count != 1 || pages.Load() != 2 {
-				t.Fatalf("count=%d pages=%d err=%v", count, pages.Load(), iterator.Err())
+			if pageError == nil || count != 1 || pages.Load() != 2 {
+				t.Fatalf("count=%d pages=%d err=%v", count, pages.Load(), pageError)
 			}
 			if time.Since(started) > time.Second {
 				t.Fatal("later page escaped the operation deadline")

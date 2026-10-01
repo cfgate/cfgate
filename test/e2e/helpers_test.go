@@ -14,11 +14,13 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	cloudflare "github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/dns"
-	"github.com/cloudflare/cloudflare-go/v6/option"
-	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
-	"github.com/cloudflare/cloudflare-go/v6/zones"
+	cloudflare "github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/dns"
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
+	"github.com/cloudflare/cloudflare-go/v7/zones"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -31,7 +33,6 @@ import (
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	cfcloudflare "cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/controller"
-	"cfgate.io/cfgate/internal/e2ecleanup"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -90,13 +91,17 @@ func deleteTunnelInCloudflare(ctx context.Context, cfClient *cloudflare.Client, 
 func listTunnelsByPrefixFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, prefix string) ([]CloudflareTunnelInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
 	defer cancel()
-	iter := cfClient.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
-		AccountID: cloudflare.F(accountID),
-	}, option.WithHTTPClient(e2ecleanup.HTTPClient(ctx)))
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[shared.CloudflareTunnel], error) {
+		return cfClient.ZeroTrust.Tunnels.Cloudflared.List(ctx, zero_trust.TunnelCloudflaredListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
+	})
 
 	var tunnels []CloudflareTunnelInfo
-	for iter.Next() {
-		t := iter.Current()
+	for t, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tunnels: %w", err)
+		}
 		if strings.HasPrefix(t.Name, prefix) && t.DeletedAt.IsZero() {
 			tunnels = append(tunnels, CloudflareTunnelInfo{
 				ID:        t.ID,
@@ -106,9 +111,7 @@ func listTunnelsByPrefixFromCloudflare(ctx context.Context, cfClient *cloudflare
 			})
 		}
 	}
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list tunnels: %w", err)
-	}
+
 	return tunnels, nil
 }
 
@@ -410,12 +413,16 @@ type CloudflareAccessApplicationInfo struct {
 func getAccessApplicationFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, appName string) (*CloudflareAccessApplicationInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
 	defer cancel()
-	iter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
-		AccountID: cloudflare.F(accountID),
-	}, option.WithHTTPClient(e2ecleanup.HTTPClient(ctx)))
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
+		return cfClient.ZeroTrust.Access.Applications.List(ctx, zero_trust.AccessApplicationListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
+	})
 
-	for iter.Next() {
-		app := iter.Current()
+	for app, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list Access applications: %w", err)
+		}
 		if app.Name == appName {
 			info := &CloudflareAccessApplicationInfo{
 				ID:                          app.ID,
@@ -441,10 +448,6 @@ func getAccessApplicationFromCloudflare(ctx context.Context, cfClient *cloudflar
 			}
 			return info, nil
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list Access applications: %w", err)
 	}
 
 	return nil, nil // Not found.
@@ -620,12 +623,16 @@ type CloudflareServiceTokenInfo struct {
 func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tokenName string) (*CloudflareServiceTokenInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
 	defer cancel()
-	iter := cfClient.ZeroTrust.Access.ServiceTokens.ListAutoPaging(ctx, zero_trust.AccessServiceTokenListParams{
-		AccountID: cloudflare.F(accountID),
-	}, option.WithHTTPClient(e2ecleanup.HTTPClient(ctx)))
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.ServiceToken], error) {
+		return cfClient.ZeroTrust.Access.ServiceTokens.List(ctx, zero_trust.AccessServiceTokenListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
+	})
 
-	for iter.Next() {
-		token := iter.Current()
+	for token, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list service tokens: %w", err)
+		}
 		if token.Name == tokenName {
 			return &CloudflareServiceTokenInfo{
 				ID:        token.ID,
@@ -634,10 +641,6 @@ func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Cli
 				ExpiresAt: token.ExpiresAt.String(),
 			}, nil
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list service tokens: %w", err)
 	}
 
 	return nil, nil // Not found.

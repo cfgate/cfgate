@@ -269,7 +269,7 @@ type AccessApplication struct {
 //   - P2 (Google Workspace): GSuiteGroup
 //   - P3 (not in current product scope): Certificate, CommonName, Group, GitHub, Azure, Okta, SAML, etc.
 //
-// SDK types map directly to cloudflare-go v6 SDK: IPRule, IPListRule, CountryRule,
+// Selector types map to the Cloudflare API: IPRule, IPListRule, CountryRule,
 // EveryoneRule, ServiceTokenRule, AnyValidServiceTokenRule, EmailRule, DomainRule,
 // EmailListRule, AccessOIDCClaimRule, GSuiteGroupRule.
 //

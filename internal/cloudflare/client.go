@@ -185,7 +185,7 @@ type ServiceTokenOps interface {
 
 // Client defines the Cloudflare API operations composed from domain interfaces.
 //
-// Client wraps cloudflare-go v6 SDK and handles error normalization, 404 patterns,
+// Client wraps cloudflare-go v7 SDK and handles error normalization, 404 patterns,
 // and SDK quirks. Controllers should use the high-level services (TunnelService,
 // DNSService, AccessService) rather than Client directly.
 //

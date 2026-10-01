@@ -11,13 +11,13 @@ import (
 	"strconv"
 	"time"
 
-	cf "github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/accounts"
-	"github.com/cloudflare/cloudflare-go/v6/dns"
-	"github.com/cloudflare/cloudflare-go/v6/option"
-	"github.com/cloudflare/cloudflare-go/v6/packages/pagination"
-	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
-	"github.com/cloudflare/cloudflare-go/v6/zones"
+	cf "github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/accounts"
+	"github.com/cloudflare/cloudflare-go/v7/dns"
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
+	"github.com/cloudflare/cloudflare-go/v7/zones"
 )
 
 const (
@@ -43,7 +43,7 @@ func WithHTTPClient(httpClient *http.Client) ClientOption {
 	}
 }
 
-// clientImpl implements the Client interface using cloudflare-go v6 SDK.
+// clientImpl implements the Client interface using cloudflare-go v7 SDK.
 type clientImpl struct {
 	api      *cf.Client
 	settings ClientSettings
@@ -304,7 +304,7 @@ func (c *clientImpl) ListDNSRecords(ctx context.Context, zoneID string) ([]DNSRe
 	defer cancel()
 	var records []DNSRecord
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
 		return c.api.DNS.Records.List(ctx, dns.RecordListParams{
 			ZoneID: cf.F(zoneID),
 		}, opts...)
@@ -332,7 +332,7 @@ func (c *clientImpl) ListDNSRecordsByNameType(ctx context.Context, zoneID, name,
 		Type:   cf.F(dns.RecordListParamsType(recordType)),
 	}
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
 		return c.api.DNS.Records.List(ctx, params, opts...)
 	})
 
@@ -503,7 +503,7 @@ func (c *clientImpl) ListZones(ctx context.Context) ([]Zone, error) {
 	defer cancel()
 	var zoneList []Zone
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zones.Zone], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zones.Zone], error) {
 		return c.api.Zones.List(ctx, zones.ZoneListParams{}, opts...)
 	})
 
@@ -876,7 +876,7 @@ func (c *clientImpl) ListAccessApplications(ctx context.Context, accountID strin
 	defer cancel()
 	var apps []AccessApplication
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
 		return c.api.ZeroTrust.Access.Applications.List(ctx, zero_trust.AccessApplicationListParams{
 			AccountID: cf.F(accountID),
 		}, opts...)
@@ -918,7 +918,7 @@ func (c *clientImpl) ListAccessTags(ctx context.Context, accountID string) ([]Ac
 	defer cancel()
 	var tags []AccessTag
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.Tag], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.Tag], error) {
 		return c.api.ZeroTrust.Access.Tags.List(ctx, zero_trust.AccessTagListParams{
 			AccountID: cf.F(accountID),
 		}, opts...)
@@ -1041,7 +1041,7 @@ func (c *clientImpl) ListAccessPolicies(ctx context.Context, accountID string) (
 	defer cancel()
 	var policies []AccessPolicy
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessPolicyListResponse], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessPolicyListResponse], error) {
 		return c.api.ZeroTrust.Access.Policies.List(ctx, zero_trust.AccessPolicyListParams{
 			AccountID: cf.F(accountID),
 		}, opts...)
@@ -1133,7 +1133,7 @@ func (c *clientImpl) ListAccessGroups(ctx context.Context, accountID string) ([]
 	defer cancel()
 	var groups []AccessGroup
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessGroupListResponse], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessGroupListResponse], error) {
 		return c.api.ZeroTrust.Access.Groups.List(ctx, zero_trust.AccessGroupListParams{
 			AccountID: cf.F(accountID),
 		}, opts...)
@@ -1263,7 +1263,7 @@ func (c *clientImpl) ListServiceTokens(ctx context.Context, accountID string) ([
 	defer cancel()
 	var tokens []ServiceToken
 
-	items := allPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.ServiceToken], error) {
+	items := AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.ServiceToken], error) {
 		return c.api.ZeroTrust.Access.ServiceTokens.List(ctx, zero_trust.AccessServiceTokenListParams{
 			AccountID: cf.F(accountID),
 		}, opts...)
@@ -1328,8 +1328,10 @@ func (c *clientImpl) RefreshServiceToken(ctx context.Context, accountID, tokenID
 	}, nil
 }
 
-// Explicit fetches retain caller cancellation; the SDK auto-pager resets the context.
-func allPages[T any](ctx context.Context, fetch func(...option.RequestOption) (*pagination.V4PagePaginationArray[T], error)) iter.Seq2[T, error] {
+// AllPages fetches each page with the caller context supplied by fetch. It bounds
+// page count and preserves cancellation through SDK retries; the SDK auto-pager
+// resets the context. Callers must discard partial inventories when an error occurs.
+func AllPages[T any](ctx context.Context, fetch func(...option.RequestOption) (*pagination.V4PagePaginationArray[T], error)) iter.Seq2[T, error] {
 	return func(yield func(T, error) bool) {
 		var zero T
 		for page := 1; page <= maxListPages; page++ {

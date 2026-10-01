@@ -11,13 +11,16 @@ import (
 	"time"
 
 	"cfgate.io/cfgate/internal/accesstags"
+	cfcloudflare "cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/e2ecleanup"
 
-	cloudflare "github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/dns"
-	"github.com/cloudflare/cloudflare-go/v6/option"
-	"github.com/cloudflare/cloudflare-go/v6/zero_trust"
-	"github.com/cloudflare/cloudflare-go/v6/zones"
+	cloudflare "github.com/cloudflare/cloudflare-go/v7"
+	"github.com/cloudflare/cloudflare-go/v7/dns"
+	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
+	"github.com/cloudflare/cloudflare-go/v7/shared"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
+	"github.com/cloudflare/cloudflare-go/v7/zones"
 )
 
 const (
@@ -342,19 +345,19 @@ func (c *cloudflareCleanupClient) DeleteServiceToken(ctx context.Context, accoun
 // listOrphanedTunnels finds tunnels with e2e- or recovery- name prefix.
 func listOrphanedTunnels(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
 	var results []resource
-	iter := client.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
-		AccountID: cloudflare.F(accountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[shared.CloudflareTunnel], error) {
+		return client.ZeroTrust.Tunnels.Cloudflared.List(ctx, zero_trust.TunnelCloudflaredListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
 	})
 
-	for iter.Next() {
-		t := iter.Current()
+	for t, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list tunnels: %w", err)
+		}
 		if strings.HasPrefix(t.Name, e2ePrefix) || strings.HasPrefix(t.Name, recoveryPrefix) {
 			results = append(results, resource{ID: t.ID, Name: t.Name, Type: "tunnel", Created: t.CreatedAt})
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list tunnels: %w", err)
 	}
 
 	return results, nil
@@ -368,19 +371,19 @@ func listOrphanedDNSRecords(ctx context.Context, client *cloudflare.Client, zone
 	}
 
 	var results []resource
-	iter := client.DNS.Records.ListAutoPaging(ctx, dns.RecordListParams{
-		ZoneID: cloudflare.F(zoneID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[dns.RecordResponse], error) {
+		return client.DNS.Records.List(ctx, dns.RecordListParams{
+			ZoneID: cloudflare.F(zoneID),
+		}, opts...)
 	})
 
-	for iter.Next() {
-		record := iter.Current()
+	for record, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list DNS records: %w", err)
+		}
 		if strings.Contains(record.Name, e2ePrefix) || strings.HasPrefix(record.Name, ownershipPrefix) {
 			results = append(results, resource{ID: record.ID, Name: record.Name, Type: "dns", Created: record.CreatedOn})
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list DNS records: %w", err)
 	}
 
 	return results, nil
@@ -389,19 +392,19 @@ func listOrphanedDNSRecords(ctx context.Context, client *cloudflare.Client, zone
 // listOrphanedAccessApplications finds Access applications with e2e- names or domains.
 func listOrphanedAccessApplications(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
 	var results []resource
-	iter := client.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
-		AccountID: cloudflare.F(accountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
+		return client.ZeroTrust.Access.Applications.List(ctx, zero_trust.AccessApplicationListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
 	})
 
-	for iter.Next() {
-		app := iter.Current()
+	for app, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list Access applications: %w", err)
+		}
 		if isE2EAccessApplication(app.Name, app.Domain) {
 			results = append(results, resource{ID: app.ID, Name: app.Name, Type: "access_app", Created: cleanupCreatedAt(app.JSON.RawJSON()), Domain: app.Domain, Tags: accesstags.ApplicationTagNames(app.Tags)})
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list Access applications: %w", err)
 	}
 
 	return results, nil
@@ -414,19 +417,19 @@ func isE2EAccessApplication(name, domain string) bool {
 // listOrphanedAccessPolicies finds reusable Access policies with e2e- name prefix.
 func listOrphanedAccessPolicies(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
 	var results []resource
-	iter := client.ZeroTrust.Access.Policies.ListAutoPaging(ctx, zero_trust.AccessPolicyListParams{
-		AccountID: cloudflare.F(accountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessPolicyListResponse], error) {
+		return client.ZeroTrust.Access.Policies.List(ctx, zero_trust.AccessPolicyListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
 	})
 
-	for iter.Next() {
-		policy := iter.Current()
+	for policy, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list Access policies: %w", err)
+		}
 		if strings.HasPrefix(policy.Name, e2ePrefix) {
 			results = append(results, resource{ID: policy.ID, Name: policy.Name, Type: "access_policy", Created: policy.CreatedAt})
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list Access policies: %w", err)
 	}
 
 	return results, nil
@@ -435,24 +438,30 @@ func listOrphanedAccessPolicies(ctx context.Context, client *cloudflare.Client, 
 // listOrphanedAccessTags finds unreferenced cfgate owner tags.
 func listOrphanedAccessTags(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
 	referenced := map[string]struct{}{}
-	appIter := client.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
-		AccountID: cloudflare.F(accountID),
+	appIter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.AccessApplicationListResponse], error) {
+		return client.ZeroTrust.Access.Applications.List(ctx, zero_trust.AccessApplicationListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
 	})
-	for appIter.Next() {
-		for _, tag := range accesstags.ApplicationTagNames(appIter.Current().Tags) {
+	for app, err := range appIter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list Access applications for tag references: %w", err)
+		}
+		for _, tag := range accesstags.ApplicationTagNames(app.Tags) {
 			referenced[tag] = struct{}{}
 		}
 	}
-	if err := appIter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list Access applications for tag references: %w", err)
-	}
 
 	var results []resource
-	tagIter := client.ZeroTrust.Access.Tags.ListAutoPaging(ctx, zero_trust.AccessTagListParams{
-		AccountID: cloudflare.F(accountID),
+	tagIter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.Tag], error) {
+		return client.ZeroTrust.Access.Tags.List(ctx, zero_trust.AccessTagListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
 	})
-	for tagIter.Next() {
-		tag := tagIter.Current()
+	for tag, err := range tagIter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list Access tags: %w", err)
+		}
 		if !accesstags.IsOwnerTag(tag.Name) {
 			continue
 		}
@@ -461,9 +470,6 @@ func listOrphanedAccessTags(ctx context.Context, client *cloudflare.Client, acco
 		}
 		results = append(results, resource{ID: tag.Name, Name: tag.Name, Type: "access_tag"})
 	}
-	if err := tagIter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list Access tags: %w", err)
-	}
 
 	return results, nil
 }
@@ -471,19 +477,19 @@ func listOrphanedAccessTags(ctx context.Context, client *cloudflare.Client, acco
 // listOrphanedServiceTokens finds service tokens with e2e- name prefix.
 func listOrphanedServiceTokens(ctx context.Context, client *cloudflare.Client, accountID string) ([]resource, error) {
 	var results []resource
-	iter := client.ZeroTrust.Access.ServiceTokens.ListAutoPaging(ctx, zero_trust.AccessServiceTokenListParams{
-		AccountID: cloudflare.F(accountID),
+	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.ServiceToken], error) {
+		return client.ZeroTrust.Access.ServiceTokens.List(ctx, zero_trust.AccessServiceTokenListParams{
+			AccountID: cloudflare.F(accountID),
+		}, opts...)
 	})
 
-	for iter.Next() {
-		token := iter.Current()
+	for token, err := range iter {
+		if err != nil {
+			return nil, fmt.Errorf("failed to list service tokens: %w", err)
+		}
 		if strings.HasPrefix(token.Name, e2ePrefix) {
 			results = append(results, resource{ID: token.ID, Name: token.Name, Type: "service_token", Created: cleanupCreatedAt(token.JSON.RawJSON())})
 		}
-	}
-
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to list service tokens: %w", err)
 	}
 
 	return results, nil
