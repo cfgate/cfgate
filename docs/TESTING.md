@@ -130,6 +130,8 @@ This runs the full local suite with:
 - Coverage instrumentation for `./api/...`, `./cmd/...`, and `./internal/...`
 - Progress polling after 15s silence
 
+The release and manual remote E2E workflows set `E2E_PUBLIC_DNS_RESOLVER=1.1.1.1:53` for the public h2c probe. This avoids relying on the runner stub resolver, which has returned NXDOMAIN for newly created test hostnames after successful Cloudflare record verification. Local runs keep the system resolver unless explicitly overridden. Cloudflare API record/ownership checks and the HTTPS status, origin marker, and HTTP/2 assertions remain required; system and cluster DNS are unchanged.
+
 E2E remains excluded from normal PR and push CI because of cost and Cloudflare rate-limit pressure. Tag-triggered releases still run release-gated E2E, and the manual `Remote Release E2E` workflow provides the non-publishing remote path for timing runs and Codecov uploads.
 
 Use GitHub Actions, select `Remote Release E2E`, set `ref` to the target branch or commit, and override `e2e_procs` only when you need a different concurrency level.

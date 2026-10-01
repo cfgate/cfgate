@@ -104,6 +104,8 @@ jobs:
       MISE_SOPS_AGE_KEY: ${{ secrets.MISE_SOPS_AGE_KEY }}
       MISE_SOPS_ROPS: "true"
       E2E_USE_EXISTING_CLUSTER: "false"
+      # Resolve the public h2c probe independently of the runner DNS cache.
+      E2E_PUBLIC_DNS_RESOLVER: "1.1.1.1:53"
       E2E_PROCS: "2"
 
     steps:
