@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	cloudflare "github.com/cloudflare/cloudflare-go/v6"
+	cloudflare "github.com/cloudflare/cloudflare-go/v7"
 )
 
 type fakeCleanupClient struct {

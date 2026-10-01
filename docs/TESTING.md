@@ -443,7 +443,7 @@ Verification clients share the controller's default 30-second attempt timeout,
 bound response-body reads and permit at most two eligible SDK retries. Shared
 verification helpers bound operations to two minutes; wait helpers propagate
 shorter polling/spec deadlines. Paginated verification calls preserve the operation
-context using the existing scoped HTTP transport. `mise run test:offline` exercises
+context through the shared explicit-page iterator, including SDK retry delays. `mise run test:offline` exercises
 stalled verification headers, bodies and later pages without live credentials.
 Deletion warning thresholds (one minute for DNS/Access, two for tunnels) only
 change event severity; cleanup retries continue until success or explicit orphaning.
@@ -490,8 +490,8 @@ must still pass the actual release checks after dependency updates. Creating the
 cfgate release tag remains gated on the user's final release review for alpha.6.
 
 Cleanup SDK clients are scoped to one operation and have a 30-second HTTP attempt
-limit. A cleanup-only transport restores the operation context on every SDK page,
-including pages where the SDK resets its context. Earlier request deadlines win;
+limit. Explicit-page listing keeps SDK requests and retry delays within the
+operation context; a scoped transport also bounds body reads. Earlier deadlines win;
 operation cancellation closes response bodies. Mock HTTP tests stall second-page
 headers and bodies and prove cleanup stops within its operation budget. These
 clients are never stored in the manager credential cache.

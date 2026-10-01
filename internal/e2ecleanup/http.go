@@ -9,7 +9,8 @@ import (
 )
 
 // HTTPClient is confined to one cleanup operation, never cached or shared across
-// operations. It restores cancellation lost by the SDK's background-context pager.
+// operations. It bounds response-body reads to the cleanup context. Listings
+// must also preserve that context through SDK retries with cloudflare.AllPages.
 func HTTPClient(operation context.Context) *http.Client {
 	return &http.Client{Timeout: 30 * time.Second, Transport: operationTransport{operation: operation, base: http.DefaultTransport}}
 }

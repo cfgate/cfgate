@@ -1,6 +1,6 @@
 // Package cloudflare provides a Cloudflare API client wrapper for cfgate.
 //
-// This package abstracts the cloudflare-go v6 SDK to provide cfgate-specific
+// This package abstracts the cloudflare-go v7 SDK to provide cfgate-specific
 // operations for Tunnel, DNS, and Access management. Controllers interact with
 // high-level services (TunnelService, DNSService, AccessService) rather than
 // the SDK directly.
@@ -19,7 +19,7 @@
 //
 // # Client Interface
 //
-// Client defines the low-level Cloudflare API operations. It wraps cloudflare-go v6
+// Client defines the low-level Cloudflare API operations. It wraps cloudflare-go v7
 // and handles error normalization, 404 patterns, and SDK quirks. Controllers should
 // use the high-level services rather than Client directly.
 //
