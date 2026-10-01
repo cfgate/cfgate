@@ -118,13 +118,16 @@ echo "Running unit tests: ${packages}"
 go test -race -count=1 ${TEST_ARGS:-} $packages
 """
 
-[tasks."test:e2e-cleanup"]
-description = "Test E2E cleanup effects without credentials or cluster"
+[tasks."test:offline"]
+description = "Test cleanup effects, bounded fuzzing, and build/release helpers without live services"
 run = """
 set -eu
 go test -race -count=1 ./test/e2e -run '^TestCleanup'
 go test ./internal/e2ecleanup -run '^$' -fuzz '^FuzzSelect$' -fuzztime=5s
 go test ./internal/cloudflare -run '^$' -fuzz '^FuzzTunnelConfigurationBudget$' -fuzztime=5s
+bash .github/scripts/test-build-metadata.sh
+bash .github/scripts/test-release-ref.sh
+bash .github/scripts/test-release-startup.sh
 """
 
 [tasks."test:cover"]

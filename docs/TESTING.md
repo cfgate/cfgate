@@ -218,13 +218,24 @@ The CLI inventories again when applying. Both modes select complete generated te
 
 Owner tags may be deleted only when attributed to selected test applications and unreferenced after a fresh complete application inventory. An arbitrary unreferenced `cfgate:*` tag is insufficient proof of test ownership and remains untouched. Failed inventories prevent deletion for that resource collection; the maintenance CLI requires a complete inventory before any deletion. Tags whose application vanished before inventory may remain for manual provenance review.
 
-Run cleanup effect regressions without credentials, cluster setup, or Ginkgo suite hooks:
+The `e2e:cleanup` command operates on Cloudflare test resources; it does not remove
+local Kubernetes clusters. Suite teardown removes its own disposable cluster;
+`cluster:delete` is the separate local cluster deletion task.
+
+Run offline tooling checks without Cloudflare credentials, cluster setup, or
+Ginkgo suite hooks:
 
 ```bash
-mise run test:e2e-cleanup
+mise run test:offline
 ```
 
-Ordinary PR CI runs these regressions along with race-enabled unit tests. They assert exact HTTP DELETE targets against an in-memory transport, including another run, foreign/shared tags, failed inventories, skip precedence, and default startup.
+Ordinary PR CI and release quality checks both use this task alongside race-enabled
+unit tests. Cleanup regressions assert exact HTTP DELETE targets against an
+in-memory transport, including another run, foreign/shared tags, failed inventories,
+skip precedence, and default startup. The task also runs five-second fuzz checks
+for cleanup selection and tunnel configuration budgets, plus the local build
+metadata, release-reference, and release-startup script tests. It does not delete
+live resources. This replaces the branch's narrower `test:e2e-cleanup` task name.
 
 ### Test Patterns
 
@@ -449,7 +460,8 @@ both published architectures with the same severity gate.
 
 `bash .github/scripts/test-release-ref.sh` checks valid release channels,
 malformed versions, literal shell payloads, and mismatched tag/checkout commits
-without credentials or publication. PR CI runs this alongside cleanup regressions.
+without credentials or publication. `mise run test:offline` runs all three script
+tests locally and in PR CI and release quality checks.
 `bash .github/scripts/test-release-startup.sh` rejects missing, duplicate or incorrect
 runtime metadata and unexpected startup exits without starting a controller.
 `bash .github/scripts/test-build-metadata.sh` uses a disposable Git repository to
