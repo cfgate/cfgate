@@ -35,7 +35,7 @@ mise run lint
 | `e2e` | *none* | Run local E2E tests against live Cloudflare API |
 | `e2e:filter` | `fe2e` | Run E2E tests with a Ginkgo `--focus` filter |
 | `e2e:cleanup` | `clean` | Preview aged orphaned E2E resources; apply requires explicit opt-ins |
-| `test:e2e-cleanup` | *none* | Test cleanup HTTP effects without credentials or a cluster |
+| `test:offline` | *none* | Test cleanup effects, bounded fuzzing, and build/release helpers without live services |
 | `coverage` | `cov` | Run local unit, E2E, merged coverage, and assurance scoring |
 | `coverage:merge` | *none* | Merge unit and E2E coverage into `out/coverage/merged.coverprofile` |
 | `coverage:report` | *none* | Write `out/coverage/merged-summary.txt` with totals and file deltas |
@@ -135,6 +135,7 @@ See [docs/TESTING.md](docs/TESTING.md) for the full testing guide.
 
 ```bash
 mise run test              # unit tests
+mise run test:offline      # offline cleanup, fuzz, and build/release checks
 mise run test:cover        # unit tests with coverage
 mise run coverage          # local unit + E2E + merged coverage + assurance score
 mise run coverage:merge    # merge unit and E2E profiles
