@@ -323,11 +323,11 @@ cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS r
    kubectl logs -n cfgate-system deploy/cfgate -c manager | grep "deletion\|cleanup\|finalizer"
    ```
 
-4. The controller blocks indefinitely on cleanup failure and never removes the finalizer automatically. Within the retry budget, events use reason `CleanupFailed`. After the budget is exhausted, events escalate to reason `CleanupBlocked`, but the controller continues retrying. The only way to unblock a stuck finalizer is the `cfgate.io/deletion-policy=orphan` annotation (see Resolution Options below).
+4. The controller blocks indefinitely on cleanup failure and never removes the finalizer automatically. Before the deletion warning threshold, failed attempts emit `CleanupFailed`; afterward they emit `CleanupBlocked`. These thresholds do not stop retries or limit API execution. Cleanup can finish on a later retry or after repairing credentials, permissions, or connectivity. The `cfgate.io/deletion-policy=orphan` annotation explicitly skips remote cleanup and can leave remote resources behind (see Resolution Options below).
 
-   Retry budgets per controller:
+   Deletion warning thresholds (age since deletion was requested):
 
-   | Controller | Budget | Requeue Interval |
+   | Controller | Warning threshold | Requeue Interval |
    |---|---|---|
    | CloudflareTunnel | 2 minutes | 10 seconds |
    | CloudflareDNS | 1 minute | 15 seconds |
@@ -336,7 +336,7 @@ cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS r
 
 ### Resolution Options
 
-**Option 1: Use the `cfgate.io/deletion-policy` annotation (preferred)**
+**Option 1: Explicitly orphan remote resources**
 
 This tells the controller to skip Cloudflare cleanup and remove the finalizer immediately:
 
@@ -440,7 +440,7 @@ kubectl logs -n cfgate-system deploy/cfgate -c manager | grep httproute
 | `"starting reconciliation"` | Normal: controller processing a resource |
 | `"credentials validation failed"` | API token invalid or secret missing |
 | `"tunnel not found on Cloudflare, clearing tunnelID"` | Tunnel was deleted on CF side; controller will re-create |
-| `"retry budget exhausted"` | Deletion failed after the retry budget (tunnel: 2min, DNS: 1min, Access: 1min). Events escalate from `CleanupFailed` to `CleanupBlocked`. Controller continues retrying indefinitely; set `cfgate.io/deletion-policy=orphan` to skip cleanup. |
+| `"cleanup warning threshold reached"` | Cleanup failed beyond the warning threshold (tunnel: 2min, DNS: 1min, Access: 1min). Events escalate from `CleanupFailed` to `CleanupBlocked`. Controller continues retrying indefinitely; set `cfgate.io/deletion-policy=orphan` to skip cleanup. |
 | `"orphaning tunnel due to deletion policy"` | `cfgate.io/deletion-policy: orphan` was set |
 | `"no hostnames discovered with gatewayRoutes enabled"` | DNS controller found no routes; will retry in 10s |
 | `"gatewayRoutes.enabled=true has no effect in externalTarget mode; route discovery requires tunnelRef"` | Route discovery was configured on an `externalTarget` DNS resource and will be ignored. |
@@ -450,8 +450,8 @@ kubectl logs -n cfgate-system deploy/cfgate -c manager | grep httproute
 
 | Event Reason | Type | Meaning |
 |---|---|---|
-| `CleanupFailed` | Warning | Cloudflare cleanup failed within the retry budget. The controller will retry at the configured interval. |
-| `CleanupBlocked` | Warning | Retry budget is exhausted and Cloudflare cleanup is still failing. The controller continues retrying indefinitely. Set `cfgate.io/deletion-policy=orphan` on the resource to skip cleanup and release the finalizer. |
+| `CleanupFailed` | Warning | Cloudflare cleanup failed before the deletion warning threshold. The controller will retry at the configured interval. |
+| `CleanupBlocked` | Warning | The deletion warning threshold has elapsed and Cloudflare cleanup is still failing. The controller continues retrying indefinitely. Set `cfgate.io/deletion-policy=orphan` on the resource to skip cleanup and release the finalizer. |
 
 ### Common Deployment Names
 

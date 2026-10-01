@@ -49,12 +49,10 @@ const (
 	// requeueAfterSuccess is the requeue delay for periodic sync.
 	requeueAfterSuccess = 5 * time.Minute
 
-	// deletionRetryBudget is the maximum time to retry CF tunnel deletion
-	// before emitting an escalated warning. After this budget, the controller
-	// keeps blocking (does not remove the finalizer). The only escape is the
-	// cfgate.io/deletion-policy=orphan annotation.
-	// 2 minutes handles cloudflared connection drain (~30s) with generous margin.
-	deletionRetryBudget = 2 * time.Minute
+	// deletionWarningAfter is the deletion age at which failed cleanup emits
+	// an escalated warning. It does not limit connection drain or retries; the
+	// finalizer remains until cleanup succeeds or explicit orphan deletion.
+	deletionWarningAfter = 2 * time.Minute
 
 	// deletionRequeueInterval is the requeue delay between deletion retries.
 	deletionRequeueInterval = 10 * time.Second
@@ -1153,7 +1151,7 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 		if err != nil {
 			log.Error(err, "failed to create Cloudflare client for deletion")
 			retryElapsed := time.Since(tunnel.DeletionTimestamp.Time)
-			if retryElapsed < deletionRetryBudget {
+			if retryElapsed < deletionWarningAfter {
 				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
 					"Failed to resolve credentials for tunnel %s: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
 					tunnel.Status.TunnelID, err)
@@ -1175,7 +1173,7 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 		if accountID == "" {
 			log.Info("no account ID available for deletion")
 			retryElapsed := time.Since(tunnel.DeletionTimestamp.Time)
-			if retryElapsed < deletionRetryBudget {
+			if retryElapsed < deletionWarningAfter {
 				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
 					"No account ID available for tunnel %s. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
 					tunnel.Status.TunnelID)
@@ -1204,16 +1202,16 @@ func (r *CloudflareTunnelReconciler) reconcileDelete(ctx context.Context, tunnel
 		}
 		if err := tunnelService.Delete(ctx, accountID, tunnel.Status.TunnelID); err != nil {
 			retryElapsed := time.Since(tunnel.DeletionTimestamp.Time)
-			if retryElapsed < deletionRetryBudget {
+			if retryElapsed < deletionWarningAfter {
 				log.Error(err, "failed to delete tunnel from Cloudflare, will retry",
 					"retryElapsed", retryElapsed.Round(time.Second),
-					"retryBudget", deletionRetryBudget)
+					"warningAfter", deletionWarningAfter)
 				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
 					"Failed to delete tunnel %s: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
 					tunnel.Status.TunnelID, err)
 				return ctrl.Result{RequeueAfter: deletionRequeueInterval}, nil
 			}
-			log.Error(err, "retry budget exhausted, cleanup still blocked",
+			log.Error(err, "cleanup warning threshold reached, will keep retrying",
 				"retryElapsed", retryElapsed.Round(time.Second),
 				"tunnelID", tunnel.Status.TunnelID)
 			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "CleanupBlocked", "Delete",

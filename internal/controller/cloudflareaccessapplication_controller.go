@@ -1029,7 +1029,7 @@ func (r *CloudflareAccessApplicationReconciler) blockApplicationDeletion(ctx con
 	suffix := " Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer."
 	reason := "CleanupFailed"
 	message := detail + "." + suffix
-	if retryElapsed >= accessDeletionRetryBudget {
+	if retryElapsed >= accessDeletionWarningAfter {
 		reason = "CleanupBlocked"
 		message = fmt.Sprintf("%s (blocked after %s of retries).%s", detail, retryElapsed.Round(time.Second), suffix)
 	}

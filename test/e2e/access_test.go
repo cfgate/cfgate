@@ -11,7 +11,6 @@ import (
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"github.com/cloudflare/cloudflare-go/v6"
-	"github.com/cloudflare/cloudflare-go/v6/option"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -23,7 +22,7 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 
 	BeforeEach(func(ctx SpecContext) {
 		skipIfNoCredentials()
-		cfClient = cloudflare.NewClient(option.WithAPIToken(testEnv.CloudflareAPIToken))
+		cfClient = getCloudflareClient()
 		ns := createTestNamespace("access")
 		namespaceObj = ns
 		namespace = ns.Name

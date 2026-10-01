@@ -431,6 +431,24 @@ mise run smoke
 
 ### Cloudflare request budgets
 
+The in-process E2E manager uses the same two-minute reconciliation deadline as
+`cmd/manager`. A deadline bounds one worker iteration, not time spent queued or
+subsequent retries. DNS/Access and tunnel deletion phases use the existing
+10-minute `LongTimeout` to allow an in-flight reconciliation, cleanup and a
+retry under four-process suite load. They still require the resources to disappear;
+no finalizers are stripped. Namespace termination retains its two-minute limit.
+These are maximum waits, not sleeps or a production deletion SLA.
+
+Verification clients share the controller's default 30-second attempt timeout,
+bound response-body reads and permit at most two eligible SDK retries. Shared
+verification helpers bound operations to two minutes; wait helpers propagate
+shorter polling/spec deadlines. Paginated verification calls preserve the operation
+context using the existing scoped HTTP transport. `mise run test:offline` exercises
+stalled verification headers, bodies and later pages without live credentials.
+Deletion warning thresholds (one minute for DNS/Access, two for tunnels) only
+change event severity; cleanup retries continue until success or explicit orphaning.
+
+
 The API client bounds each operation to two minutes, including pagination and retries; an earlier caller deadline takes precedence. Individual SDK attempts have a 30-second deadline and at most two retries. Explicit page fetches retain the caller context because the pinned SDK auto-pager resets it. Lists stop with an error after 1,000 nonempty pages; partial inventories are never returned as complete results. Tests exercise stalled headers and bodies, rate-limit retry waits, shutdown cancellation, and a stalled second page for every paginated operation without live credentials.
 
 Aggregate tunnel configuration defaults to at most 1,000 ingress rules and 1 MiB of encoded ingress and origin settings. These are operator guardrails, not Cloudflare service limits. Manager overrides support larger explicitly budgeted installations; all cached clients receive the same immutable settings. Rejected configurations leave the previous remote configuration unchanged rather than publishing a truncated rule set. Rule-count, byte-boundary, default/override, and no-outbound-write tests run in ordinary CI, with a bounded configuration fuzz target. `BenchmarkTunnelConfigurationBudget` measures validation allocation and processing cost at 1, 100, and 1,000 rules; it does not establish end-to-end routing throughput.

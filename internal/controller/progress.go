@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// DefaultReconciliationTimeout bounds one worker iteration in both the manager
+// and the in-process E2E harness. Queued work and later retries have fresh budgets.
+const DefaultReconciliationTimeout = 2 * time.Minute
+
 var lastReconcileProgress = prometheus.NewGaugeVec(prometheus.GaugeOpts{Name: "cfgate_controller_last_completed_reconcile_timestamp_seconds", Help: "Unix time of the last completed reconciliation by controller, including failed attempts; this measures worker progress, not external availability."}, []string{"controller"})
 
 func init() { metrics.Registry.MustRegister(lastReconcileProgress) }

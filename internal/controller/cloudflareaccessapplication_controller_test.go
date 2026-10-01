@@ -167,7 +167,7 @@ func TestBlockApplicationDeletionEmitsCleanupFailedBeforeBudget(t *testing.T) {
 
 func TestBlockApplicationDeletionEmitsCleanupBlockedAfterBudget(t *testing.T) {
 	reconciler := &CloudflareAccessApplicationReconciler{Recorder: &accessApplicationEventRecorder{}}
-	app := accessApplicationWithDeletionTimestamp(time.Now().Add(-accessDeletionRetryBudget - time.Second))
+	app := accessApplicationWithDeletionTimestamp(time.Now().Add(-accessDeletionWarningAfter - time.Second))
 
 	result, err := reconciler.blockApplicationDeletion(context.Background(), app, "Failed to delete Access application app-1: boom")
 	if err != nil {

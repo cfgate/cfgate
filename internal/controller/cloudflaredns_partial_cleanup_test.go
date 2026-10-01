@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -269,7 +270,7 @@ func TestDNSUnrecordedCleanupRetainsFinalizerOnFailure(t *testing.T) {
 	for _, tracking := range []string{"enabled", "disabled", "disabled after claim"} {
 		txtEnabled := tracking == "enabled"
 		hasClaim := tracking != "disabled"
-		for _, failure := range []string{"inventory", "data deletion", "claim deletion", "changed data"} {
+		for _, failure := range []string{"inventory", "data deletion", "claim deletion", "changed data", "deadline"} {
 			if !hasClaim && failure == "claim deletion" {
 				continue
 			}
@@ -310,9 +311,13 @@ func TestDNSUnrecordedCleanupRetainsFinalizerOnFailure(t *testing.T) {
 					}
 					return result, nil
 				}
-				mock.DeleteDNSRecordFunc = func(_ context.Context, _, id string) error {
+				mock.DeleteDNSRecordFunc = func(callCtx context.Context, _, id string) error {
 					if id == "claim" && (store["data"].ID != "" || store["replacement"].ID != "") {
 						t.Fatal("ownership claim removed before data")
+					}
+					if fail && failure == "deadline" && id == "data" {
+						<-callCtx.Done()
+						return callCtx.Err()
 					}
 					if fail && ((failure == "data deletion" && id == "data") || (failure == "claim deletion" && id == "claim")) {
 						return errors.New("transient deletion failure")
@@ -333,8 +338,18 @@ func TestDNSUnrecordedCleanupRetainsFinalizerOnFailure(t *testing.T) {
 				}
 				k8s := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(dns).Build()
 				r := &CloudflareDNSReconciler{Client: k8s, CFClient: mock, Recorder: &fakeEventRecorder{}}
-				result, err := r.reconcileDelete(ctx, dns)
-				if err != nil || result.RequeueAfter == 0 {
+				attemptCtx := ctx
+				cancel := func() {}
+				if failure == "deadline" {
+					attemptCtx, cancel = context.WithTimeout(ctx, 50*time.Millisecond)
+				}
+				started := time.Now()
+				result, err := r.reconcileDelete(attemptCtx, dns)
+				cancel()
+				if failure == "deadline" && time.Since(started) > time.Second {
+					t.Fatal("cleanup ignored the caller deadline")
+				}
+				if err != nil || result.RequeueAfter != dnsDeletionRequeueInterval {
 					t.Fatalf("failed cleanup must requeue: result=%v err=%v", result, err)
 				}
 				var current cfg.CloudflareDNS

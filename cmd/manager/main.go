@@ -402,7 +402,7 @@ func parsePortEnv(getenv func(string) string, key string, fallback int) (int, er
 func buildManagerOptions(cfg managerConfig) ctrl.Options {
 	return ctrl.Options{
 		Scheme:     scheme,
-		Controller: controllerconfig.Controller{ReconciliationTimeout: 2 * time.Minute},
+		Controller: controllerconfig.Controller{ReconciliationTimeout: controller.DefaultReconciliationTimeout},
 		Metrics: metricsserver.Options{
 			BindAddress:   cfg.MetricsAddr,
 			SecureServing: cfg.SecureMetrics,

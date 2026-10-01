@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -28,6 +29,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	cfcloudflare "cfgate.io/cfgate/internal/cloudflare"
+	"cfgate.io/cfgate/internal/controller"
+	"cfgate.io/cfgate/internal/e2ecleanup"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 )
 
@@ -66,6 +70,8 @@ func mustParseQuantity(s string) resource.Quantity {
 // deleteTunnelInCloudflare deletes a tunnel by ID via the Cloudflare API.
 // Clears active connections first (required before deletion).
 func deleteTunnelInCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string) error {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	// Clear connections first (required by CF API before deletion).
 	_, _ = cfClient.ZeroTrust.Tunnels.Cloudflared.Connections.Delete(ctx, tunnelID, zero_trust.TunnelCloudflaredConnectionDeleteParams{
 		AccountID: cloudflare.F(accountID),
@@ -82,9 +88,11 @@ func deleteTunnelInCloudflare(ctx context.Context, cfClient *cloudflare.Client, 
 
 // listTunnelsByPrefixFromCloudflare lists all non-deleted tunnels matching a name prefix.
 func listTunnelsByPrefixFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, prefix string) ([]CloudflareTunnelInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	iter := cfClient.ZeroTrust.Tunnels.Cloudflared.ListAutoPaging(ctx, zero_trust.TunnelCloudflaredListParams{
 		AccountID: cloudflare.F(accountID),
-	})
+	}, option.WithHTTPClient(e2ecleanup.HTTPClient(ctx)))
 
 	var tunnels []CloudflareTunnelInfo
 	for iter.Next() {
@@ -111,8 +119,15 @@ func listTunnelsByPrefixFromCloudflare(ctx context.Context, cfClient *cloudflare
 // ============================================================
 
 // getCloudflareClient creates a Cloudflare client for E2E test verification.
-func getCloudflareClient() *cloudflare.Client {
-	return cloudflare.NewClient(option.WithAPIToken(testEnv.CloudflareAPIToken))
+func getCloudflareClient(opts ...option.RequestOption) *cloudflare.Client {
+	attemptTimeout := cfcloudflare.DefaultClientSettings().AttemptTimeout
+	defaults := []option.RequestOption{
+		option.WithAPIToken(testEnv.CloudflareAPIToken),
+		option.WithRequestTimeout(attemptTimeout),
+		option.WithHTTPClient(&http.Client{Timeout: attemptTimeout}),
+		option.WithMaxRetries(2),
+	}
+	return cloudflare.NewClient(append(defaults, opts...)...)
 }
 
 // ============================================================
@@ -129,6 +144,8 @@ type CloudflareTunnelInfo struct {
 
 // getTunnelFromCloudflare fetches a tunnel directly from the Cloudflare API.
 func getTunnelFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelName string) (*CloudflareTunnelInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	tunnels, err := cfClient.ZeroTrust.Tunnels.Cloudflared.List(ctx, zero_trust.TunnelCloudflaredListParams{
 		AccountID: cloudflare.F(accountID),
 		Name:      cloudflare.F(tunnelName),
@@ -152,6 +169,8 @@ func getTunnelFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, a
 
 // getTunnelByIDFromCloudflare fetches a tunnel by ID from the Cloudflare API.
 func getTunnelByIDFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string) (*CloudflareTunnelInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	tunnel, err := cfClient.ZeroTrust.Tunnels.Cloudflared.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredGetParams{
 		AccountID: cloudflare.F(accountID),
 	})
@@ -176,6 +195,8 @@ func getTunnelByIDFromCloudflare(ctx context.Context, cfClient *cloudflare.Clien
 
 // createTunnelInCloudflare creates a tunnel directly via the Cloudflare API.
 func createTunnelInCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelName string) (*CloudflareTunnelInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	secretBytes := make([]byte, 32)
 	if _, err := rand.Read(secretBytes); err != nil {
 		return nil, fmt.Errorf("failed to generate tunnel secret: %w", err)
@@ -206,9 +227,11 @@ func createTunnelInCloudflare(ctx context.Context, cfClient *cloudflare.Client, 
 // waitForTunnelReady waits for a CloudflareTunnel to have Ready=True condition
 // and essential status fields populated (TunnelID, TunnelDomain).
 func waitForTunnelReady(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) *cfgatev1alpha1.CloudflareTunnel {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var tunnel cfgatev1alpha1.CloudflareTunnel
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &tunnel)
 		if err != nil {
 			return false
@@ -229,9 +252,11 @@ func waitForTunnelReady(ctx context.Context, k8sClient client.Client, name, name
 
 // waitForTunnelCondition waits for a specific condition on a CloudflareTunnel.
 func waitForTunnelCondition(ctx context.Context, k8sClient client.Client, name, namespace, conditionType string, status metav1.ConditionStatus, timeout time.Duration) *cfgatev1alpha1.CloudflareTunnel {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var tunnel cfgatev1alpha1.CloudflareTunnel
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &tunnel)
 		if err != nil {
 			return false
@@ -249,7 +274,9 @@ func waitForTunnelCondition(ctx context.Context, k8sClient client.Client, name, 
 
 // waitForTunnelDeleted waits for a CloudflareTunnel to be deleted from Kubernetes.
 func waitForTunnelDeleted(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) {
-	Eventually(func() bool {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	Eventually(ctx, func() bool {
 		var tunnel cfgatev1alpha1.CloudflareTunnel
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &tunnel)
 		return apierrors.IsNotFound(err)
@@ -258,7 +285,9 @@ func waitForTunnelDeleted(ctx context.Context, k8sClient client.Client, name, na
 
 // waitForTunnelDeletedByIDFromCloudflare waits for a tunnel ID to disappear from Cloudflare.
 func waitForTunnelDeletedByIDFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string, timeout time.Duration) {
-	Eventually(func() bool {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	Eventually(ctx, func() bool {
 		tunnel, err := getTunnelByIDFromCloudflare(ctx, cfClient, accountID, tunnelID)
 		if err != nil {
 			GinkgoWriter.Printf("waitForTunnelDeletedByIDFromCloudflare: API error (will retry): %v\n", err)
@@ -272,9 +301,11 @@ func waitForTunnelDeletedByIDFromCloudflare(ctx context.Context, cfClient *cloud
 // This verifies the controller created the Deployment correctly without requiring cloudflared
 // pods to establish QUIC connections to Cloudflare edge (which is environment-dependent).
 func waitForDeploymentSpec(ctx context.Context, k8sClient client.Client, name, namespace string, replicas int32, timeout time.Duration) *appsv1.Deployment {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var deployment appsv1.Deployment
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &deployment)
 		if err != nil {
 			return false
@@ -302,6 +333,8 @@ type CloudflareDNSRecordInfo struct {
 
 // getDNSRecordFromCloudflare fetches a DNS record from Cloudflare.
 func getDNSRecordFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, zoneID, hostname, recordType string) (*CloudflareDNSRecordInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	records, err := cfClient.DNS.Records.List(ctx, dns.RecordListParams{
 		ZoneID: cloudflare.F(zoneID),
 		Name:   cloudflare.F(dns.RecordListParamsName{Exact: cloudflare.F(hostname)}),
@@ -330,6 +363,8 @@ func getDNSRecordFromCloudflare(ctx context.Context, cfClient *cloudflare.Client
 
 // getZoneIDByName gets the zone ID for a zone name.
 func getZoneIDByName(ctx context.Context, cfClient *cloudflare.Client, zoneName string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	zoneList, err := cfClient.Zones.List(ctx, zones.ZoneListParams{
 		Name: cloudflare.F(zoneName),
 	})
@@ -373,9 +408,11 @@ type CloudflareAccessApplicationInfo struct {
 
 // getAccessApplicationFromCloudflare fetches an Access Application by name from Cloudflare.
 func getAccessApplicationFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, appName string) (*CloudflareAccessApplicationInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	iter := cfClient.ZeroTrust.Access.Applications.ListAutoPaging(ctx, zero_trust.AccessApplicationListParams{
 		AccountID: cloudflare.F(accountID),
-	})
+	}, option.WithHTTPClient(e2ecleanup.HTTPClient(ctx)))
 
 	for iter.Next() {
 		app := iter.Current()
@@ -415,6 +452,8 @@ func getAccessApplicationFromCloudflare(ctx context.Context, cfClient *cloudflar
 
 // getAccessApplicationByIDFromCloudflare fetches an Access Application by ID.
 func getAccessApplicationByIDFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, appID string) (*CloudflareAccessApplicationInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	app, err := cfClient.ZeroTrust.Access.Applications.Get(ctx, appID, zero_trust.AccessApplicationGetParams{
 		AccountID: cloudflare.F(accountID),
 	})
@@ -460,9 +499,11 @@ func getAccessApplicationByIDFromCloudflare(ctx context.Context, cfClient *cloud
 
 // waitForAccessPolicyReady waits for a CloudflareAccessPolicy to have Ready=True condition.
 func waitForAccessPolicyReady(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) *cfgatev1alpha1.CloudflareAccessPolicy {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var policy cfgatev1alpha1.CloudflareAccessPolicy
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &policy)
 		if err != nil {
 			return false
@@ -480,7 +521,9 @@ func waitForAccessPolicyReady(ctx context.Context, k8sClient client.Client, name
 
 // waitForAccessPolicyDeleted waits for a CloudflareAccessPolicy to be deleted from Kubernetes.
 func waitForAccessPolicyDeleted(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) {
-	Eventually(func() bool {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	Eventually(ctx, func() bool {
 		var policy cfgatev1alpha1.CloudflareAccessPolicy
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &policy)
 		return apierrors.IsNotFound(err)
@@ -489,9 +532,11 @@ func waitForAccessPolicyDeleted(ctx context.Context, k8sClient client.Client, na
 
 // waitForGatewayCondition waits for a specific condition on a Gateway.
 func waitForGatewayCondition(ctx context.Context, k8sClient client.Client, name, namespace, conditionType string, status metav1.ConditionStatus, timeout time.Duration) *gatewayv1.Gateway {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var gateway gatewayv1.Gateway
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &gateway)
 		if err != nil {
 			return false
@@ -509,9 +554,11 @@ func waitForGatewayCondition(ctx context.Context, k8sClient client.Client, name,
 
 // waitForHTTPRouteParentCondition waits for a specific condition on a cfgate-managed parent status.
 func waitForHTTPRouteParentCondition(ctx context.Context, k8sClient client.Client, name, namespace, parentNamespace, parentName, conditionType string, status metav1.ConditionStatus, timeout time.Duration) *gatewayv1.HTTPRoute {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var route gatewayv1.HTTPRoute
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &route)
 		if err != nil {
 			return false
@@ -545,7 +592,9 @@ func waitForHTTPRouteParentCondition(ctx context.Context, k8sClient client.Clien
 
 // waitForAccessApplicationDeletedFromCloudflare waits for an Access Application to be deleted from Cloudflare.
 func waitForAccessApplicationDeletedFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, appName string, timeout time.Duration) {
-	Eventually(func() bool {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	Eventually(ctx, func() bool {
 		app, err := getAccessApplicationFromCloudflare(ctx, cfClient, accountID, appName)
 		if err != nil {
 			GinkgoWriter.Printf("waitForAccessApplicationDeletedFromCloudflare: API error (will retry): %v\n", err)
@@ -569,9 +618,11 @@ type CloudflareServiceTokenInfo struct {
 
 // getServiceTokenFromCloudflare fetches a Service Token by name from Cloudflare.
 func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tokenName string) (*CloudflareServiceTokenInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	iter := cfClient.ZeroTrust.Access.ServiceTokens.ListAutoPaging(ctx, zero_trust.AccessServiceTokenListParams{
 		AccountID: cloudflare.F(accountID),
-	})
+	}, option.WithHTTPClient(e2ecleanup.HTTPClient(ctx)))
 
 	for iter.Next() {
 		token := iter.Current()
@@ -594,9 +645,11 @@ func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Cli
 
 // waitForServiceTokenSecretCreated waits for a service token Secret to be created.
 func waitForServiceTokenSecretCreated(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) *corev1.Secret {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var secret corev1.Secret
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &secret)
 		if err != nil {
 			return false
@@ -632,9 +685,11 @@ func listEventsForObject(ctx context.Context, namespace, objectName, objectKind 
 
 // waitForEventReason waits for an event with the given reason and type.
 func waitForEventReason(ctx context.Context, namespace, objectName, objectKind, reason, eventType string, timeout time.Duration) *corev1.Event {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var matched *corev1.Event
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		events, err := listEventsForObject(ctx, namespace, objectName, objectKind)
 		if err != nil {
 			GinkgoWriter.Printf("waitForEventReason: event list error (will retry): %v\n", err)
@@ -876,6 +931,8 @@ func createCloudflareTunnelWithInvalidToken(ctx context.Context, k8sClient clien
 
 // getTunnelConfigurationFromCloudflare fetches remote tunnel configuration from Cloudflare.
 func getTunnelConfigurationFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tunnelID string) (*zero_trust.TunnelCloudflaredConfigurationGetResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
+	defer cancel()
 	config, err := cfClient.ZeroTrust.Tunnels.Cloudflared.Configurations.Get(ctx, tunnelID, zero_trust.TunnelCloudflaredConfigurationGetParams{
 		AccountID: cloudflare.F(accountID),
 	})
@@ -1050,8 +1107,10 @@ func createCloudflareAccessApplication(
 }
 
 func waitForAccessApplicationReady(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) *cfgatev1alpha1.CloudflareAccessApplication {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	var app cfgatev1alpha1.CloudflareAccessApplication
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &app)
 		if err != nil {
 			return false
@@ -1067,7 +1126,9 @@ func waitForAccessApplicationReady(ctx context.Context, k8sClient client.Client,
 }
 
 func waitForAccessApplicationDeleted(ctx context.Context, k8sClient client.Client, name, namespace string, timeout time.Duration) {
-	Eventually(func() bool {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	Eventually(ctx, func() bool {
 		var app cfgatev1alpha1.CloudflareAccessApplication
 		err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, &app)
 		return apierrors.IsNotFound(err)

@@ -43,11 +43,10 @@ const (
 	// dnsGatewayRoutesEnabledIndex is the field indexer key for CloudflareDNS spec.source.gatewayRoutes.enabled.
 	dnsGatewayRoutesEnabledIndex = "spec.source.gatewayRoutes.enabled"
 
-	// dnsDeletionRetryBudget is the maximum time to retry DNS record cleanup
-	// before emitting an escalated warning. After this budget, the controller
-	// keeps blocking (does not remove the finalizer). The only escape is the
-	// cfgate.io/deletion-policy=orphan annotation.
-	dnsDeletionRetryBudget = 1 * time.Minute
+	// dnsDeletionWarningAfter is the deletion age at which failed cleanup emits
+	// an escalated warning. Retries continue and retain the finalizer until
+	// cleanup succeeds or an administrator explicitly chooses orphan deletion.
+	dnsDeletionWarningAfter = 1 * time.Minute
 
 	// dnsDeletionRequeueInterval is the requeue delay between deletion retries.
 	dnsDeletionRequeueInterval = 15 * time.Second
@@ -1112,15 +1111,15 @@ func (r *CloudflareDNSReconciler) reconcileDelete(ctx context.Context, dns *cfga
 		}
 		if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
 			retryElapsed := time.Since(dns.DeletionTimestamp.Time)
-			if retryElapsed < dnsDeletionRetryBudget {
+			if retryElapsed < dnsDeletionWarningAfter {
 				logger.Error(err, "failed to cleanup DNS records, will retry",
 					"retryElapsed", retryElapsed.Round(time.Second),
-					"retryBudget", dnsDeletionRetryBudget)
+					"warningAfter", dnsDeletionWarningAfter)
 				r.Recorder.Eventf(dns, nil, corev1.EventTypeWarning, "CleanupFailed", "Delete",
 					"Failed to delete DNS records: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.", err)
 				return ctrl.Result{RequeueAfter: dnsDeletionRequeueInterval}, nil
 			}
-			logger.Error(err, "retry budget exhausted, cleanup still blocked",
+			logger.Error(err, "cleanup warning threshold reached, will keep retrying",
 				"retryElapsed", retryElapsed.Round(time.Second))
 			r.Recorder.Eventf(dns, nil, corev1.EventTypeWarning, "CleanupBlocked", "Delete",
 				"DNS record deletion blocked after %s of retries: %v. Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer.",
