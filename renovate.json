@@ -7,18 +7,27 @@
     {
       "customType": "regex",
       "managerFilePatterns": ["**/deployment.go"],
-      "matchStrings": [
-        "DefaultImage\\s*=\\s*\"(?<depName>[^:]+):(?<currentValue>[^\"]+)\""
-      ],
+      "matchStrings": ["DefaultImage\\s*=\\s*\"(?<depName>[^:]+):(?<currentValue>[^\"]+)\""],
       "datasourceTemplate": "docker"
     },
     {
       "customType": "regex",
-      "managerFilePatterns": ["**/Dockerfile"],
-      "matchStrings": [
-        "FROM\\s+(?:--platform=\\S+\\s+)?(?<depName>[^:\\s]+):(?<currentValue>[^\\s]+)"
+      "managerFilePatterns": ["/.github/workflows/.*\\.yml$/"],
+      "matchStrings": ["version: (?<currentValue>v[0-9.]+) # renovate: depName=(?<depName>[^\\s]+)"],
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^test/e2e/e2e_suite_test\\.go$/",
+        "/^mise\\.toml$/"
       ],
-      "datasourceTemplate": "docker"
+      "matchStrings": [
+        "gateway-api/releases/download/(?<currentValue>v\\d+\\.\\d+\\.\\d+)/",
+        "GATEWAY_API_VERSION:-(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "kubernetes-sigs/gateway-api",
+      "datasourceTemplate": "github-releases"
     }
   ],
   "packageRules": [
@@ -47,6 +56,14 @@
       "description": "Cloudflared fork image; manual review",
       "matchPackageNames": ["ghcr.io/inherent-design/cloudflared"],
       "enabled": false
+    },
+    {
+      "description": "Keep Gateway API module and install bundle aligned",
+      "matchPackageNames": [
+        "sigs.k8s.io/gateway-api",
+        "kubernetes-sigs/gateway-api"
+      ],
+      "groupName": "gateway-api"
     }
   ]
 }
