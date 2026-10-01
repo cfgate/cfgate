@@ -438,7 +438,7 @@ Aggregate tunnel configuration defaults to at most 1,000 ingress rules and 1 MiB
 ## Release artifact verification
 
 The release workflow resolves a validated semantic-version tag to a commit once.
-Quality, E2E, and image jobs check out that commit. The quality job runs lint,
+Quality, E2E, and image jobs check out that commit. The quality job runs formatting checks, lint,
 race tests, cleanup effects, bounded fuzzing, and release-ref contracts. The image job builds both architectures
 into one OCI archive, retaining BuildKit provenance and SBOM attestations. It
 extracts each platform without changing its manifest digest, verifies binary

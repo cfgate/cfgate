@@ -16,6 +16,8 @@ on:
       - ".codecov.yml"
       - "Dockerfile"
       - ".golangci.yml"
+      - ".editorconfig"
+      - ".yamlfmt.yml"
       - ".github/workflows/*.yml"
       - ".github/scripts/**"
   pull_request:
@@ -33,6 +35,8 @@ on:
       - ".codecov.yml"
       - "Dockerfile"
       - ".golangci.yml"
+      - ".editorconfig"
+      - ".yamlfmt.yml"
       - ".github/workflows/*.yml"
       - ".github/scripts/**"
   workflow_dispatch:
@@ -54,6 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: jdx/mise-action@v4
+      - run: mise run format:check
       - run: mise run lint
 
   test:
