@@ -3,9 +3,14 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/go-logr/logr"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	cfg "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
@@ -94,71 +99,88 @@ func TestPartialDNSClaimCleanup(t *testing.T) {
 
 func TestDNSCrashBeforeStatus(t *testing.T) {
 	for _, hasOldStatus := range []bool{false, true} {
-		name := "empty prior status"
-		if hasOldStatus {
-			name = "existing prior status"
-		}
-		t.Run(name, func(t *testing.T) {
-			ctx := context.Background()
-			store := map[string]cloudflare.DNSRecord{}
-			mock := cloudflare.NewMockClient()
-			mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, zone, name, kind string) ([]cloudflare.DNSRecord, error) {
-				var result []cloudflare.DNSRecord
-				for _, r := range store {
-					if r.Name == name && r.Type == kind {
+		for _, phase := range []string{"claim only", "data with claim", "data without claim"} {
+			t.Run(fmt.Sprintf("old status=%t/%s", hasOldStatus, phase), func(t *testing.T) {
+				ctx := context.Background()
+				store := map[string]cloudflare.DNSRecord{}
+				mock := cloudflare.NewMockClient()
+				mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, zone, name, kind string) ([]cloudflare.DNSRecord, error) {
+					var result []cloudflare.DNSRecord
+					for _, r := range store {
+						if r.Name == name && r.Type == kind {
+							result = append(result, r)
+						}
+					}
+					return result, nil
+				}
+				mock.ListDNSRecordsFunc = func(context.Context, string) ([]cloudflare.DNSRecord, error) {
+					var result []cloudflare.DNSRecord
+					for _, r := range store {
 						result = append(result, r)
 					}
+					return result, nil
 				}
-				return result, nil
-			}
-			mock.ListDNSRecordsFunc = func(context.Context, string) ([]cloudflare.DNSRecord, error) {
-				var result []cloudflare.DNSRecord
-				for _, r := range store {
-					result = append(result, r)
-				}
-				return result, nil
-			}
-			mock.CreateDNSRecordFunc = func(_ context.Context, _ string, r cloudflare.DNSRecord) (*cloudflare.DNSRecord, error) {
-				if r.Type != "TXT" {
-					panic("simulated process exit before data write/status update")
-				}
-				r.ID = "owned-txt"
-				store[r.ID] = r
-				return &r, nil
-			}
-			mock.DeleteDNSRecordFunc = func(_ context.Context, _ string, id string) error { delete(store, id); return nil }
-			dns := &cfg.CloudflareDNS{Spec: cfg.CloudflareDNSSpec{Cloudflare: &cfg.CloudflareConfig{SecretRef: cfg.SecretRef{Name: "credentials"}}, Zones: []cfg.DNSZoneConfig{{Name: "example.com", ID: "zone"}}}, Status: cfg.CloudflareDNSStatus{OwnerID: "installation/resource"}}
-			if hasOldStatus {
-				dns.Status.Records = []cfg.DNSRecordSyncStatus{{Hostname: "old.example.com", Type: "CNAME", RecordID: "old-data", ZoneID: "zone", Status: "Synced"}}
-			}
-			r := &CloudflareDNSReconciler{CFClient: mock, Recorder: &fakeEventRecorder{}}
-			interrupted := false
-			func() {
-				defer func() {
-					if recovered := recover(); recovered != nil {
-						if recovered != "simulated process exit before data write/status update" {
-							panic(recovered)
-						}
-						interrupted = true
+				mock.CreateDNSRecordFunc = func(_ context.Context, _ string, r cloudflare.DNSRecord) (*cloudflare.DNSRecord, error) {
+					if r.Type != "TXT" && phase == "claim only" {
+						panic("simulated process exit before status update")
 					}
+					r.ID = "owned-" + r.Type
+					store[r.ID] = r
+					if r.Type != "TXT" {
+						panic("simulated process exit before status update")
+					}
+					return &r, nil
+				}
+				mock.DeleteDNSRecordFunc = func(_ context.Context, _ string, id string) error {
+					if id == "owned-TXT" && store["owned-CNAME"].ID != "" {
+						t.Fatal("ownership claim deleted before data")
+					}
+					delete(store, id)
+					return nil
+				}
+				dns := &cfg.CloudflareDNS{Spec: cfg.CloudflareDNSSpec{Cloudflare: &cfg.CloudflareConfig{SecretRef: cfg.SecretRef{Name: "credentials"}}, Zones: []cfg.DNSZoneConfig{{Name: "example.com", ID: "zone"}}}, Status: cfg.CloudflareDNSStatus{OwnerID: "installation/resource"}}
+				if hasOldStatus {
+					dns.Status.Records = []cfg.DNSRecordSyncStatus{{Hostname: "old.example.com", Type: "CNAME", RecordID: "old-data", ZoneID: "zone", Status: "Synced"}}
+				}
+				if phase == "data without claim" {
+					disabled := false
+					dns.Spec.Ownership.TXTRecord.Enabled = &disabled
+				}
+				r := &CloudflareDNSReconciler{CFClient: mock, Recorder: &fakeEventRecorder{}}
+				persisted := dns.DeepCopy()
+				interrupted := false
+				func() {
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							if recovered != "simulated process exit before status update" {
+								panic(recovered)
+							}
+							interrupted = true
+						}
+					}()
+					_ = r.syncRecords(ctx, dns, "tunnel.example", map[string]HostnameConfig{"new.example.com": {}}, map[string]string{"example.com": "zone"}, cloudflare.NewDNSService(mock, logr.Discard()))
 				}()
-				_ = r.syncRecords(ctx, dns, "tunnel.example", map[string]HostnameConfig{"new.example.com": {}}, map[string]string{"example.com": "zone"}, cloudflare.NewDNSService(mock, logr.Discard()))
-			}()
-			if !interrupted || len(store) != 1 {
-				t.Fatal("interruption precondition missing")
-			}
-			if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
-				t.Fatal(err)
-			}
-			if len(store) != 0 {
-				t.Fatalf("claim survives pre-status interruption with prior inventory: %+v", dns.Status.Records)
-			}
-		})
+				wantRecords := 1
+				if phase == "data with claim" {
+					wantRecords = 2
+				}
+				if !interrupted || len(store) != wantRecords {
+					t.Fatalf("interruption precondition missing: records=%v", store)
+				}
+				// A restarted controller sees only the previously persisted status.
+				if err := r.cleanupRecordsWithFallback(ctx, persisted); err != nil {
+					t.Fatal(err)
+				}
+				if len(store) != 0 {
+					t.Fatalf("records survive pre-status interruption: %v", store)
+				}
+			})
+		}
 	}
 }
 
-// Recovery must inventory every known zone before deleting an unrecorded claim.
-func TestDNSUnrecordedClaimsInventoryAndRetry(t *testing.T) {
+// Recovery must inventory every known zone before deleting unrecorded data or claims.
+func TestDNSUnrecordedRecordsInventoryAndRetry(t *testing.T) {
 	ctx := context.Background()
 	const owner = "installation/resource"
 	claim := func(id, host, claimOwner string) cloudflare.DNSRecord {
@@ -169,8 +191,11 @@ func TestDNSUnrecordedClaimsInventoryAndRetry(t *testing.T) {
 	store := map[string]map[string]cloudflare.DNSRecord{
 		"old-zone": {"recover": claim("recover", "new.example.com", owner),
 			"foreign":              claim("foreign", "foreign.example.com", "another-owner"),
+			"foreign-data":         {ID: "foreign-data", Name: "foreign.example.com", Type: "CNAME", Comment: cloudflare.OwnershipComment(owner)},
 			"ambiguous-own":        claim("ambiguous-own", "ambiguous.example.com", owner),
 			"ambiguous-other":      claim("ambiguous-other", "ambiguous.example.com", "another-owner"),
+			"ambiguous-data":       {ID: "ambiguous-data", Name: "ambiguous.example.com", Type: "CNAME", Comment: cloudflare.OwnershipComment(owner)},
+			"unmarked-data":        {ID: "unmarked-data", Name: "unmarked.example.com", Type: "CNAME", Comment: "managed by cfgate"},
 			"unrelated":            {ID: "unrelated", Name: "_other.example.com", Type: "TXT", Content: "unrelated"},
 			"data":                 {ID: "data", Name: "data.example.com", Type: "CNAME", Comment: cloudflare.OwnershipComment(owner)},
 			"recorded-claim":       claim("recorded-claim", "recorded.example.com", owner),
@@ -223,15 +248,108 @@ func TestDNSUnrecordedClaimsInventoryAndRetry(t *testing.T) {
 	if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
 		t.Fatal(err)
 	}
-	if len(deleted) != 2 {
-		t.Fatalf("want exactly two unrecorded claims deleted, got %v", deleted)
+	if len(deleted) != 3 {
+		t.Fatalf("want owned data and two unrecorded claims deleted, got %v", deleted)
 	}
 	for _, id := range deleted {
-		if id != "recover" && id != "recover2" {
+		if id != "recover" && id != "recover2" && id != "data" {
 			t.Fatalf("protected record deleted: %s", id)
 		}
 	}
-	if len(store["old-zone"]) != 7 || len(store["configured-zone"]) != 0 {
+	if len(store["old-zone"]) != 9 || len(store["configured-zone"]) != 0 {
 		t.Fatal("unexpected remaining remote records")
+	}
+}
+
+func TestDNSUnrecordedCleanupRetainsFinalizerOnFailure(t *testing.T) {
+	for _, txtEnabled := range []bool{false, true} {
+		for _, failure := range []string{"inventory", "data deletion", "claim deletion", "changed data"} {
+			if !txtEnabled && failure == "claim deletion" {
+				continue
+			}
+			t.Run(fmt.Sprintf("TXT=%t/%s", txtEnabled, failure), func(t *testing.T) {
+				ctx := context.Background()
+				const owner = "installation/resource"
+				data := cloudflare.DNSRecord{ID: "data", Name: "new.example.com", Type: "CNAME", Content: "target.example.com", Comment: cloudflare.OwnershipComment(owner)}
+				store := map[string]cloudflare.DNSRecord{data.ID: data}
+				if txtEnabled {
+					claim := cloudflare.BuildOwnershipTXTRecord(data.Name, owner, "CloudflareDNS/default/dns", "_cfgate")
+					claim.ID = "claim"
+					store[claim.ID] = claim
+				}
+				fail := true
+				mock := cloudflare.NewMockClient()
+				mock.ListDNSRecordsFunc = func(context.Context, string) ([]cloudflare.DNSRecord, error) {
+					var result []cloudflare.DNSRecord
+					for _, record := range store {
+						result = append(result, record)
+					}
+					if fail && failure == "inventory" {
+						return result, errors.New("partial inventory")
+					}
+					if fail && failure == "changed data" {
+						delete(store, "data")
+						changed := data
+						changed.ID = "replacement"
+						store[changed.ID] = changed
+					}
+					return result, nil
+				}
+				mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, _, name, kind string) ([]cloudflare.DNSRecord, error) {
+					var result []cloudflare.DNSRecord
+					for _, record := range store {
+						if record.Name == name && record.Type == kind {
+							result = append(result, record)
+						}
+					}
+					return result, nil
+				}
+				mock.DeleteDNSRecordFunc = func(_ context.Context, _, id string) error {
+					if id == "claim" && (store["data"].ID != "" || store["replacement"].ID != "") {
+						t.Fatal("ownership claim removed before data")
+					}
+					if fail && ((failure == "data deletion" && id == "data") || (failure == "claim deletion" && id == "claim")) {
+						return errors.New("transient deletion failure")
+					}
+					delete(store, id)
+					return nil
+				}
+				now := metav1.Now()
+				dns := &cfg.CloudflareDNS{
+					ObjectMeta: metav1.ObjectMeta{Name: "dns", Namespace: "default", Finalizers: []string{dnsFinalizer}, DeletionTimestamp: &now},
+					Spec: cfg.CloudflareDNSSpec{
+						Policy:     cfg.DNSPolicySync,
+						Cloudflare: &cfg.CloudflareConfig{SecretRef: cfg.SecretRef{Name: "credentials"}},
+						Zones:      []cfg.DNSZoneConfig{{Name: "example.com", ID: "zone"}},
+						Ownership:  cfg.DNSOwnershipConfig{TXTRecord: cfg.DNSTXTRecordOwnership{Enabled: &txtEnabled}},
+					},
+					Status: cfg.CloudflareDNSStatus{OwnerID: owner, Records: []cfg.DNSRecordSyncStatus{{Hostname: "old.example.com", Type: "CNAME", RecordID: "old-data", ZoneID: "zone"}}},
+				}
+				k8s := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(dns).Build()
+				r := &CloudflareDNSReconciler{Client: k8s, CFClient: mock, Recorder: &fakeEventRecorder{}}
+				result, err := r.reconcileDelete(ctx, dns)
+				if err != nil || result.RequeueAfter == 0 {
+					t.Fatalf("failed cleanup must requeue: result=%v err=%v", result, err)
+				}
+				var current cfg.CloudflareDNS
+				key := client.ObjectKeyFromObject(dns)
+				if err := k8s.Get(ctx, key, &current); err != nil || len(current.Finalizers) != 1 {
+					t.Fatalf("cleanup lost finalizer: object=%+v err=%v", current, err)
+				}
+				if len(store) == 0 || (txtEnabled && store["claim"].ID == "") {
+					t.Fatalf("failed cleanup lost recovery evidence: %v", store)
+				}
+				fail = false
+				if result, err := r.reconcileDelete(ctx, &current); err != nil || result.RequeueAfter != 0 {
+					t.Fatalf("retry failed: result=%v err=%v", result, err)
+				}
+				if len(store) != 0 {
+					t.Fatalf("retry leaked records: %v", store)
+				}
+				if err := k8s.Get(ctx, key, &current); !apierrors.IsNotFound(err) {
+					t.Fatalf("completed cleanup did not release finalizer: %v", err)
+				}
+			})
+		}
 	}
 }

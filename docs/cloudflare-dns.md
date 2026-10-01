@@ -400,6 +400,16 @@ spec:
 
 The controller adds the finalizer `cfgate.io/dns-cleanup` to every CloudflareDNS resource. When the resource is deleted, the controller attempts to delete all owned DNS records and their TXT ownership records before removing the finalizer.
 
+Deletion also inventories zones from the specification and recorded status to
+recover remote writes that succeeded before status was saved. Exact-owned data
+records for unrecorded hostnames are deleted before their companion TXT claims,
+including when older status records already exist. Data recovery also runs when
+TXT creation is disabled. Every recovery-zone inventory must succeed before
+unrecorded records are deleted; a failed data deletion or a changed record
+identity retains the claims and finalizer for a fresh attempt. Recorded hostnames
+keep their status-backed record-ID checks. Foreign, ambiguous, and unmarked
+records remain protected by the ownership checks.
+
 If cleanup fails, the controller blocks indefinitely and requeues every 15 seconds. It never removes the finalizer automatically. Within a 1-minute retry budget, the controller emits Warning events with reason `CleanupFailed`. After the retry budget is exhausted, subsequent events escalate to reason `CleanupBlocked`.
 
 To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate.io/deletion-policy=orphan` annotation on the CloudflareDNS resource. The controller will leave DNS records in Cloudflare and remove the finalizer without attempting cleanup.
