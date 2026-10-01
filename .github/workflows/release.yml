@@ -344,10 +344,12 @@ jobs:
           sha256sum --check cfgate.oci.tar.sha256
           skopeo inspect --raw oci-archive:cfgate.oci.tar > index.json
           test "$(skopeo manifest-digest index.json)" = "$EXPECTED_DIGEST"
-      - name: Login for artifact promotion
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GH_TOKEN" | skopeo login --username "$GITHUB_ACTOR" --password-stdin "$REGISTRY"
+      - name: Login for promotion, attestation, and signing
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Recheck current tag before promotion
         run: |
           git fetch --no-tags origin "refs/tags/$RELEASE_TAG"

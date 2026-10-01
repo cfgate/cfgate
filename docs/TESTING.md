@@ -481,6 +481,9 @@ OS/library vulnerabilities. Failed scans or missing attestations block promotion
 After E2E and both scans pass, the publication job verifies the source tag again,
 checks the archive checksum and OCI index digest, and promotes that same index
 with all platform and attestation manifests. It does not rebuild the images.
+Publication uses Docker login so Skopeo, GitHub attestation, and cosign share
+`~/.docker/config.json`. Skopeo's default login writes a separate credential
+store that does not satisfy the attestation action's registry authentication.
 GitHub provenance, cosign signatures, generated manifests, release notes, and
 Artifact Hub metadata remain part of publication. Scheduled monitoring scans
 both published architectures with the same severity gate.
