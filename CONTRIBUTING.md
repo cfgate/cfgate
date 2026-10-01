@@ -28,7 +28,8 @@ mise run lint
 | `build` | `b` | Build manager binary with version info |
 | `lint` | *none* | Run golangci-lint |
 | `lint:fix` | `fix` | Run golangci-lint with auto-fix |
-| `format` | `fmt` | Format and vet code |
+| `format` | `fmt` | Format Go, shell, and workflow YAML; vet Go code |
+| `format:check` | *none* | Check formatting without rewriting files |
 | `manifests` | `dist` | Generate release manifests to `dist/` |
 | `test` | `t` | Run unit tests |
 | `test:cover` | *none* | Run unit tests with coverage report |
@@ -276,7 +277,23 @@ Release notes are generated via [git-cliff](https://git-cliff.org/) from commit 
 
 ### General
 
-Run `mise run lint` before submitting; golangci-lint enforces style. Run `mise run format` to auto-format.
+Run `mise run format` and `mise run lint` before submitting. Tool versions are
+pinned in `mise.toml`; install them with `mise install`. CI and release quality
+checks run `mise run format:check` and `mise run lint` using the same repository
+configuration. Formatting failures report the command to apply fixes locally;
+CI does not commit changes to contributor branches.
+
+`.golangci.yml` enables the standard golangci-lint rules, the existing
+`ginkgolinter` checks, and `gofmt`. Generated Go files are excluded from formatting;
+regenerate them with `mise run codegen`. `.editorconfig` defines editor whitespace
+settings and the two-space indentation used by shfmt for shell files in `hack/`
+and `.github/scripts/`. `.yamlfmt.yml` limits YAML formatting to GitHub workflows
+and the lint/formatter configuration files. Generated manifests, encrypted
+secrets, and examples are outside that YAML formatting scope. Shell embedded in
+mise tasks or YAML blocks is not automatically reformatted by these commands.
+
+The README's golangci-lint badge links to the tool documentation. The existing
+CI status badge reports the automated checks; there is no external quality grade.
 
 Follow existing patterns in the codebase. When in doubt, match the surrounding code.
 

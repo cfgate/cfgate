@@ -94,7 +94,6 @@ jobs:
           fi
           echo "is-latest=$IS_LATEST" >> "$GITHUB_OUTPUT"
 
-
   e2e:
     needs: resolve
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -152,6 +151,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
       - uses: jdx/mise-action@v4
+      - run: mise run format:check
       - run: mise run lint
       - run: mise run test
       - run: mise run test:offline

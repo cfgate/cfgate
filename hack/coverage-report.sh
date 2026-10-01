@@ -66,8 +66,8 @@ mkdir -p "$(dirname "${summary_output}")"
         printf "%6.1f%% %4d/%-4d %s\n", pct, covered[file], total[file], file
       }
     }
-  ' "${merged_profile}" \
-    | LC_ALL=C sort -n
-} > "${summary_output}"
+  ' "${merged_profile}" |
+    LC_ALL=C sort -n
+} >"${summary_output}"
 
 cat "${summary_output}"

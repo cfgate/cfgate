@@ -24,12 +24,12 @@ for profile in "$@"; do
 
   profile_mode="$(sed -n '1p' "${profile}")"
   case "${profile_mode}" in
-    mode:*)
-      ;;
-    *)
-      echo "invalid coverage profile header in ${profile}: ${profile_mode}" >&2
-      exit 1
-      ;;
+  mode:*)
+    ;;
+  *)
+    echo "invalid coverage profile header in ${profile}: ${profile_mode}" >&2
+    exit 1
+    ;;
   esac
 
   if [ -z "${mode}" ]; then
@@ -60,12 +60,12 @@ END {
     printf "%s %s\n", key, count[key]
   }
 }
-' "$@" | LC_ALL=C sort > "${tmp_data}"
+' "$@" | LC_ALL=C sort >"${tmp_data}"
 
 mkdir -p "$(dirname "${output}")"
 {
   printf "%s\n" "${mode}"
   cat "${tmp_data}"
-} > "${output}"
+} >"${output}"
 
 printf "Wrote %s\n" "${output}"

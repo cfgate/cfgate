@@ -1,0 +1,10 @@
+# Limit automatic YAML formatting to workflows and tooling configuration.
+match_type: doublestar
+include:
+  - .github/workflows/*.yml
+  - .golangci.yml
+  - .yamlfmt.yml
+formatter:
+  type: basic
+  indent: 2
+  retain_line_breaks_single: true

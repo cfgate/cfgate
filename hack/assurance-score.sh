@@ -67,8 +67,8 @@ fi
 stress_automated_possible=5
 
 replay_points=0
-if rg -Fq 'e2e-{type}-{node}-{line}' docs/TESTING.md test/e2e 2>/dev/null \
-  || rg -q 'deterministic.*reproducible|reproducible.*deterministic' docs/TESTING.md test/e2e 2>/dev/null; then
+if rg -Fq 'e2e-{type}-{node}-{line}' docs/TESTING.md test/e2e 2>/dev/null ||
+  rg -q 'deterministic.*reproducible|reproducible.*deterministic' docs/TESTING.md test/e2e 2>/dev/null; then
   replay_points=5
 fi
 replay_automated_possible=5
@@ -78,7 +78,7 @@ total_points="$(awk -v cov="${coverage_pct}" -v beh="${behavioral_points}" 'BEGI
 generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 mkdir -p "$(dirname "${output_json}")"
-cat > "${output_json}" <<EOF
+cat >"${output_json}" <<EOF
 {
   "generated_at": "${generated_at}",
   "artifacts": {
