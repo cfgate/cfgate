@@ -3,6 +3,8 @@ package cloudflare
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -390,4 +392,58 @@ func malformedAccessApplicationListEnvelope() string {
 		}],
 		"result_info": {"page": 1, "per_page": 20}
 	}`
+}
+
+// Exercise SDK response handling through the production adapter: a missing
+// resource completes cleanup, but an authorization failure must retain it.
+func TestClientDeleteOutcomes(t *testing.T) {
+	operations := []struct {
+		name, path string
+		call       func(Client) error
+	}{
+		{"tunnel", "/accounts/account/cfd_tunnel/resource", func(c Client) error { return c.DeleteTunnel(context.Background(), "account", "resource") }},
+		{"connections", "/accounts/account/cfd_tunnel/resource/connections", func(c Client) error { return c.DeleteTunnelConnections(context.Background(), "account", "resource") }},
+		{"dns", "/zones/zone/dns_records/resource", func(c Client) error { return c.DeleteDNSRecord(context.Background(), "zone", "resource") }},
+		{"application", "/accounts/account/access/apps/resource", func(c Client) error { return c.DeleteAccessApplication(context.Background(), "account", "resource") }},
+		{"policy", "/accounts/account/access/policies/resource", func(c Client) error { return c.DeleteAccessPolicy(context.Background(), "account", "resource") }},
+		{"tag", "/accounts/account/access/tags/resource", func(c Client) error { return c.DeleteAccessTag(context.Background(), "account", "resource") }},
+		{"group", "/accounts/account/access/groups/resource", func(c Client) error { return c.DeleteAccessGroup(context.Background(), "account", "resource") }},
+		{"token", "/accounts/account/access/service_tokens/resource", func(c Client) error { return c.DeleteServiceToken(context.Background(), "account", "resource") }},
+	}
+	for _, op := range operations {
+		for _, status := range []int{http.StatusOK, http.StatusNotFound, http.StatusForbidden} {
+			t.Run(fmt.Sprintf("%s/%d", op.name, status), func(t *testing.T) {
+				calls := 0
+				c, err := NewClient("test-token", WithHTTPClient(&http.Client{Transport: deadlineTransport(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if r.Method != http.MethodDelete || r.URL.Path != "/client/v4"+op.path {
+						t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					}
+					if _, ok := r.Context().Deadline(); !ok {
+						t.Error("delete request has no deadline")
+					}
+					body := `{"success":true,"result":{"id":"resource","name":"resource"}}`
+					if status != http.StatusOK {
+						body = `{"success":false,"errors":[{"code":1000,"message":"rejected"}]}`
+					}
+					return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+				})}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				err = op.call(c)
+				if status == http.StatusForbidden {
+					var apiErr *cf.Error
+					if !errors.As(err, &apiErr) || apiErr.StatusCode != status {
+						t.Fatalf("permission error lost: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("idempotent cleanup failed: %v", err)
+				}
+				if calls != 1 {
+					t.Fatalf("unexpected delete attempts: %d", calls)
+				}
+			})
+		}
+	}
 }
