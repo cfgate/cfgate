@@ -1021,10 +1021,9 @@ func (r *CloudflareDNSReconciler) deleteManagedStatusRecord(ctx context.Context,
 		}
 	}
 
-	if r.shouldCreateTXTRecords(dns) {
-		if err := dnsService.DeleteOwnershipRecord(ctx, zoneID, statusRecord.Hostname, ownershipPrefix, ownerID); err != nil {
-			return deleted, fmt.Errorf("delete ownership record: %w", err)
-		}
+	// Disabling TXT creation does not orphan claims this resource already owns.
+	if err := dnsService.DeleteOwnershipRecord(ctx, zoneID, statusRecord.Hostname, ownershipPrefix, ownerID); err != nil {
+		return deleted, fmt.Errorf("delete ownership record: %w", err)
 	}
 
 	return deleted, nil
@@ -1525,7 +1524,7 @@ func (r *CloudflareDNSReconciler) cleanupUnrecordedRecords(ctx context.Context, 
 		for _, record := range records {
 			hostname := record.Name
 			if record.Type == "TXT" {
-				if !r.shouldCreateTXTRecords(dns) || !strings.HasPrefix(record.Name, prefix+".") {
+				if !strings.HasPrefix(record.Name, prefix+".") {
 					continue
 				}
 				hostname = strings.TrimPrefix(record.Name, prefix+".")
