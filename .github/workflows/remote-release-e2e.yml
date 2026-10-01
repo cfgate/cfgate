@@ -31,11 +31,11 @@ jobs:
       E2E_PROCS: ${{ inputs.e2e_procs }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
 
       - name: Capture ref metadata
         id: metadata
@@ -128,7 +128,7 @@ jobs:
       - name: Upload E2E coverage to Codecov
         id: codecov
         if: always() && hashFiles('out/coverage/e2e.coverprofile') != ''
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           files: out/coverage/e2e.coverprofile
           flags: e2e,manual
