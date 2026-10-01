@@ -108,7 +108,7 @@ func TestDeleteManagedStatusRecord(t *testing.T) {
 	})
 }
 
-func TestCleanupRecordsWithFallbackUsesStatusInventory(t *testing.T) {
+func TestCleanupRecordsWithFallbackCombinesStatusAndRecoveryInventory(t *testing.T) {
 	ctx := context.Background()
 	mock := cloudflare.NewMockClient()
 	deleted := []string{}
@@ -177,8 +177,8 @@ func TestCleanupRecordsWithFallbackUsesStatusInventory(t *testing.T) {
 		t.Fatalf("cleanupRecordsWithFallback() error = %v", err)
 	}
 
-	if listCalled {
-		t.Fatal("cleanupRecordsWithFallback() fell back to zone-wide managed record listing despite status inventory")
+	if !listCalled {
+		t.Fatal("cleanupRecordsWithFallback() did not inventory unrecorded remote writes")
 	}
 	if len(deleted) != 1 || deleted[0] != "mine-id" {
 		t.Fatalf("deleted record IDs = %#v, want only mine-id", deleted)
