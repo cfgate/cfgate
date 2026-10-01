@@ -172,7 +172,28 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
           persist-credentials: false
       - uses: jdx/mise-action@v5
+      - name: Keep emulation registrations on the runner host
+        run: |
+          # Without a host mount, binfmt registrations can disappear when the
+          # privileged QEMU installer container exits on a fresh runner.
+          if ! mountpoint -q /proc/sys/fs/binfmt_misc; then
+            sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc
+          fi
+          mountpoint /proc/sys/fs/binfmt_misc
       - uses: docker/setup-qemu-action@v4
+        id: qemu
+        with:
+          platforms: arm64
+      - name: Verify ARM64 emulation survived setup
+        env:
+          EMULATED_PLATFORMS: ${{ steps.qemu.outputs.platforms }}
+        run: |
+          grep -Fx enabled /proc/sys/fs/binfmt_misc/qemu-aarch64
+          grep -Eq '^flags:.*F' /proc/sys/fs/binfmt_misc/qemu-aarch64
+          case ",$EMULATED_PLATFORMS," in
+            *,linux/arm64,*) ;;
+            *) echo "::error::ARM64 emulation is unavailable after QEMU setup"; exit 1 ;;
+          esac
       - uses: useblacksmith/setup-docker-builder@v1
       - name: Install OCI archive tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo

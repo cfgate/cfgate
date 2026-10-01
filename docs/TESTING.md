@@ -455,6 +455,13 @@ Aggregate tunnel configuration defaults to at most 1,000 ingress rules and 1 MiB
 
 ## Release artifact verification
 
+The image job mounts `binfmt_misc` on the Linux runner host before installing
+QEMU, then checks the retained ARM64 handler and reported platform support.
+Without the host mount on a fresh runner, registrations can disappear when the
+installer container exits even though setup reports success. The later ARM64
+container smoke test then fails with `exec format error` before scanning. These
+preflight checks do not replace running both exact release images below.
+
 The release workflow resolves a validated semantic-version tag to a commit once.
 Quality, E2E, and image jobs check out that commit. The quality job runs formatting checks, lint,
 race tests, cleanup effects, bounded fuzzing, and release-ref contracts. The image job builds both architectures
