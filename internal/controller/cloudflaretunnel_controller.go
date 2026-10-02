@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -483,7 +484,8 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	if tunnel.Status.TunnelID == "" {
 		return fmt.Errorf("tunnel ID not set in status")
 	}
-	if err := r.validateOriginCAPoolSecretRef(ctx, tunnel); err != nil {
+	caRevision, err := r.originCAPoolRevision(ctx, tunnel)
+	if err != nil {
 		return err
 	}
 
@@ -563,6 +565,11 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 		deployment.Spec.Template.Annotations = make(map[string]string)
 	}
 	deployment.Spec.Template.Annotations["cfgate.io/tunnel-token-revision"] = string(existingSecret.UID) + "/" + existingSecret.ResourceVersion
+	if caRevision != "" {
+		deployment.Spec.Template.Annotations["cfgate.io/origin-ca-revision"] = caRevision
+	} else {
+		delete(deployment.Spec.Template.Annotations, "cfgate.io/origin-ca-revision")
+	}
 	if err := controllerutil.SetControllerReference(tunnel, deployment, r.Scheme); err != nil {
 		return fmt.Errorf("failed to set deployment owner reference: %w", err)
 	}
@@ -604,10 +611,10 @@ func (r *CloudflareTunnelReconciler) deployCloudflared(ctx context.Context, tunn
 	return nil
 }
 
-func (r *CloudflareTunnelReconciler) validateOriginCAPoolSecretRef(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
+func (r *CloudflareTunnelReconciler) originCAPoolRevision(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) (string, error) {
 	ref := tunnel.Spec.OriginDefaults.CAPoolSecretRef
 	if ref == nil {
-		return nil
+		return "", nil
 	}
 
 	var secret corev1.Secret
@@ -618,14 +625,22 @@ func (r *CloudflareTunnelReconciler) validateOriginCAPoolSecretRef(ctx context.C
 	namespacedName := types.NamespacedName{Name: ref.Name, Namespace: tunnel.Namespace}
 	if err := r.Get(ctx, namespacedName, &secret); err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("origin CA pool Secret %s/%s not found", tunnel.Namespace, ref.Name)
+			return "", fmt.Errorf("origin CA pool Secret %s/%s not found", tunnel.Namespace, ref.Name)
 		}
-		return fmt.Errorf("failed to get origin CA pool Secret %s/%s: %w", tunnel.Namespace, ref.Name, err)
+		return "", fmt.Errorf("failed to get origin CA pool Secret %s/%s: %w", tunnel.Namespace, ref.Name, err)
 	}
 	if _, ok := secret.Data[key]; !ok {
-		return fmt.Errorf("origin CA pool Secret %s/%s missing key %q", tunnel.Namespace, ref.Name, key)
+		return "", fmt.Errorf("origin CA pool Secret %s/%s missing key %q", tunnel.Namespace, ref.Name, key)
 	}
-	return nil
+	if !x509.NewCertPool().AppendCertsFromPEM(secret.Data[key]) {
+		return "", fmt.Errorf("origin CA pool Secret %s/%s key %q contains no usable PEM certificates", tunnel.Namespace, ref.Name, key)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(secret.Data[key])), nil
+}
+
+func (r *CloudflareTunnelReconciler) validateOriginCAPoolSecretRef(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
+	_, err := r.originCAPoolRevision(ctx, tunnel)
+	return err
 }
 
 // syncConfiguration syncs the tunnel configuration to Cloudflare.

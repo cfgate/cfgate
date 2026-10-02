@@ -381,3 +381,11 @@ It prevents an oversized update from preserving previously granted access.
 Cleanup receipts are cleared only after Cloudflare confirms withdrawal; an API
 failure can delay withdrawal. Reduce the configuration or raise the appropriate
 limit to restore forwarding.
+
+The selected origin CA Secret key must contain PEM certificates. Changing its
+certificate data rolls the connector Pods so new transports load the updated
+trust pool; changes to other Secret keys do not trigger a rollout.
+
+Tunnel metadata names longer than 63 characters use bounded generated labels and
+resource names with a hash suffix. Existing valid generated names and selectors
+remain unchanged. Kubernetes owner UIDs continue to determine ownership.

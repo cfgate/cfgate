@@ -538,3 +538,46 @@ func TestDeletionRetriesAfterReleasedClaimWithoutRemoteMutation(t *testing.T) {
 		})
 	}
 }
+
+func TestOriginCAChangesRollConnector(t *testing.T) {
+	r, tunnel, _ := lifecycleFixture(t)
+	ctx := context.Background()
+	tunnel.Spec.OriginDefaults.CAPoolSecretRef = &cfg.CAPoolSecretRef{Name: "ca"}
+	ca := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "ca", Namespace: tunnel.Namespace}, Data: map[string][]byte{"ca.crt": testOriginCA(t)}}
+	if err := r.Create(ctx, ca); err != nil {
+		t.Fatal(err)
+	}
+	var previous appsv1.Deployment
+	for _, change := range []string{"initial", "unrelated", "certificate", "invalid"} {
+		switch change {
+		case "unrelated":
+			ca.Data["other"] = []byte("ignored")
+		case "certificate":
+			ca.Data["ca.crt"] = testOriginCA(t)
+		case "invalid":
+			ca.Data["ca.crt"] = []byte("invalid")
+		}
+		if err := r.Update(ctx, ca); err != nil {
+			t.Fatal(err)
+		}
+		err := r.deployCloudflared(ctx, tunnel)
+		if change == "invalid" {
+			if err == nil {
+				t.Fatal("invalid PEM accepted")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		var current appsv1.Deployment
+		if err := r.Get(ctx, client.ObjectKey{Namespace: tunnel.Namespace, Name: cloudflared.DeploymentName(tunnel.Name)}, &current); err != nil {
+			t.Fatal(err)
+		}
+		same := reflect.DeepEqual(previous.Spec.Template, current.Spec.Template)
+		if (change == "unrelated") != same {
+			t.Fatalf("unexpected rollout for %s", change)
+		}
+		previous = current
+	}
+}
