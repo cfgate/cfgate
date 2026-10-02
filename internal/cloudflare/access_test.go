@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -970,7 +971,7 @@ func TestEnsureServiceToken(t *testing.T) {
 		assertSecretData(t, writer, "svc", "client-id", "client-secret")
 	})
 
-	t.Run("rotate secret write failure deletes rotated token", func(t *testing.T) {
+	t.Run("rotate secret write failure retains rotated token", func(t *testing.T) {
 		mock := NewMockClient()
 		writer := &recordingSecretWriter{err: errors.New("write failed")}
 		deleted := ""
@@ -988,8 +989,8 @@ func TestEnsureServiceToken(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "failed to store rotated service token secret") {
 			t.Fatalf("EnsureServiceToken() error = %v, want rotated secret error", err)
 		}
-		if deleted != "token-2" {
-			t.Fatalf("deleted token = %q, want token-2", deleted)
+		if deleted != "" {
+			t.Fatalf("deleted token = %q, want no deletion", deleted)
 		}
 	})
 
@@ -1815,5 +1816,32 @@ func TestCorsHeadersEqual(t *testing.T) {
 				t.Errorf("corsHeadersEqual() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+type reviewRejectSecret struct{ checks int }
+
+func (w *reviewRejectSecret) WriteSecret(context.Context, string, map[string][]byte) error {
+	return fmt.Errorf("foreign Secret")
+}
+func (w *reviewRejectSecret) ServiceTokenSecretNeedsRefresh(context.Context, string, string) (bool, error) {
+	w.checks++
+	return false, fmt.Errorf("foreign Secret")
+}
+func TestExpiredTokenPreflightRejectsForeignSecret(t *testing.T) {
+	mock := NewMockClient()
+	rotations, deletes := 0, 0
+	mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+		return []ServiceToken{{ID: "foreign-token", Name: "shared", ExpiresAt: time.Now().Add(-time.Hour)}}, nil
+	}
+	mock.RotateServiceTokenFunc = func(context.Context, string, string) (*ServiceTokenWithSecret, error) {
+		rotations++
+		return &ServiceTokenWithSecret{ServiceToken: ServiceToken{ID: "foreign-token", Name: "shared"}}, nil
+	}
+	mock.DeleteServiceTokenFunc = func(context.Context, string, string) error { deletes++; return nil }
+	writer := &reviewRejectSecret{}
+	_, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(context.Background(), "account", ServiceTokenParams{Name: "shared"}, writer)
+	if err == nil || rotations != 0 || deletes != 0 || writer.checks != 1 {
+		t.Fatalf("err=%v rotations=%d deletes=%d checks=%d", err, rotations, deletes, writer.checks)
 	}
 }
