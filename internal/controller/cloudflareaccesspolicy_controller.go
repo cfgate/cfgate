@@ -109,6 +109,9 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		_ = r.updateStatus(ctx, &policy)
 		return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterError}, nil
 	}
+	if err := r.prepareOwnedPolicy(ctx, &policy, creds); err != nil {
+		return ctrl.Result{}, err
+	}
 	policy.Status.AccountID = creds.AccountID
 	policy.Status.CredentialSecretRef = creds.CredentialSecretRef
 	policy.Status.CredentialSecretKeys = creds.CredentialSecretKeys
@@ -144,6 +147,7 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 	}
 
 	params, err := buildReusablePolicyParams(&policy)
+	params.Name = ownedAccessName(params.Name, policy.Status.OwnerID)
 	if err != nil {
 		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
 			status.NewCondition(status.ConditionTypePolicySynced, metav1.ConditionFalse,
@@ -449,8 +453,8 @@ func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context
 			owner:     policy,
 			scheme:    r.Scheme,
 		}
-		token, err := accessService.EnsureServiceToken(ctx, accountID, cloudflare.ServiceTokenParams{
-			Name:     tokenConfig.Name,
+		token, err := accessService.EnsureServiceTokenByID(ctx, accountID, policy.Status.ServiceTokenIDs[tokenConfig.Name], cloudflare.ServiceTokenParams{
+			Name:     ownedAccessName(tokenConfig.Name, policy.Status.OwnerID),
 			Duration: tokenConfig.Duration,
 		}, secretWriter)
 		if err != nil {
@@ -531,6 +535,9 @@ func (r *CloudflareAccessPolicyReconciler) reconcileDelete(ctx context.Context, 
 	if err != nil {
 		return r.blockAccessDeletion(ctx, policy, fmt.Sprintf("Failed to resolve credentials: %s", err.Error()))
 	}
+	if err := r.prepareOwnedPolicy(ctx, policy, creds); err != nil {
+		return r.blockAccessDeletion(ctx, policy, err.Error())
+	}
 	if policy.Status.PolicyID != "" {
 		cfPolicy, err := creds.Service.Client().GetAccessPolicy(ctx, creds.AccountID, policy.Status.PolicyID)
 		if err != nil {
@@ -584,7 +591,10 @@ func (r *CloudflareAccessPolicyReconciler) resolvePolicyDeletionCredentials(ctx 
 }
 
 func (r *CloudflareAccessPolicyReconciler) blockAccessDeletion(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy, detail string) (ctrl.Result, error) {
-	retryElapsed := time.Since(policy.DeletionTimestamp.Time)
+	retryElapsed := time.Duration(0)
+	if policy.DeletionTimestamp != nil {
+		retryElapsed = time.Since(policy.DeletionTimestamp.Time)
+	}
 	suffix := " Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer."
 	reason := "CleanupFailed"
 	message := detail + "." + suffix
@@ -615,6 +625,9 @@ func (r *CloudflareAccessPolicyReconciler) updateStatus(ctx context.Context, pol
 	if err := r.Get(ctx, types.NamespacedName{Name: policy.Name, Namespace: policy.Namespace}, &current); err != nil {
 		return fmt.Errorf("failed to re-fetch policy: %w", err)
 	}
+	if current.UID != policy.UID {
+		return fmt.Errorf("resource identity changed before status persistence")
+	}
 	if accessPolicyStatusEqual(&current.Status, &policy.Status) {
 		return nil
 	}
@@ -623,7 +636,7 @@ func (r *CloudflareAccessPolicyReconciler) updateStatus(ctx context.Context, pol
 }
 
 func accessPolicyStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessPolicyStatus) bool {
-	if a.PolicyID != b.PolicyID || a.AccountID != b.AccountID || a.Reusable != b.Reusable ||
+	if a.OwnerID != b.OwnerID || a.PolicyID != b.PolicyID || a.AccountID != b.AccountID || a.Reusable != b.Reusable ||
 		a.AppCount != b.AppCount || a.ObservedGeneration != b.ObservedGeneration {
 		return false
 	}

@@ -5,6 +5,7 @@ import (
 	"cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/controller/status"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,12 +62,13 @@ func newAccessFixture(t *testing.T) *accessFixture {
 	app.Status = cfg.CloudflareAccessApplicationStatus{AccountID: "account", ObservedGeneration: 1, Conditions: ready, Applications: []cfg.AccessApplicationObserved{{ID: "remote-app", Domain: "app.example.com"}}}
 	policy := &cfg.CloudflareAccessPolicy{ObjectMeta: metav1.ObjectMeta{Name: "allow", Namespace: tunnel.Namespace, UID: "policy-uid", Generation: 1}, Spec: cfg.CloudflareAccessPolicySpec{Decision: "allow"}}
 	policy.Status = cfg.CloudflareAccessPolicyStatus{AccountID: "account", PolicyID: "remote-policy", ObservedGeneration: 1, Conditions: ready}
-	for _, obj := range []client.Object{class, gw, route, service, app, policy} {
+	app.Status.OwnerID = fmt.Sprintf("%x", sha256.Sum256([]byte("installation-uid/"+string(app.UID))))[:28]
+	for _, obj := range []client.Object{class, gw, route, service, app, policy, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operator", UID: "installation-uid"}}} {
 		if err := r.Create(context.Background(), obj); err != nil {
 			t.Fatal(err)
 		}
 	}
-	f := &accessFixture{r: r, tunnel: tunnel, route: route, app: app, policy: policy, remoteApp: &cloudflare.AccessApplication{ID: "remote-app", Type: "self_hosted", Domain: "app.example.com", Destinations: []string{"app.example.com"}, Policies: []cloudflare.ApplicationPolicyLink{{ID: "remote-policy"}}}, remotePolicy: &cloudflare.AccessPolicy{ID: "remote-policy", Decision: "allow", Include: []cloudflare.AccessRuleParam{{EmailDomain: ptr.To("example.com")}}}}
+	f := &accessFixture{r: r, tunnel: tunnel, route: route, app: app, policy: policy, remoteApp: &cloudflare.AccessApplication{Tags: []string{accessApplicationOwnerTag(app)}, ID: "remote-app", Type: "self_hosted", Domain: "app.example.com", Destinations: []string{"app.example.com"}, Policies: []cloudflare.ApplicationPolicyLink{{ID: "remote-policy"}}}, remotePolicy: &cloudflare.AccessPolicy{ID: "remote-policy", Decision: "allow", Include: []cloudflare.AccessRuleParam{{EmailDomain: ptr.To("example.com")}}}}
 	mock := r.CFClient.(*cloudflare.MockClient)
 	mock.GetAccessApplicationFunc = func(context.Context, string, string) (*cloudflare.AccessApplication, error) { return f.remoteApp, nil }
 	mock.GetAccessPolicyFunc = func(context.Context, string, string) (*cloudflare.AccessPolicy, error) { return f.remotePolicy, nil }
@@ -136,7 +138,7 @@ func TestAccessRequiredRemoteVerification(t *testing.T) {
 		}, false},
 		{"wrong account", func(t *testing.T, f *accessFixture) {
 			f.app.Status.AccountID = "other"
-			if err := f.r.Update(context.Background(), f.app); err != nil {
+			if err := f.r.Status().Update(context.Background(), f.app); err != nil {
 				t.Fatal(err)
 			}
 		}, false},

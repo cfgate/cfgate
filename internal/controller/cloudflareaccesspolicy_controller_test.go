@@ -650,6 +650,7 @@ func TestAccessPolicyDeletePaths(t *testing.T) {
 
 	t.Run("deletes policy and service tokens", func(t *testing.T) {
 		policy := policyWithDeleteStatus()
+		policy.Annotations = map[string]string{adoptExistingAnnotation: "true"}
 		policy.Status.AccountID = "account-cached"
 		policy.Status.CredentialSecretRef = &cfgatev1alpha1.SecretReference{Name: "cached-cf", Namespace: "app"}
 		policy.Spec.CloudflareRef.AccountID = ""
@@ -790,6 +791,7 @@ func TestAccessPolicyStatusHelpers(t *testing.T) {
 
 func newAccessPolicyReconciler(t *testing.T, mockClient cloudflare.Client, objects ...client.Object) *CloudflareAccessPolicyReconciler {
 	t.Helper()
+	objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operator", UID: "installation-uid"}})
 	scheme := controllerTestScheme(t)
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -797,11 +799,12 @@ func newAccessPolicyReconciler(t *testing.T, mockClient cloudflare.Client, objec
 		WithStatusSubresource(&cfgatev1alpha1.CloudflareAccessPolicy{}).
 		Build()
 	return &CloudflareAccessPolicyReconciler{
-		Client:       k8sClient,
-		Scheme:       scheme,
-		CFClient:     mockClient,
-		Recorder:     &accessApplicationEventRecorder{},
-		FeatureGates: &features.FeatureGates{ReferenceGrantCRDExists: true},
+		InstallationNamespace: "operator",
+		Client:                k8sClient,
+		Scheme:                scheme,
+		CFClient:              mockClient,
+		Recorder:              &accessApplicationEventRecorder{},
+		FeatureGates:          &features.FeatureGates{ReferenceGrantCRDExists: true},
 	}
 }
 

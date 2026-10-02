@@ -126,3 +126,9 @@ Credential cleanup preserves `status.credentialSecretKeys` alongside the resolve
 If storing a rotated token fails, cfgate retains the remote token for recovery
 rather than deleting it. Reconciliation retries storage through rotation when
 needed; resolve Secret ownership and write errors before retrying.
+
+New remote policies and managed tokens include an installation/CR ownership
+suffix in their names. Continue using the declared `serviceTokens[].name` in
+policy rules; status maps it to the remote token ID. The controller verifies
+account/resource claims before changing, rotating or deleting an existing object.
+Name-only adoption is not supported by reconciliation. See the [alpha.7 migration notes](authorization-and-ownership.md#upgrade-from-v020-alpha6-to-v020-alpha7) for existing resources.

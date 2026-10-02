@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -199,6 +200,12 @@ func (r *CloudflareAccessPolicyReconciler) beginPolicyMutation(ctx context.Conte
 				ns = app.Namespace
 			}
 			if ns == policy.Namespace && ref.Name == policy.Name {
+				if err := requireReferenceGrant(ctx, reader, app.Namespace, "cfgate.io", "CloudflareAccessApplication", policy.Namespace, "cfgate.io", "CloudflareAccessPolicy", policy.Name); err != nil {
+					if errors.Is(err, errReferenceNotPermitted) {
+						continue
+					}
+					return ctx, nil, err
+				}
 				keys = append(keys, client.ObjectKeyFromObject(&app).String())
 				break
 			}

@@ -731,6 +731,11 @@ spec:
                 description: ObservedGeneration is the last generation processed.
                 format: int64
                 type: integer
+              ownerId:
+                description: OwnerID binds remote Access resources to this installation
+                  and CR incarnation.
+                pattern: ^[a-f0-9]{28}$
+                type: string
             type: object
         type: object
     served: true

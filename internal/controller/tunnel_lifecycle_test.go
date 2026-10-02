@@ -39,7 +39,7 @@ func lifecycleFixture(t *testing.T) (*CloudflareTunnelReconciler, *cfg.Cloudflar
 	if err := controllerutil.SetControllerReference(tunnel, deployment, scheme); err != nil {
 		t.Fatal(err)
 	}
-	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&cfg.CloudflareTunnel{}, &appsv1.Deployment{}).WithObjects(tunnel, secret, tokenSecret, deployment).Build()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(&cfg.CloudflareTunnel{}, &cfg.CloudflareAccessApplication{}, &cfg.CloudflareAccessPolicy{}, &appsv1.Deployment{}).WithObjects(tunnel, secret, tokenSecret, deployment).Build()
 	validations := new(int)
 	mock := cloudflare.NewMockClient()
 	mock.ValidateTokenFunc = func(context.Context, string) error { *validations++; return nil }

@@ -138,3 +138,9 @@ Inherited credentials retain the Tunnel's Secret namespace, selected `secretKeys
 ## Required protection dependency
 
 HTTPRoutes can opt into an explicit `cfgate.io/access-required: namespace/name` dependency. See [Access-required routing](access-required.md) for the supported subset, grants, remote checks, deletion ordering and asynchronous limitations. Existing routes remain public unless explicitly opted in.
+
+Access applications use installation and CR identity in their owner tags. Status
+records each successful target before continuing; recovery can restore missing
+IDs after an interrupted status write. A recovered entry may omit `targetRef`
+when the original target is no longer known. Deletion inventories owned remote
+applications as well as recorded IDs. See the [alpha.7 migration notes](authorization-and-ownership.md#upgrade-from-v020-alpha6-to-v020-alpha7) before upgrading existing Access resources.
