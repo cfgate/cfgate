@@ -150,7 +150,7 @@ func (c *ownedAccessClient) release(ctx context.Context, account, kind, id strin
 	if err := c.reader.Get(ctx, c.claimKey(account, kind, id), &claim); err != nil {
 		return client.IgnoreNotFound(err)
 	}
-	if claim.Data["ownerID"] != c.identity {
+	if claim.Data["ownerID"] != c.identity || claim.Data["accountID"] != account || claim.Data["kind"] != kind || claim.Data["remoteID"] != id {
 		return fmt.Errorf("refusing foreign Access claim deletion")
 	}
 	uid, rv := claim.UID, claim.ResourceVersion
@@ -256,15 +256,35 @@ func (r *CloudflareAccessApplicationReconciler) prepareOwnedApplications(ctx con
 		return err
 	}
 	owned := &ownedAccessClient{Client: creds.Service.Client(), kube: r.Client, reader: accessReader(r.APIReader, r.Client), installation: r.InstallationNamespace, identity: identity, owner: app, legacy: map[string]bool{}}
-	for _, item := range app.Status.Applications {
+	inventory := append(append([]cfg.AccessApplicationObserved(nil), app.Status.Applications...), app.Status.PendingApplications...)
+	for _, item := range inventory {
 		owned.legacy["application/"+item.ID] = true
 	}
+	retained := inventory[:0]
+	retainedIDs := map[string]bool{}
+	for _, item := range inventory {
+		remote, err := owned.GetAccessApplication(ctx, creds.AccountID, item.ID)
+		if err != nil {
+			return err
+		}
+		if remote == nil {
+			if err := owned.release(ctx, creds.AccountID, "application", item.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		if !retainedIDs[item.ID] {
+			retained = append(retained, item)
+			retainedIDs[item.ID] = true
+		}
+	}
+	inventory = retained
 	remote, err := owned.ListAccessApplications(ctx, creds.AccountID)
 	if err != nil {
 		return err
 	}
 	seen := map[string]bool{}
-	for _, item := range app.Status.Applications {
+	for _, item := range inventory {
 		seen[item.ID] = true
 	}
 	for _, item := range remote {
@@ -282,22 +302,24 @@ func (r *CloudflareAccessApplicationReconciler) prepareOwnedApplications(ctx con
 			return err
 		}
 		if !seen[item.ID] {
-			app.Status.Applications = append(app.Status.Applications, cfg.AccessApplicationObserved{ID: item.ID, AUD: item.AUD, Domain: item.Domain})
+			inventory = append(inventory, cfg.AccessApplicationObserved{ID: item.ID, AUD: item.AUD, Domain: item.Domain})
 			seen[item.ID] = true
 		}
 	}
 	domains := map[string]string{}
-	for _, item := range app.Status.Applications {
+	for _, item := range inventory {
 		if previous := domains[item.Domain]; previous != "" && previous != item.ID {
 			return fmt.Errorf("ambiguous owned applications for domain %q", item.Domain)
 		}
 		domains[item.Domain] = item.ID
 	}
-	for _, item := range app.Status.Applications {
+	for _, item := range inventory {
 		if err := owned.verify(ctx, creds.AccountID, "application", item.ID); err != nil {
 			return err
 		}
 	}
+
+	creds.Recovered = inventory
 
 	creds.Service = cloudflare.NewAccessService(owned, logr.FromContextOrDiscard(ctx))
 	return nil
@@ -322,6 +344,30 @@ func (r *CloudflareAccessPolicyReconciler) prepareOwnedPolicy(ctx context.Contex
 	owned.legacy["policy/"+policy.Status.PolicyID] = true
 	for _, id := range policy.Status.ServiceTokenIDs {
 		owned.legacy["token/"+id] = true
+	}
+	if policy.Status.PolicyID != "" {
+		remote, err := owned.GetAccessPolicy(ctx, creds.AccountID, policy.Status.PolicyID)
+		if err != nil {
+			return err
+		}
+		if remote == nil {
+			if err := owned.release(ctx, creds.AccountID, "policy", policy.Status.PolicyID); err != nil {
+				return err
+			}
+			policy.Status.PolicyID = ""
+		}
+	}
+	for name, id := range policy.Status.ServiceTokenIDs {
+		remote, err := owned.GetServiceToken(ctx, creds.AccountID, id)
+		if err != nil {
+			return err
+		}
+		if remote == nil {
+			if err := owned.release(ctx, creds.AccountID, "token", id); err != nil {
+				return err
+			}
+			delete(policy.Status.ServiceTokenIDs, name)
+		}
 	}
 	policies, err := owned.ListAccessPolicies(ctx, creds.AccountID)
 	if err != nil {

@@ -63,6 +63,8 @@ type accessApplicationTarget struct {
 }
 
 type accessApplicationCredentials struct {
+	Recovered []cfgatev1alpha1.AccessApplicationObserved
+
 	Service              *cloudflare.AccessService
 	AccountID            string
 	CredentialSecretRef  *cfgatev1alpha1.SecretReference
@@ -181,20 +183,8 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 	)
 
 	desiredDomains := accessApplicationTargetDomains(targets)
-	if err := deleteStaleAccessApplications(ctx, creds.Service, creds.AccountID, app.Status.Applications, desiredDomains); err != nil {
-		return ctrl.Result{}, err
-	}
-	retained := app.Status.Applications[:0]
-	for _, item := range app.Status.Applications {
-		if _, ok := desiredDomains[item.Domain]; ok {
-			retained = append(retained, item)
-		}
-	}
-	app.Status.Applications = retained
-	if err := r.updateApplicationStatus(ctx, &app); err != nil {
-		return ctrl.Result{}, err
-	}
-	existingIDs := applicationStatusIDs(app.Status.Applications)
+	existingIDs := applicationStatusIDs(creds.Recovered)
+
 	observed := make([]cfgatev1alpha1.AccessApplicationObserved, 0, len(targets))
 	for _, target := range targets {
 		params := buildAccessApplicationParams(&app, target, policyLinks, len(targets) > 1)
@@ -216,24 +206,13 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 			Domain:    cfApp.Domain,
 			TargetRef: &target.Ref,
 		})
-		checkpoint := observed[len(observed)-1]
-		found := false
-		for i := range app.Status.Applications {
-			if app.Status.Applications[i].ID == checkpoint.ID {
-				app.Status.Applications[i] = checkpoint
-				found = true
-				break
-			}
-		}
-		if !found {
-			app.Status.Applications = append(app.Status.Applications, checkpoint)
-		}
+		app.Status.PendingApplications = append([]cfgatev1alpha1.AccessApplicationObserved(nil), observed...)
 		if err := r.updateApplicationStatus(ctx, &app); err != nil {
 			return ctrl.Result{}, err
 		}
 
 	}
-	if err := deleteStaleAccessApplications(ctx, creds.Service, creds.AccountID, app.Status.Applications, desiredDomains); err != nil {
+	if err := deleteStaleAccessApplications(ctx, creds.Service, creds.AccountID, creds.Recovered, desiredDomains); err != nil {
 		log.Error(err, "failed to delete stale access applications")
 		app.Status.Conditions = status.MergeConditions(app.Status.Conditions,
 			status.NewCondition(status.ConditionTypeApplicationSynced, metav1.ConditionFalse, status.ReasonApplicationError, status.Error2ConditionMsg(err), app.Generation),
@@ -247,6 +226,7 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 	sort.Slice(observed, func(i, j int) bool { return observed[i].Domain < observed[j].Domain })
 
 	app.Status.Applications = observed
+	app.Status.PendingApplications = nil
 	app.Status.AttachedTargets = int32(len(targets))
 	app.Status.Ancestors = applicationAncestors(targets, app.Generation)
 	app.Status.ObservedGeneration = app.Generation
@@ -278,6 +258,9 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationTargets(ctx co
 		}
 		if err != nil {
 			return nil, refGrantOK, err
+		}
+		if len(targets)+len(resolved) > 64 {
+			return nil, refGrantOK, fmt.Errorf("more than 64 Access application targets")
 		}
 		targets = append(targets, resolved...)
 	}
@@ -1015,7 +998,7 @@ func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx c
 	if err := r.prepareOwnedApplications(ctx, app, creds); err != nil {
 		return r.blockApplicationDeletion(ctx, app, err.Error())
 	}
-	for _, observed := range app.Status.Applications {
+	for _, observed := range creds.Recovered {
 		if observed.ID == "" {
 			continue
 		}
@@ -1101,7 +1084,7 @@ func (r *CloudflareAccessApplicationReconciler) removeApplicationFinalizer(ctx c
 
 func (r *CloudflareAccessApplicationReconciler) updateApplicationStatus(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication) error {
 	var current cfgatev1alpha1.CloudflareAccessApplication
-	if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &current); err != nil {
+	if err := accessReader(r.APIReader, r.Client).Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &current); err != nil {
 		return fmt.Errorf("failed to re-fetch application: %w", err)
 	}
 	if current.UID != app.UID {
@@ -1121,6 +1104,7 @@ func accessApplicationStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessApplicati
 	if a.CredentialSecretKeys != b.CredentialSecretKeys ||
 		!reflect.DeepEqual(a.CredentialSecretRef, b.CredentialSecretRef) ||
 		!reflect.DeepEqual(a.Applications, b.Applications) ||
+		!reflect.DeepEqual(a.PendingApplications, b.PendingApplications) ||
 		!reflect.DeepEqual(a.Ancestors, b.Ancestors) {
 		return false
 	}

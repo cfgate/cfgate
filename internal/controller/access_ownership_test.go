@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"github.com/go-logr/logr"
 	"strings"
 	"testing"
 
@@ -126,7 +127,7 @@ type accessFaultStatus struct {
 }
 
 func (w *accessFaultStatus) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-	if app, ok := obj.(*cfg.CloudflareAccessApplication); ok && len(app.Status.Applications) > 0 && w.parent.failStatus {
+	if app, ok := obj.(*cfg.CloudflareAccessApplication); ok && len(app.Status.PendingApplications) > 0 && w.parent.failStatus {
 		return fmt.Errorf("injected lost status write")
 	}
 	return w.SubResourceWriter.Update(ctx, obj, opts...)
@@ -205,5 +206,119 @@ func TestApplicationDeletionRecoversPartialOperations(t *testing.T) {
 				t.Fatal("completed cleanup retained claims")
 			}
 		})
+	}
+}
+
+func TestAccessRecoveryReplacesAbsentRecordedIDs(t *testing.T) {
+	ctx := context.Background()
+	app := appWithFinalizer("app", "protection")
+	app.Status.AccountID = "account"
+	app.Status.Applications = []cfg.AccessApplicationObserved{{ID: "absent", Domain: "app.example.com"}}
+	mock := cloudflare.NewMockClient()
+	r := newAccessAppReconciler(t, mock, app)
+	remote := cloudflare.AccessApplication{ID: "replacement", Domain: "app.example.com", Tags: []string{accessApplicationOwnerTag(app)}}
+	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]cloudflare.AccessApplication, error) {
+		return []cloudflare.AccessApplication{remote}, nil
+	}
+	mock.GetAccessApplicationFunc = func(_ context.Context, _, id string) (*cloudflare.AccessApplication, error) {
+		if id == "absent" {
+			return nil, nil
+		}
+		return &remote, nil
+	}
+	creds := &accessApplicationCredentials{Service: cloudflare.NewAccessService(mock, logr.Discard()), AccountID: "account"}
+	if err := r.prepareOwnedApplications(ctx, app, creds); err != nil {
+		t.Fatal(err)
+	}
+	if len(creds.Recovered) != 1 || creds.Recovered[0].ID != "replacement" {
+		t.Fatalf("lost recovered application: %+v", creds.Recovered)
+	}
+	policy := baseAccessPolicy("app", "policy")
+	policy.Status.PolicyID = "absent"
+	policy.Status.ServiceTokenIDs = map[string]string{"token": "absent"}
+	policy.Spec.ServiceTokens = []cfg.ServiceTokenConfig{{Name: "token"}}
+	pr := newAccessPolicyReconciler(t, mock, policy)
+	identity, err := accessOwnerIdentity(ctx, pr.Client, "operator", policy, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyRemote := cloudflare.AccessPolicy{ID: "replacement-policy", Name: ownedAccessName(policy.Spec.Name, identity)}
+	tokenRemote := cloudflare.ServiceToken{ID: "replacement-token", Name: ownedAccessName("token", identity)}
+	mock.ListAccessPoliciesFunc = func(context.Context, string) ([]cloudflare.AccessPolicy, error) {
+		return []cloudflare.AccessPolicy{policyRemote}, nil
+	}
+	mock.GetAccessPolicyFunc = func(_ context.Context, _, id string) (*cloudflare.AccessPolicy, error) {
+		if id == "absent" {
+			return nil, nil
+		}
+		return &policyRemote, nil
+	}
+	mock.ListServiceTokensFunc = func(context.Context, string) ([]cloudflare.ServiceToken, error) {
+		return []cloudflare.ServiceToken{tokenRemote}, nil
+	}
+	mock.GetServiceTokenFunc = func(_ context.Context, _, id string) (*cloudflare.ServiceToken, error) {
+		if id == "absent" {
+			return nil, nil
+		}
+		return &tokenRemote, nil
+	}
+	pc := &accessPolicyCredentials{Service: cloudflare.NewAccessService(mock, logr.Discard()), AccountID: "account-1"}
+	if err := pr.prepareOwnedPolicy(ctx, policy, pc); err != nil {
+		t.Fatal(err)
+	}
+	if policy.Status.PolicyID != policyRemote.ID || policy.Status.ServiceTokenIDs["token"] != tokenRemote.ID {
+		t.Fatalf("lost recovered policy/token: %+v", policy.Status)
+	}
+}
+
+func TestReplacementFailureRetainsPreviousProtection(t *testing.T) {
+	ctx := context.Background()
+	app := appWithFinalizer("app", "protection")
+	app.Spec.CloudflareRef = &cfg.CloudflareSecretRef{Name: "cf", AccountID: "account"}
+	app.Spec.TargetRef = &cfg.PolicyTargetReference{Group: gateway.GroupName, Kind: "HTTPRoute", Name: "route"}
+	app.Spec.PolicyRefs = []cfg.AccessPolicyReference{{Name: "policy"}}
+	app.Status.Applications = []cfg.AccessApplicationObserved{{ID: "old", Domain: "old.example.com"}}
+	route := &gateway.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"}, Spec: gateway.HTTPRouteSpec{Hostnames: []gateway.Hostname{"new.example.com"}}}
+	policy := readyAccessPolicy("app", "policy", "account", "policy-id")
+	mock := cloudflare.NewMockClient()
+	deleted := false
+	r := newAccessAppReconciler(t, mock, route, policy, app)
+	old := cloudflare.AccessApplication{ID: "old", Domain: "old.example.com", Tags: []string{accessApplicationOwnerTag(app)}}
+	mock.ListAccessApplicationsFunc = func(context.Context, string) ([]cloudflare.AccessApplication, error) {
+		return []cloudflare.AccessApplication{old}, nil
+	}
+	mock.GetAccessApplicationFunc = func(context.Context, string, string) (*cloudflare.AccessApplication, error) { return &old, nil }
+	mock.CreateAccessApplicationFunc = func(context.Context, string, cloudflare.ApplicationParams) (*cloudflare.AccessApplication, error) {
+		return nil, fmt.Errorf("replacement unavailable")
+	}
+	mock.DeleteAccessApplicationFunc = func(context.Context, string, string) error { deleted = true; return nil }
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(app)}); err != nil {
+		t.Fatal(err)
+	}
+	if deleted {
+		t.Fatal("old protection deleted before successful replacement")
+	}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(app), app); err != nil {
+		t.Fatal(err)
+	}
+	if len(app.Status.Applications) != 1 || app.Status.Applications[0].ID != "old" {
+		t.Fatal("previous protection receipt lost")
+	}
+}
+
+func TestAccessTargetLimitPrecedesRemoteChanges(t *testing.T) {
+	app := appWithFinalizer("app", "protection")
+	objects := []client.Object{app}
+	for i := 0; i < 5; i++ {
+		route := &gateway.HTTPRoute{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("route-%d", i), Namespace: "app"}}
+		for j := 0; j < 13; j++ {
+			route.Spec.Hostnames = append(route.Spec.Hostnames, gateway.Hostname(fmt.Sprintf("host-%d-%d.example.com", i, j)))
+		}
+		objects = append(objects, route)
+		app.Spec.TargetRefs = append(app.Spec.TargetRefs, cfg.PolicyTargetReference{Group: gateway.GroupName, Kind: "HTTPRoute", Name: route.Name})
+	}
+	r := newAccessAppReconciler(t, cloudflare.NewMockClient(), objects...)
+	if _, _, err := r.resolveApplicationTargets(context.Background(), app); err == nil {
+		t.Fatal("uncheckpointable target expansion accepted")
 	}
 }

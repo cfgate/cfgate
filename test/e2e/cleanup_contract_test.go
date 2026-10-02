@@ -175,3 +175,19 @@ func TestE2EVerificationDeadlines(t *testing.T) {
 		}
 	}
 }
+
+func TestE2EServiceTokenIdentity(t *testing.T) {
+	previous := testEnv
+	t.Cleanup(func() { testEnv = previous })
+	testEnv = &E2ETestEnv{CloudflareAPIToken: "test-token"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"success":true,"result":[{"id":"foreign","name":"wanted"},{"id":"wanted","name":"qualified [cfgate:owner]"}],"result_info":{"page":1,"total_pages":1}}`)
+	}))
+	defer server.Close()
+	cf := getCloudflareClient(option.WithBaseURL(server.URL))
+	token, err := getServiceTokenFromCloudflare(t.Context(), cf, "account", "wanted")
+	if err != nil || token == nil || token.ID != "wanted" {
+		t.Fatalf("recorded token identity not recovered: token=%v err=%v", token, err)
+	}
+}

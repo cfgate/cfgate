@@ -902,6 +902,9 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 			deletedTag = tagName
 			return nil
 		}
+		mock.GetAccessApplicationFunc = func(_ context.Context, _, id string) (*cloudflare.AccessApplication, error) {
+			return &cloudflare.AccessApplication{ID: id, Domain: "app.example.com", Tags: []string{accessApplicationOwnerTag(app)}}, nil
+		}
 		reconciler := newAccessAppReconciler(t, mock, app)
 		if _, err := reconciler.reconcileApplicationDelete(ctx, app); err != nil {
 			t.Fatalf("reconcileApplicationDelete() error = %v", err)
@@ -943,6 +946,9 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 			}
 			deletedTag = tagName
 			return nil
+		}
+		mock.GetAccessApplicationFunc = func(_ context.Context, _, id string) (*cloudflare.AccessApplication, error) {
+			return &cloudflare.AccessApplication{ID: id, Domain: "app.example.com", Tags: []string{accessApplicationOwnerTag(app)}}, nil
 		}
 		reconciler := newAccessAppReconciler(t, mock, app)
 		if _, err := reconciler.reconcileApplicationDelete(ctx, app); err != nil {
@@ -991,6 +997,9 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 		app.Status.Applications = []cfgatev1alpha1.AccessApplicationObserved{{ID: "app-1", Domain: "app.example.com"}}
 		mock := cloudflare.NewMockClient()
 		mock.DeleteAccessApplicationFunc = func(context.Context, string, string) error { return errors.New("delete failed") }
+		mock.GetAccessApplicationFunc = func(_ context.Context, _, id string) (*cloudflare.AccessApplication, error) {
+			return &cloudflare.AccessApplication{ID: id, Domain: "app.example.com", Tags: []string{accessApplicationOwnerTag(app)}}, nil
+		}
 		reconciler := newAccessAppReconciler(t, mock, app)
 		result, err := reconciler.reconcileApplicationDelete(ctx, app)
 		if err != nil {

@@ -47,7 +47,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 		gwName       string
 	)
 
-	BeforeAll(func() {
+	BeforeAll(func(ctx SpecContext) {
 		skipIfNoZone()
 
 		namespace = createTestNamespace("cfgate-invariants-e2e")
@@ -73,21 +73,21 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 		tunnelRef := fmt.Sprintf("%s/%s", namespace.Name, sharedTunnel.Name)
 		createGateway(ctx, k8sClient, gwName, namespace.Name, gcName, tunnelRef)
 
-		DeferCleanup(func() {
+		DeferCleanup(func(ctx SpecContext) {
 			if testEnv.SkipCleanup {
 				return
 			}
 			if namespace != nil {
-				deleteTestNamespace(namespace)
+				deleteTestNamespaceWithContext(ctx, namespace)
 			}
-		})
-	})
+		}, NodeTimeout(LongTimeout))
+	}, NodeTimeout(LongTimeout))
 
 	// ============================================================
 	// I1: CloudflareTunnel Ready Invariants
 	// ============================================================
 	Context("CloudflareTunnel Ready invariants", func() {
-		It("should satisfy all structural invariants when Ready=True [INV-T1..T9]", SpecTimeout(3*time.Minute), func(ctx SpecContext) {
+		It("should satisfy all structural invariants when Ready=True [INV-T1..T9]", NodeTimeout(3*time.Minute), func(ctx SpecContext) {
 			var tunnel cfgatev1alpha1.CloudflareTunnel
 			Expect(k8sClient.Get(ctx, client.ObjectKey{
 				Name:      sharedTunnel.Name,
@@ -165,7 +165,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 	// I2: CloudflareDNS Ready Invariants
 	// ============================================================
 	Context("CloudflareDNS Ready invariants", func() {
-		It("should satisfy all structural invariants when Ready=True [INV-D1..D8]", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+		It("should satisfy all structural invariants when Ready=True [INV-D1..D8]", NodeTimeout(5*time.Minute), func(ctx SpecContext) {
 			By("Creating an HTTPRoute with hostname for DNS")
 			svcName := testID("svc")
 			createTestService(ctx, k8sClient, svcName, namespace.Name, 8080)
@@ -290,7 +290,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 	// I3: CloudflareAccessPolicy Ready Invariants
 	// ============================================================
 	Context("CloudflareAccessPolicy Ready invariants", func() {
-		It("should satisfy all structural invariants when Ready=True [INV-A1..A8]", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+		It("should satisfy all structural invariants when Ready=True [INV-A1..A8]", NodeTimeout(5*time.Minute), func(ctx SpecContext) {
 			By("Creating an HTTPRoute for the policy target")
 			svcName := testID("svc")
 			createTestService(ctx, k8sClient, svcName, namespace.Name, 8080)
@@ -368,7 +368,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 				cfApp.Name, policyName)
 		})
 
-		It("should satisfy service token invariants when Ready=True [INV-ST1..ST4]", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+		It("should satisfy service token invariants when Ready=True [INV-ST1..ST4]", NodeTimeout(5*time.Minute), func(ctx SpecContext) {
 			By("Creating an HTTPRoute for the policy target")
 			svcName := testID("svc")
 			createTestService(ctx, k8sClient, svcName, namespace.Name, 8080)
@@ -416,7 +416,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 				"CF_ACCESS_CLIENT_SECRET must be non-empty")
 
 			By("INV-ST3: Service token must exist in Cloudflare API")
-			cfToken, err := getServiceTokenFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, expectedTokenName)
+			cfToken, err := getServiceTokenFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, ap.Status.ServiceTokenIDs[expectedTokenName])
 			Expect(err).NotTo(HaveOccurred())
 			Expect(cfToken).NotTo(BeNil(), "Service token must exist in Cloudflare when Ready=True")
 			Expect(cfToken.ID).To(Equal(ap.Status.ServiceTokenIDs[expectedTokenName]),
@@ -428,7 +428,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 	// I4: Gateway Status Invariants
 	// ============================================================
 	Context("Gateway status invariants", func() {
-		It("should satisfy Gateway conditions when tunnel is Ready [INV-GW1..GW4]", SpecTimeout(3*time.Minute), func(ctx SpecContext) {
+		It("should satisfy Gateway conditions when tunnel is Ready [INV-GW1..GW4]", NodeTimeout(3*time.Minute), func(ctx SpecContext) {
 			By("Waiting for Gateway to reflect tunnel status")
 			var gw gatewayv1.Gateway
 			Eventually(func() bool {
@@ -505,7 +505,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 	// I5: HTTPRoute Parent Status Invariants
 	// ============================================================
 	Context("HTTPRoute parent status invariants", func() {
-		It("should have cfgate parent status with correct conditions [INV-HR1..HR3]", SpecTimeout(3*time.Minute), func(ctx SpecContext) {
+		It("should have cfgate parent status with correct conditions [INV-HR1..HR3]", NodeTimeout(3*time.Minute), func(ctx SpecContext) {
 			By("Creating HTTPRoute with valid backend")
 			svcName := testID("svc")
 			createTestService(ctx, k8sClient, svcName, namespace.Name, 8080)
@@ -571,7 +571,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 	// I6: GatewayClass Invariants
 	// ============================================================
 	Context("GatewayClass invariants", func() {
-		It("should set Accepted condition on GatewayClass managed by cfgate [INV-GC1..GC2]", SpecTimeout(2*time.Minute), func(ctx SpecContext) {
+		It("should set Accepted condition on GatewayClass managed by cfgate [INV-GC1..GC2]", NodeTimeout(2*time.Minute), func(ctx SpecContext) {
 			By("Reading the shared GatewayClass")
 			var gc gatewayv1.GatewayClass
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: gcName}, &gc)).To(Succeed())
@@ -599,7 +599,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 	// I7: Cross-CRD Consistency Invariants
 	// ============================================================
 	Context("cross-CRD consistency", func() {
-		It("should maintain consistent tunnel domain across DNS and tunnel resources [INV-X1..X2]", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+		It("should maintain consistent tunnel domain across DNS and tunnel resources [INV-X1..X2]", NodeTimeout(5*time.Minute), func(ctx SpecContext) {
 			By("Reading the shared tunnel's current state")
 			var tunnel cfgatev1alpha1.CloudflareTunnel
 			Expect(k8sClient.Get(ctx, client.ObjectKey{
@@ -685,7 +685,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 				record.Content, tunnelDomain)
 		})
 
-		It("should inherit credentials through HTTPRoute -> Gateway -> Tunnel chain [INV-X3]", SpecTimeout(5*time.Minute), func(ctx SpecContext) {
+		It("should inherit credentials through HTTPRoute -> Gateway -> Tunnel chain [INV-X3]", NodeTimeout(5*time.Minute), func(ctx SpecContext) {
 			By("Creating an HTTPRoute targeting the shared Gateway")
 			svcName := testID("svc")
 			createTestService(ctx, k8sClient, svcName, namespace.Name, 8080)
@@ -733,7 +733,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 	// I8: Deletion Invariants
 	// ============================================================
 	Context("deletion invariants", func() {
-		It("should clean up Cloudflare resources and remove finalizers on CR deletion [INV-DEL1..DEL4]", SpecTimeout(8*time.Minute), func(ctx SpecContext) {
+		It("should clean up Cloudflare resources and remove finalizers on CR deletion [INV-DEL1..DEL4]", NodeTimeout(8*time.Minute), func(ctx SpecContext) {
 			By("Creating a separate namespace for deletion test")
 			delNS := createTestNamespace("cfgate-del-inv-e2e")
 			createCloudflareCredentialsSecret(delNS.Name)
@@ -804,7 +804,7 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 			Expect(appID).NotTo(BeEmpty())
 
 			By("INV-DEL1: Deleting namespace triggers finalizer-based cleanup")
-			deleteTestNamespace(delNS)
+			deleteTestNamespaceWithContext(ctx, delNS)
 
 			By("INV-DEL2: Tunnel must be deleted from Cloudflare after finalizer runs")
 			Eventually(func() bool {

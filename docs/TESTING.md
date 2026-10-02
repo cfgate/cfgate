@@ -243,13 +243,20 @@ live resources. This replaces the branch's narrower `test:e2e-cleanup` task name
 
 #### SpecTimeout
 
-Every spec that calls the Cloudflare API uses `SpecTimeout` to prevent hangs:
+Use `SpecTimeout` to bound a test and its per-test setup and cleanup:
 
 ```go
 It("creates CNAME record pointing to tunnel domain", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
     // ctx is cancelled when SpecTimeout fires
 })
 ```
+
+For ordered tests with a shared fixture, use `NodeTimeout` on individual test
+bodies and give `BeforeAll` and `DeferCleanup` their own bounded `SpecContext`.
+A shared cleanup must not inherit the last test's nearly exhausted deadline.
+The invariant suite keeps each test's existing duration and gives shared cleanup
+`LongTimeout`; `deleteTestNamespaceWithContext` passes that context through API
+calls and dependency-ordered cleanup phases.
 
 Typical timeouts:
 - Tunnel operations: 3-5 minutes (tunnel creation is the slowest API call)
