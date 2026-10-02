@@ -106,3 +106,21 @@ func progressMetricValue(t *testing.T, name string) float64 {
 	}
 	return 0
 }
+
+func TestAuthorizationEventsQueueRouteStatus(t *testing.T) {
+	f := newAccessFixture(t)
+	r := &HTTPRouteReconciler{Client: f.r.Client}
+	for _, dependency := range []client.Object{&corev1.Namespace{}, &gateway.GatewayClass{}} {
+		queue := workqueue.NewTypedRateLimitingQueue(workqueue.DefaultTypedControllerRateLimiter[reconcile.Request]())
+		handler.EnqueueRequestsFromMapFunc(r.findRoutesForAuthorization).Update(context.Background(), event.UpdateEvent{ObjectOld: dependency, ObjectNew: dependency}, queue)
+		if queue.Len() != 1 {
+			t.Fatalf("%T queued %d routes", dependency, queue.Len())
+		}
+		req, _ := queue.Get()
+		queue.Done(req)
+		queue.ShutDown()
+		if req.NamespacedName != client.ObjectKeyFromObject(f.route) {
+			t.Fatalf("wrong route: %v", req)
+		}
+	}
+}

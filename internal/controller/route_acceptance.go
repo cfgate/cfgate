@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"cfgate.io/cfgate/internal/controller/annotations"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -269,4 +271,35 @@ func validateHTTPRouteFeatures(route *gwapiv1.HTTPRoute) error {
 		}
 	}
 	return validateCloudflaredPathMatches(route)
+}
+
+// managedGatewayTunnel resolves only controller-owned, authorized Gateway edges.
+func managedGatewayTunnel(ctx context.Context, reader client.Reader, gw *gwapiv1.Gateway, classes map[gwapiv1.ObjectName]bool) (types.NamespacedName, bool, error) {
+	ns, name, err := annotations.ParseNamespacedName(annotations.GetAnnotation(gw, annotations.AnnotationTunnelRef), gw.Namespace)
+	if err != nil {
+		return types.NamespacedName{}, false, nil
+	}
+	key := types.NamespacedName{Namespace: ns, Name: name}
+	managed, checked := classes[gw.Spec.GatewayClassName]
+	if !checked {
+		var class gwapiv1.GatewayClass
+		if err := reader.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &class); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return key, false, err
+			}
+		} else {
+			managed = string(class.Spec.ControllerName) == GatewayControllerName
+		}
+		classes[gw.Spec.GatewayClassName] = managed
+	}
+	if !managed {
+		return key, false, nil
+	}
+	if err := requireReferenceGrant(ctx, reader, gw.Namespace, gwapiv1.GroupName, "Gateway", ns, "cfgate.io", "CloudflareTunnel", name); err != nil {
+		if errors.Is(err, errReferenceNotPermitted) {
+			return key, false, nil
+		}
+		return key, false, err
+	}
+	return key, true, nil
 }

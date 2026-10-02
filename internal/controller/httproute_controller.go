@@ -3,7 +3,10 @@ package controller
 import (
 	"context"
 	"fmt"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"regexp"
+	gwapiv1b1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	"strings"
 	"time"
 
@@ -182,7 +185,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controller").WithName("httproute")
 	log.Info("registering controller with manager")
-	return ctrl.NewControllerManagedBy(mgr).
+	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&gwapiv1.HTTPRoute{},
 			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate),
 		).
@@ -200,7 +203,14 @@ func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findRoutesForAccessPolicy),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
-		Complete(withReconcileProgress("httproute", r))
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.findRoutesForAuthorization), builder.WithPredicates(predicate.LabelChangedPredicate{})).
+		Watches(&gwapiv1.GatewayClass{}, handler.EnqueueRequestsFromMapFunc(r.findRoutesForAuthorization), builder.WithPredicates(predicate.GenerationChangedPredicate{}))
+	if _, err := mgr.GetRESTMapper().RESTMapping(schema.GroupKind{Group: gwapiv1.GroupName, Kind: "ReferenceGrant"}, "v1beta1"); err == nil {
+		controllerBuilder = controllerBuilder.Watches(&gwapiv1b1.ReferenceGrant{}, handler.EnqueueRequestsFromMapFunc(r.findRoutesForAuthorization))
+	} else if !meta.IsNoMatchError(err) {
+		return fmt.Errorf("discover ReferenceGrant watch: %w", err)
+	}
+	return controllerBuilder.Complete(withReconcileProgress("httproute", r))
 }
 
 // findRoutesForGateway returns HTTPRoutes that reference the given Gateway.
@@ -747,4 +757,17 @@ func validateCloudflaredPathMatch(match gwapiv1.HTTPRouteMatch) error {
 	default:
 		return fmt.Errorf("unsupported path match type %q", matchType)
 	}
+}
+
+func (r *HTTPRouteReconciler) findRoutesForAuthorization(ctx context.Context, _ client.Object) []reconcile.Request {
+	var routes gwapiv1.HTTPRouteList
+	if err := r.List(ctx, &routes); err != nil {
+		log.FromContext(ctx).Error(err, "list routes for authorization event")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(routes.Items))
+	for i := range routes.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&routes.Items[i])})
+	}
+	return requests
 }

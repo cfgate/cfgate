@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -807,36 +806,17 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 	}
 
 	relevantGateways := map[types.NamespacedName]gateway.Gateway{}
-	managedClasses := map[gateway.ObjectName]bool{}
+	classes := map[gateway.ObjectName]bool{}
 	for _, gw := range gateways.Items {
 		if err := ctx.Err(); err != nil {
 			return nil, 0, err
 		}
-		ref := annotations.GetAnnotation(&gw, annotations.AnnotationTunnelRef)
-		ns, name, err := annotations.ParseNamespacedName(ref, gw.Namespace)
-		if err != nil || name != tunnel.Name || ns != tunnel.Namespace {
-			continue
-		}
-		if err := requireReferenceGrant(ctx, r.Client, gw.Namespace, gateway.GroupName, "Gateway", tunnel.Namespace, "cfgate.io", "CloudflareTunnel", tunnel.Name); err != nil {
-			if errors.Is(err, errReferenceNotPermitted) {
-				continue
-			}
+		key, managed, err := managedGatewayTunnel(ctx, r.Client, &gw, classes)
+		if err != nil {
 			return nil, 0, err
 		}
-		managed, checked := managedClasses[gw.Spec.GatewayClassName]
-		if !checked {
-			var class gateway.GatewayClass
-			if err := r.Get(ctx, types.NamespacedName{Name: string(gw.Spec.GatewayClassName)}, &class); err != nil {
-				if !apierrors.IsNotFound(err) {
-					return nil, 0, fmt.Errorf("get GatewayClass: %w", err)
-				}
-			} else {
-				managed = string(class.Spec.ControllerName) == GatewayControllerName
-			}
-			managedClasses[gw.Spec.GatewayClassName] = managed
-		}
-		if managed {
-			relevantGateways[types.NamespacedName{Namespace: gw.Namespace, Name: gw.Name}] = gw
+		if managed && key == client.ObjectKeyFromObject(tunnel) {
+			relevantGateways[client.ObjectKeyFromObject(&gw)] = gw
 		}
 	}
 

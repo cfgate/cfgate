@@ -331,3 +331,79 @@ func TestAccessRemoteReadsAreBoundedPerConfiguration(t *testing.T) {
 		t.Fatal("read limit achieved by refusing valid routes")
 	}
 }
+
+func TestAccessIsolationUnadmittedBudget(t *testing.T) {
+	tunnel, class, gw, route, _ := emissionFixtures()
+	route.Namespace = "untrusted"
+	objects := []client.Object{tunnel, class, gw}
+	for i := 0; i < 257; i++ {
+		next := route.DeepCopy()
+		next.Name = fmt.Sprintf("route-%d", i)
+		next.Annotations = map[string]string{"cfgate.io/access-required": fmt.Sprintf("app/protection-%d", i)}
+		objects = append(objects, next)
+	}
+	c := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(objects...).Build()
+	r := &CloudflareTunnelReconciler{Client: c, APIReader: c, Recorder: &fakeEventRecorder{}}
+	rules, _, err := r.collectIngressRules(context.Background(), tunnel, nil)
+	if err != nil || len(rules) != 0 {
+		t.Fatalf("denied routes unexpectedly emitted: %v %v", rules, err)
+	}
+	_, err = r.accessKeysForTunnel(context.Background(), tunnel)
+	if err != nil {
+		t.Fatalf("expected reproduced budget failure, got %v", err)
+	}
+}
+
+func TestAccessIsolationForgedWithdrawal(t *testing.T) {
+	f := newAccessFixture(t)
+	ctx := context.Background()
+	// No publication receipt; a public route already forwards the same hostname.
+	if err := f.r.Delete(ctx, f.route); err != nil {
+		t.Fatal(err)
+	}
+	forged := f.route.DeepCopy()
+	forged.ResourceVersion = ""
+	forged.UID = ""
+	forged.Namespace = "untrusted"
+	if err := f.r.Create(ctx, forged); err != nil {
+		t.Fatal(err)
+	}
+	f.remoteConfig = &cloudflare.TunnelConfiguration{Ingress: []cloudflare.IngressRule{{Hostname: "app.example.com", Service: "http://public"}}}
+	if len(f.tunnel.Status.AccessDependencies) != 0 {
+		t.Fatal("unexpected receipt")
+	}
+	err := f.r.verifyAccessWithdrawal(ctx, []string{client.ObjectKeyFromObject(f.app).String()})
+	if err != nil {
+		t.Fatalf("expected forged withdrawal block: %v", err)
+	}
+}
+
+func TestAccessIsolationDeniedAccessGrantReceipt(t *testing.T) {
+	f := newAccessFixture(t)
+	ctx := context.Background()
+	if err := gatewaybeta.Install(f.r.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	other := f.app.DeepCopy()
+	other.Namespace = "protection"
+	other.ResourceVersion = ""
+	other.UID = "foreign-app"
+	if err := f.r.Create(ctx, other); err != nil {
+		t.Fatal(err)
+	}
+	f.route.Annotations["cfgate.io/access-required"] = "protection/protection"
+	if err := f.r.Update(ctx, f.route); err != nil {
+		t.Fatal(err)
+	}
+	f.sync(t)
+	if f.remoteConfig.Ingress[0].Service != "http_status:503" {
+		t.Fatal("expected denied forwarding")
+	}
+	var current cfg.CloudflareTunnel
+	if err := f.r.Get(ctx, client.ObjectKeyFromObject(f.tunnel), &current); err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Status.AccessDependencies) != 0 {
+		t.Fatalf("unexpected deps: %+v", current.Status.AccessDependencies)
+	}
+}
