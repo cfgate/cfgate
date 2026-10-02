@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// ErrConfigurationBudget identifies a local configuration or dependency limit.
+var ErrConfigurationBudget = errors.New("configuration budget exceeded")
+
 // ClientSettings bounds API attempts and aggregate tunnel configuration work.
 // Settings are copied into clients and must not be changed after construction.
 type ClientSettings struct {
@@ -59,7 +62,7 @@ func (settings ClientSettings) CheckRuleCount(count int) error {
 		return err
 	}
 	if count > normalized.MaxIngressRules {
-		return fmt.Errorf("tunnel configuration exceeds %d ingress rules", normalized.MaxIngressRules)
+		return fmt.Errorf("%w: tunnel configuration exceeds %d ingress rules", ErrConfigurationBudget, normalized.MaxIngressRules)
 	}
 	return nil
 }
@@ -88,7 +91,7 @@ func ValidateTunnelConfiguration(config TunnelConfiguration, settings ClientSett
 	for i := range config.Ingress {
 		rule := &config.Ingress[i]
 		if len(rule.Hostname)+len(rule.Path)+len(rule.Service) > settings.MaxConfigurationBytes {
-			return fmt.Errorf("tunnel configuration exceeds %d encoded bytes", settings.MaxConfigurationBytes)
+			return fmt.Errorf("%w: tunnel configuration exceeds %d encoded bytes", ErrConfigurationBudget, settings.MaxConfigurationBytes)
 		}
 		buffer.Reset()
 		wireRule.Hostname, wireRule.Path, wireRule.Service, wireRule.OriginRequest = rule.Hostname, rule.Path, rule.Service, rule.OriginRequest
@@ -100,7 +103,7 @@ func ValidateTunnelConfiguration(config TunnelConfiguration, settings ClientSett
 			total++
 		}
 		if total > settings.MaxConfigurationBytes {
-			return fmt.Errorf("tunnel configuration exceeds %d encoded bytes", settings.MaxConfigurationBytes)
+			return fmt.Errorf("%w: tunnel configuration exceeds %d encoded bytes", ErrConfigurationBudget, settings.MaxConfigurationBytes)
 		}
 	}
 	if config.OriginRequest != nil {
@@ -118,7 +121,7 @@ func ValidateTunnelConfiguration(config TunnelConfiguration, settings ClientSett
 		total += len(`,"warp-routing":`) + len(encoded)
 	}
 	if total > settings.MaxConfigurationBytes {
-		return fmt.Errorf("tunnel configuration exceeds %d encoded bytes", settings.MaxConfigurationBytes)
+		return fmt.Errorf("%w: tunnel configuration exceeds %d encoded bytes", ErrConfigurationBudget, settings.MaxConfigurationBytes)
 	}
 	return validateOriginRequests(config)
 }

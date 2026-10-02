@@ -173,7 +173,7 @@ func (r *CloudflareTunnelReconciler) accessKeysForTunnel(ctx context.Context, tu
 		keys[dep.Namespace+"/"+dep.Name] = true
 	}
 	if len(keys) > 256 {
-		return nil, fmt.Errorf("more than 256 required Access applications in one tunnel")
+		return nil, fmt.Errorf("%w: more than 256 required Access applications in one tunnel", cloudflare.ErrConfigurationBudget)
 	}
 	out := make([]string, 0, len(keys))
 	for key := range keys {

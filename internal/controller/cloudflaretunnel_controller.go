@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -629,7 +630,15 @@ func (r *CloudflareTunnelReconciler) validateOriginCAPoolSecretRef(ctx context.C
 
 // syncConfiguration syncs the tunnel configuration to Cloudflare.
 // Collects routes from Gateway/HTTPRoute resources and pushes to Cloudflare API.
-func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel, forceVerification ...bool) error {
+func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel, forceVerification ...bool) (syncErr error) {
+	defer func() {
+		if errors.Is(syncErr, cloudflare.ErrConfigurationBudget) {
+			if err := r.withdrawOverloadedTunnel(ctx, tunnel); err != nil {
+				syncErr = fmt.Errorf("%w; withdrawal failed: %v", syncErr, err)
+			}
+		}
+	}()
+
 	log := log.FromContext(ctx)
 
 	if tunnel.Status.TunnelID == "" {
@@ -1429,4 +1438,45 @@ func tunnelConfigHash(config cloudflare.TunnelConfiguration) string {
 	data, _ := json.Marshal(config)
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%x", sum)
+}
+
+// withdrawOverloadedTunnel replaces all forwarding without allocating the rejected plan.
+// Receipts survive failed writes and readback so Access cleanup remains blocked.
+func (r *CloudflareTunnelReconciler) withdrawOverloadedTunnel(ctx context.Context, tunnel *cfgatev1alpha1.CloudflareTunnel) error {
+	cfClient, err := r.getCloudflareClient(ctx, tunnel)
+	if err != nil {
+		return err
+	}
+	account, err := r.resolveAccountID(ctx, cfClient, tunnel)
+	if err != nil {
+		return err
+	}
+	if err := r.verifyTunnelClaim(ctx, tunnel, account); err != nil {
+		return err
+	}
+	config := cloudflare.TunnelConfiguration{Ingress: []cloudflare.IngressRule{{Service: "http_status:503"}}}
+	if err := cfClient.UpdateTunnelConfiguration(ctx, account, tunnel.Status.TunnelID, config); err != nil {
+		return err
+	}
+	observed, err := cfClient.GetTunnelConfiguration(ctx, account, tunnel.Status.TunnelID)
+	if err != nil {
+		return err
+	}
+	if observed == nil || !equivalentTunnelConfiguration(*observed, config) {
+		return fmt.Errorf("overload withdrawal is not confirmed")
+	}
+	if err := r.persistAccessDependencies(ctx, tunnel, nil); err != nil {
+		return err
+	}
+	// Invalidate the old publication hash so recovery cannot retain the denial plan.
+	base := tunnel.DeepCopy()
+	delete(tunnel.Annotations, configHashAnnotation)
+	if err := r.Patch(ctx, tunnel, client.MergeFrom(base)); err != nil {
+		return err
+	}
+	tunnel.Status.ConnectedRouteCount = 0
+	if r.Recorder != nil {
+		r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "ConfigurationOverloaded", "Withdraw", "Tunnel forwarding disabled until configuration fits its limits")
+	}
+	return nil
 }

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"cfgate.io/cfgate/internal/cloudflare"
 	"context"
 	"fmt"
 	"reflect"
@@ -34,14 +35,14 @@ func normalizedAccessDependencies(deps []cfg.TunnelAccessDependency, account, tu
 		}
 		sort.Strings(dep.Hostnames)
 		if len(dep.Hostnames) > 64 {
-			return nil, fmt.Errorf("more than 64 hostnames for one Access dependency")
+			return nil, fmt.Errorf("%w: more than 64 hostnames for one Access dependency", cloudflare.ErrConfigurationBudget)
 		}
 		policies := map[string]cfg.TunnelAccessPolicyDependency{}
 		for _, policy := range append(append([]cfg.TunnelAccessPolicyDependency(nil), previous.Policies...), dep.Policies...) {
 			policies[policy.Namespace+"/"+policy.Name+"/"+policy.UID+"/"+policy.PolicyID] = policy
 		}
 		if len(policies) > 64 {
-			return nil, fmt.Errorf("more than 64 retained policies for one Access dependency")
+			return nil, fmt.Errorf("%w: more than 64 retained policies for one Access dependency", cloudflare.ErrConfigurationBudget)
 		}
 		policyKeys := make([]string, 0, len(policies))
 		for key := range policies {
@@ -55,7 +56,7 @@ func normalizedAccessDependencies(deps []cfg.TunnelAccessDependency, account, tu
 		merged[key] = dep
 	}
 	if len(merged) > 256 {
-		return nil, fmt.Errorf("more than 256 Access dependencies for one tunnel")
+		return nil, fmt.Errorf("%w: more than 256 Access dependencies for one tunnel", cloudflare.ErrConfigurationBudget)
 	}
 	keys := make([]string, 0, len(merged))
 	for key := range merged {

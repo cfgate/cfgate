@@ -371,3 +371,13 @@ Cross-namespace Gateway-to-Tunnel and credential references require explicit Ref
 ## Required protection dependency
 
 HTTPRoutes can opt into an explicit `cfgate.io/access-required: namespace/name` dependency. See [Access-required routing](access-required.md) for the supported subset, grants, remote checks, deletion ordering and asynchronous limitations. Existing routes remain public unless explicitly opted in.
+
+### Configuration overload
+
+If ingress or Access dependency limits are exceeded, cfgate replaces the tunnel's
+configuration with a single HTTP 503 response. This stops the entire tunnel from
+forwarding until the configuration fits, including any custom fallback target.
+It prevents an oversized update from preserving previously granted access.
+Cleanup receipts are cleared only after Cloudflare confirms withdrawal; an API
+failure can delay withdrawal. Reduce the configuration or raise the appropriate
+limit to restore forwarding.

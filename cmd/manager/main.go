@@ -372,6 +372,10 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 	if err := cfcloudflare.ValidateClientSettings(cfg.ClientSettings); err != nil {
 		return managerConfig{}, cliExitError{code: exitCodeUsage, err: err}
 	}
+	if err := cfcloudflare.ValidateTunnelConfiguration(cfcloudflare.TunnelConfiguration{Ingress: []cfcloudflare.IngressRule{{Service: "http_status:503"}}}, cfg.ClientSettings); err != nil {
+		return cfg, fmt.Errorf("configuration limits must permit an emergency denial: %w", err)
+	}
+
 	return cfg, nil
 }
 
