@@ -507,3 +507,10 @@ operation context; a scoped transport also bounds body reads. Earlier deadlines 
 operation cancellation closes response bodies. Mock HTTP tests stall second-page
 headers and bodies and prove cleanup stops within its operation budget. These
 clients are never stored in the manager credential cache.
+
+Origin trust rotation is covered by the maintenance E2E suite. Its existing origin
+fixture can serve TLS with a mounted Secret. The test changes only the connector
+CA Secret, checks automatic rollout and rejection of the old certificate, then
+checks acceptance of the replacement certificate and continued rejection of the
+old one. Run it through `mise run e2e:filter -- 'reloads origin CA trust'` when
+changing certificate handling; the full suite includes it automatically.

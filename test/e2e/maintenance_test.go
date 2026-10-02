@@ -2,8 +2,13 @@ package e2e_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -48,6 +53,71 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 			releaseHeldPod()
 		}
 		deleteTestNamespace(namespace)
+	})
+
+	It("reloads origin CA trust after Secret rotation", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
+		skipIfNoZone()
+		certA, keyA := maintenanceTLSCertificate()
+		certB, keyB := maintenanceTLSCertificate()
+		ca := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: namespace.Name}, Data: map[string][]byte{"ca.crt": certA}}
+		tlsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "origin-tls", Namespace: namespace.Name}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.crt": certA, "tls.key": keyA}}
+		Expect(k8sClient.Create(ctx, ca)).To(Succeed())
+		Expect(k8sClient.Create(ctx, tlsSecret)).To(Succeed())
+		tunnel := createCloudflareTunnel(ctx, k8sClient, testID("ca-reload"), namespace.Name, testID("ca-reload-tunnel"))
+		Eventually(ctx, func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(tunnel), tunnel); err != nil {
+				return err
+			}
+			tunnel.Spec.OriginDefaults.CAPoolSecretRef = &cfgatev1alpha1.CAPoolSecretRef{Name: ca.Name}
+			return k8sClient.Update(ctx, tunnel)
+		}, ShortTimeout, DefaultInterval).Should(Succeed())
+		tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, LongTimeout)
+		class := createGatewayClass(ctx, k8sClient, testID("ca-class"))
+		DeferCleanup(func() { Expect(client.IgnoreNotFound(k8sClient.Delete(context.Background(), class))).To(Succeed()) })
+		gateway := createGateway(ctx, k8sClient, "gateway", namespace.Name, class.Name, tunnel.Name)
+		service := createTestService(ctx, k8sClient, "tls-origin", namespace.Name, 8080)
+		deployMaintenanceOrigin(ctx, service, tlsSecret.Name)
+		hostname := testID("ca-host") + "." + testEnv.CloudflareZoneName
+		route := createHTTPRoute(ctx, k8sClient, "tls-route", namespace.Name, gateway.Name, []string{hostname}, service.Name, 8080)
+		updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(a map[string]string) {
+			a["cfgate.io/origin-protocol"] = "https"
+			a["cfgate.io/origin-server-name"] = "origin.test"
+			a["cfgate.io/dns-sync"] = "ca-reload"
+		})
+		dns := createCloudflareDNSWithGatewayRoutes(ctx, k8sClient, "dns", namespace.Name, tunnel.Name, []string{testEnv.CloudflareZoneName}, "cfgate.io/dns-sync=ca-reload")
+		Eventually(ctx, func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dns), dns)).To(Succeed())
+			g.Expect(meta.IsStatusConditionTrue(dns.Status.Conditions, "Ready")).To(BeTrue())
+		}, LongTimeout, DefaultInterval).Should(Succeed())
+		expectMaintenanceResponse(ctx, hostname, service.Name, "", http.StatusOK)
+		var before appsv1.Deployment
+		deploymentKey := client.ObjectKey{Namespace: tunnel.Namespace, Name: cloudflared.DeploymentName(tunnel.Name)}
+		Expect(k8sClient.Get(ctx, deploymentKey, &before)).To(Succeed())
+		By("Changing only the CA Secret, then rejecting the still-running A certificate")
+		updateSecret := func(secret *corev1.Secret, data map[string][]byte) {
+			Eventually(ctx, func() error {
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
+					return err
+				}
+				secret.Data = data
+				return k8sClient.Update(ctx, secret)
+			}, ShortTimeout, DefaultInterval).Should(Succeed())
+		}
+		updateSecret(ca, map[string][]byte{"ca.crt": certB})
+		Eventually(ctx, func(g Gomega) {
+			var current appsv1.Deployment
+			g.Expect(k8sClient.Get(ctx, deploymentKey, &current)).To(Succeed())
+			g.Expect(current.Spec.Template.Annotations["cfgate.io/origin-ca-revision"]).NotTo(Equal(before.Spec.Template.Annotations["cfgate.io/origin-ca-revision"]))
+			g.Expect(current.Status.ObservedGeneration).To(Equal(current.Generation))
+			g.Expect(current.Status.UpdatedReplicas).To(Equal(*current.Spec.Replicas))
+			g.Expect(current.Status.AvailableReplicas).To(Equal(*current.Spec.Replicas))
+		}, LongTimeout, DefaultInterval).Should(Succeed())
+		expectMaintenanceResponse(ctx, hostname, "", "", http.StatusBadGateway)
+		By("Accepting B and continuing to reject A without manually restarting connectors")
+		updateSecret(tlsSecret, map[string][]byte{"tls.crt": certB, "tls.key": keyB})
+		expectMaintenanceResponse(ctx, hostname, service.Name, "", http.StatusOK)
+		updateSecret(tlsSecret, map[string][]byte{"tls.crt": certA, "tls.key": keyA})
+		expectMaintenanceResponse(ctx, hostname, "", "", http.StatusBadGateway)
 	})
 
 	It("withdraws revoked backends, watches annotations and repairs remote drift", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
@@ -460,7 +530,7 @@ func maintenancePodReady(pod *corev1.Pod) bool {
 // negotiated by the public client with Cloudflare. It makes no Access, QUIC,
 // gRPC trailer or edge-atomicity claim.
 const maintenanceOriginSource = `package main
-import ("fmt"; "net"; "net/http"; "os")
+import ("fmt"; "net"; "net/http"; "os"; "crypto/tls")
 func main() {
  p := new(http.Protocols)
  p.SetHTTP1(true)
@@ -475,6 +545,10 @@ func main() {
  listener, err := net.Listen("tcp", address)
  if err != nil { panic(err) }
  fmt.Println(listener.Addr().String())
+ if os.Getenv("ORIGIN_TLS")!="" {
+  server.SetKeepAlivesEnabled(false)
+  listener=tls.NewListener(listener,&tls.Config{MinVersion:tls.VersionTLS12,GetCertificate:func(*tls.ClientHelloInfo)(*tls.Certificate,error){cert,err:=tls.LoadX509KeyPair("/tls/tls.crt","/tls/tls.key");return &cert,err}})
+ }
  if err := server.Serve(listener); err != nil { panic(err) }
 }
 `
@@ -489,7 +563,7 @@ func maintenanceKindClusterName(ctx context.Context) string {
 	return name
 }
 
-func deployMaintenanceOrigin(ctx context.Context, service *corev1.Service) {
+func deployMaintenanceOrigin(ctx context.Context, service *corev1.Service, tlsSecret ...string) {
 	clusterName := maintenanceKindClusterName(ctx)
 	var nodes corev1.NodeList
 	Expect(k8sClient.List(ctx, &nodes)).To(Succeed())
@@ -536,6 +610,13 @@ func deployMaintenanceOrigin(ctx context.Context, service *corev1.Service) {
 			}},
 		},
 	}
+	if len(tlsSecret) > 0 {
+		origin.Spec.Volumes = []corev1.Volume{{Name: "tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: tlsSecret[0]}}}}
+		container := &origin.Spec.Containers[0]
+		container.Env = append(container.Env, corev1.EnvVar{Name: "ORIGIN_TLS", Value: "true"})
+		container.VolumeMounts = []corev1.VolumeMount{{Name: "tls", MountPath: "/tls", ReadOnly: true}}
+		container.ReadinessProbe.HTTPGet.Scheme = corev1.URISchemeHTTPS
+	}
 	Expect(k8sClient.Create(ctx, origin)).To(Succeed())
 	Eventually(ctx, func(g Gomega) {
 		g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(origin), origin)).To(Succeed())
@@ -544,6 +625,10 @@ func deployMaintenanceOrigin(ctx context.Context, service *corev1.Service) {
 }
 
 func expectMaintenanceH2C(ctx context.Context, hostname, marker string) {
+	expectMaintenanceResponse(ctx, hostname, marker, "HTTP/2.0", http.StatusOK)
+}
+
+func expectMaintenanceResponse(ctx context.Context, hostname, marker, protocol string, statusCode int) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if address := os.Getenv("E2E_PUBLIC_DNS_RESOLVER"); address != "" {
 		_, _, err := net.SplitHostPort(address)
@@ -567,8 +652,25 @@ func expectMaintenanceH2C(ctx context.Context, hostname, marker string) {
 		defer func() { _ = response.Body.Close() }()
 		body, err := io.ReadAll(io.LimitReader(response.Body, 4096))
 		g.Expect(err).NotTo(HaveOccurred())
-		g.Expect(response.StatusCode).To(Equal(http.StatusOK))
-		g.Expect(response.Header.Get("X-Cfgate-Origin-Protocol")).To(Equal("HTTP/2.0"))
-		g.Expect(strings.TrimSpace(string(body))).To(Equal(marker))
+		g.Expect(response.StatusCode).To(Equal(statusCode))
+		if statusCode == http.StatusOK {
+			if protocol != "" {
+				g.Expect(response.Header.Get("X-Cfgate-Origin-Protocol")).To(Equal(protocol))
+			}
+			g.Expect(strings.TrimSpace(string(body))).To(Equal(marker))
+		}
 	}, LongTimeout, 5*time.Second).Should(Succeed())
+}
+
+func maintenanceTLSCertificate() ([]byte, []byte) {
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	Expect(err).NotTo(HaveOccurred())
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	Expect(err).NotTo(HaveOccurred())
+	cert := &x509.Certificate{SerialNumber: serial, DNSNames: []string{"origin.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
+	Expect(err).NotTo(HaveOccurred())
+	private, err := x509.MarshalPKCS8PrivateKey(key)
+	Expect(err).NotTo(HaveOccurred())
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private})
 }
