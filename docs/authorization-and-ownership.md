@@ -94,3 +94,31 @@ Deployments remain cluster-wide, so this change does not make a compromised
 manager harmless.
 
 DNS operations reread data and companion TXT records, reject foreign or ambiguous observable claims, and verify the record ID before deletion. Cloudflare's DNS API does not offer conditional writes for these operations. A writer can race between the last read and the write; TXT lookup is not a distributed lock. Use a single coordinated writer for a hostname across installations. Tests cover observable competing creations and ownership changes, not a nonexistent global atomic guarantee.
+
+## Upgrade from v0.2.0-alpha.6 to v0.2.0-alpha.7
+
+- install the matching CRDs before upgrading; Access status now retains `ownerId`
+- for existing Access applications, policies and managed tokens, verify exclusive ownership, stop other writers, then set `cfgate.io/adopt-existing: "true"` on their owning Access CRs
+- remove the adoption annotation after reconciliation succeeds; keep the installation namespace and its UID stable
+- new remote policy and token names include an ownership suffix; Kubernetes references and `serviceTokens[].name` stay unchanged
+- over-limit tunnel configurations now serve HTTP 503 until they fit; remove excess entries or raise the relevant limits
+- origin CA Secret updates now roll connector Pods; selected keys must contain PEM certificates
+
+Access ownership uses the installation namespace UID and resource UID, plus
+immutable claims keyed by account, resource kind and remote ID. New application
+owner tags and policy/token names distinguish installations and recreated CRs.
+A matching display name alone does not authorize mutation. Existing remote IDs
+and legacy application tags are considered for adoption only with the explicit
+annotation; ambiguous inventories and foreign claims are rejected.
+
+The claims coordinate one installation. They cannot arbitrate deliberate adoption
+of the same legacy remote resource by independent clusters. Verify exclusive
+ownership before adoption. Do not change an Access resource's Cloudflare account
+in place; first delete it normally, or deliberately orphan it and create a new
+resource with the new credentials. Orphaning retains its remote resources and
+claims for administrator review.
+
+Successful remote operations are checkpointed, and retries or deletion recover
+missing observations from the ownership markers. An unrecoverable or ambiguous
+inventory blocks cleanup rather than permitting deletion by name. Keep the
+original credential Secret available until cleanup completes.

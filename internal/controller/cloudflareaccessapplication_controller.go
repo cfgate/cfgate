@@ -154,6 +154,9 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 		_ = r.updateApplicationStatus(ctx, &app)
 		return ctrl.Result{RequeueAfter: accessApplicationRequeueAfterError}, nil
 	}
+	if err := r.prepareOwnedApplications(ctx, &app, creds); err != nil {
+		return ctrl.Result{}, err
+	}
 	app.Status.AccountID = creds.AccountID
 	app.Status.CredentialSecretRef = creds.CredentialSecretRef
 	app.Status.CredentialSecretKeys = creds.CredentialSecretKeys
@@ -177,8 +180,21 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 		status.NewCondition(status.ConditionTypePoliciesResolved, metav1.ConditionTrue, status.ReasonPoliciesResolved, "Referenced Access policies are ready.", app.Generation),
 	)
 
-	existingIDs := applicationStatusIDs(app.Status.Applications)
 	desiredDomains := accessApplicationTargetDomains(targets)
+	if err := deleteStaleAccessApplications(ctx, creds.Service, creds.AccountID, app.Status.Applications, desiredDomains); err != nil {
+		return ctrl.Result{}, err
+	}
+	retained := app.Status.Applications[:0]
+	for _, item := range app.Status.Applications {
+		if _, ok := desiredDomains[item.Domain]; ok {
+			retained = append(retained, item)
+		}
+	}
+	app.Status.Applications = retained
+	if err := r.updateApplicationStatus(ctx, &app); err != nil {
+		return ctrl.Result{}, err
+	}
+	existingIDs := applicationStatusIDs(app.Status.Applications)
 	observed := make([]cfgatev1alpha1.AccessApplicationObserved, 0, len(targets))
 	for _, target := range targets {
 		params := buildAccessApplicationParams(&app, target, policyLinks, len(targets) > 1)
@@ -198,8 +214,24 @@ func (r *CloudflareAccessApplicationReconciler) Reconcile(ctx context.Context, r
 			ID:        cfApp.ID,
 			AUD:       cfApp.AUD,
 			Domain:    cfApp.Domain,
-			TargetRef: target.Ref,
+			TargetRef: &target.Ref,
 		})
+		checkpoint := observed[len(observed)-1]
+		found := false
+		for i := range app.Status.Applications {
+			if app.Status.Applications[i].ID == checkpoint.ID {
+				app.Status.Applications[i] = checkpoint
+				found = true
+				break
+			}
+		}
+		if !found {
+			app.Status.Applications = append(app.Status.Applications, checkpoint)
+		}
+		if err := r.updateApplicationStatus(ctx, &app); err != nil {
+			return ctrl.Result{}, err
+		}
+
 	}
 	if err := deleteStaleAccessApplications(ctx, creds.Service, creds.AccountID, app.Status.Applications, desiredDomains); err != nil {
 		log.Error(err, "failed to delete stale access applications")
@@ -865,6 +897,13 @@ func sanitizeAccessApplicationName(value string) string {
 }
 
 func accessApplicationOwnerTag(app *cfgatev1alpha1.CloudflareAccessApplication) string {
+	if app.Status.OwnerID != "" {
+		return "cfgate:" + app.Status.OwnerID
+	}
+	return legacyAccessApplicationOwnerTag(app)
+}
+
+func legacyAccessApplicationOwnerTag(app *cfgatev1alpha1.CloudflareAccessApplication) string {
 	sum := sha256.Sum256([]byte(app.Namespace + "/" + app.Name))
 	return "cfgate:" + hex.EncodeToString(sum[:])[:28]
 }
@@ -960,15 +999,21 @@ func (r *CloudflareAccessApplicationReconciler) reconcileApplicationDelete(ctx c
 	}
 	targets := make([]accessApplicationTarget, 0, len(app.Status.Applications))
 	for _, observed := range app.Status.Applications {
+		if observed.TargetRef == nil {
+			continue
+		}
 		namespace := app.Namespace
 		if observed.TargetRef.Namespace != nil && *observed.TargetRef.Namespace != "" {
 			namespace = *observed.TargetRef.Namespace
 		}
-		targets = append(targets, accessApplicationTarget{Ref: observed.TargetRef, Kind: observed.TargetRef.Kind, Namespace: namespace, Name: observed.TargetRef.Name, Domain: observed.Domain})
+		targets = append(targets, accessApplicationTarget{Ref: *observed.TargetRef, Kind: observed.TargetRef.Kind, Namespace: namespace, Name: observed.TargetRef.Name, Domain: observed.Domain})
 	}
 	creds, err := r.resolveApplicationDeletionCredentials(ctx, app, targets)
 	if err != nil {
 		return r.blockApplicationDeletion(ctx, app, fmt.Sprintf("Failed to resolve credentials: %s", err.Error()))
+	}
+	if err := r.prepareOwnedApplications(ctx, app, creds); err != nil {
+		return r.blockApplicationDeletion(ctx, app, err.Error())
 	}
 	for _, observed := range app.Status.Applications {
 		if observed.ID == "" {
@@ -1025,7 +1070,10 @@ func (r *CloudflareAccessApplicationReconciler) resolveApplicationDeletionCreden
 }
 
 func (r *CloudflareAccessApplicationReconciler) blockApplicationDeletion(ctx context.Context, app *cfgatev1alpha1.CloudflareAccessApplication, detail string) (ctrl.Result, error) {
-	retryElapsed := time.Since(app.DeletionTimestamp.Time)
+	retryElapsed := time.Duration(0)
+	if app.DeletionTimestamp != nil {
+		retryElapsed = time.Since(app.DeletionTimestamp.Time)
+	}
 	suffix := " Set annotation cfgate.io/deletion-policy=orphan to skip cleanup and remove finalizer."
 	reason := "CleanupFailed"
 	message := detail + "." + suffix
@@ -1056,6 +1104,9 @@ func (r *CloudflareAccessApplicationReconciler) updateApplicationStatus(ctx cont
 	if err := r.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &current); err != nil {
 		return fmt.Errorf("failed to re-fetch application: %w", err)
 	}
+	if current.UID != app.UID {
+		return fmt.Errorf("resource identity changed before status persistence")
+	}
 	if accessApplicationStatusEqual(&current.Status, &app.Status) {
 		return nil
 	}
@@ -1064,7 +1115,7 @@ func (r *CloudflareAccessApplicationReconciler) updateApplicationStatus(ctx cont
 }
 
 func accessApplicationStatusEqual(a, b *cfgatev1alpha1.CloudflareAccessApplicationStatus) bool {
-	if a.AccountID != b.AccountID || a.AttachedTargets != b.AttachedTargets || a.ObservedGeneration != b.ObservedGeneration {
+	if a.OwnerID != b.OwnerID || a.AccountID != b.AccountID || a.AttachedTargets != b.AttachedTargets || a.ObservedGeneration != b.ObservedGeneration {
 		return false
 	}
 	if a.CredentialSecretKeys != b.CredentialSecretKeys ||

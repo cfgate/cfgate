@@ -351,7 +351,7 @@ func TestWrongAccountApplicationCanWithdrawAndDelete(t *testing.T) {
 	f := newAccessFixture(t)
 	prepareApplicationDeletion(t, f)
 	f.app.Status.AccountID = "other"
-	if err := f.r.Update(context.Background(), f.app); err != nil {
+	if err := f.r.Status().Update(context.Background(), f.app); err != nil {
 		t.Fatal(err)
 	}
 	f.sync(t)

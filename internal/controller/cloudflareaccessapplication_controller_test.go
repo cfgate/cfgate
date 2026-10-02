@@ -2,8 +2,10 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	corev1 "k8s.io/api/core/v1"
 	"reflect"
 	"strings"
 	"testing"
@@ -379,8 +381,8 @@ func TestAccessApplicationReconcileMultipleTargetsDeletesStaleStatusApp(t *testi
 	mock.ListAccessTagsFunc = func(context.Context, string) ([]cloudflare.AccessTag, error) {
 		return []cloudflare.AccessTag{{Name: accessApplicationTag}, {Name: accessApplicationOwnerTag(app)}}, nil
 	}
-	mock.GetAccessApplicationFunc = func(context.Context, string, string) (*cloudflare.AccessApplication, error) {
-		return &cloudflare.AccessApplication{ID: "keep", AUD: "aud", Domain: "app.example.com", Tags: []string{accessApplicationTag, accessApplicationOwnerTag(app)}, Destinations: []string{"app.example.com"}}, nil
+	mock.GetAccessApplicationFunc = func(_ context.Context, _ string, id string) (*cloudflare.AccessApplication, error) {
+		return &cloudflare.AccessApplication{ID: id, AUD: "aud", Domain: "app.example.com", Tags: []string{accessApplicationTag, accessApplicationOwnerTag(app)}, Destinations: []string{"app.example.com"}}, nil
 	}
 	mock.UpdateAccessApplicationFunc = func(_ context.Context, _ string, appID string, params cloudflare.ApplicationParams) (*cloudflare.AccessApplication, error) {
 		return &cloudflare.AccessApplication{ID: appID, AUD: "aud", Domain: params.Domain}, nil
@@ -920,7 +922,7 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 		app.Status.Applications = []cfgatev1alpha1.AccessApplicationObserved{{
 			ID:     "app-1",
 			Domain: "app.example.com",
-			TargetRef: cfgatev1alpha1.PolicyTargetReference{
+			TargetRef: &cfgatev1alpha1.PolicyTargetReference{
 				Kind: "Gateway",
 				Name: "deleted-gateway",
 			},
@@ -1023,7 +1025,7 @@ func TestAccessApplicationDeletePaths(t *testing.T) {
 	t.Run("credential error requeues", func(t *testing.T) {
 		app := appWithFinalizer("app", "app")
 		setDeletionTimestamp(app)
-		app.Status.Applications = []cfgatev1alpha1.AccessApplicationObserved{{ID: "app-1", Domain: "app.example.com", TargetRef: cfgatev1alpha1.PolicyTargetReference{Kind: "Gateway", Name: "missing"}}}
+		app.Status.Applications = []cfgatev1alpha1.AccessApplicationObserved{{ID: "app-1", Domain: "app.example.com", TargetRef: &cfgatev1alpha1.PolicyTargetReference{Kind: "Gateway", Name: "missing"}}}
 		reconciler := newAccessAppReconciler(t, cloudflare.NewMockClient(), app)
 		result, err := reconciler.reconcileApplicationDelete(ctx, app)
 		if err != nil {
@@ -1145,6 +1147,15 @@ func TestAccessApplicationWatchMappers(t *testing.T) {
 
 func newAccessAppReconciler(t *testing.T, mockClient cloudflare.Client, objects ...client.Object) *CloudflareAccessApplicationReconciler {
 	t.Helper()
+	for _, obj := range objects {
+		if app, ok := obj.(*cfgatev1alpha1.CloudflareAccessApplication); ok {
+			if app.UID == "" {
+				app.UID = types.UID(app.Namespace + "-" + app.Name)
+			}
+			app.Status.OwnerID = fmt.Sprintf("%x", sha256.Sum256([]byte("installation-uid/"+string(app.UID))))[:28]
+		}
+	}
+	objects = append(objects, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operator", UID: "installation-uid"}})
 	scheme := controllerTestScheme(t)
 	if err := gwapiv1b1.Install(scheme); err != nil {
 		t.Fatalf("Install(gateway/v1beta1) error = %v", err)
@@ -1179,11 +1190,12 @@ func newAccessAppReconciler(t *testing.T, mockClient cloudflare.Client, objects 
 		WithStatusSubresource(&cfgatev1alpha1.CloudflareAccessApplication{}, &cfgatev1alpha1.CloudflareAccessPolicy{}).
 		Build()
 	return &CloudflareAccessApplicationReconciler{
-		Client:       k8sClient,
-		Scheme:       scheme,
-		CFClient:     mockClient,
-		Recorder:     &accessApplicationEventRecorder{},
-		FeatureGates: &features.FeatureGates{ReferenceGrantCRDExists: true},
+		InstallationNamespace: "operator",
+		Client:                k8sClient,
+		Scheme:                scheme,
+		CFClient:              mockClient,
+		Recorder:              &accessApplicationEventRecorder{},
+		FeatureGates:          &features.FeatureGates{ReferenceGrantCRDExists: true},
 	}
 }
 

@@ -38,7 +38,8 @@ type AccessApplicationObserved struct {
 	Domain string `json:"domain,omitempty"`
 
 	// TargetRef identifies the Gateway API target that produced this application.
-	TargetRef PolicyTargetReference `json:"targetRef,omitempty"`
+	// +optional
+	TargetRef *PolicyTargetReference `json:"targetRef,omitempty"`
 }
 
 // CloudflareAccessApplicationSpec defines Gateway API target bindings to reusable Access policies.
@@ -79,6 +80,11 @@ type CloudflareAccessApplicationSpec struct {
 
 // CloudflareAccessApplicationStatus defines observed Access application state.
 type CloudflareAccessApplicationStatus struct {
+	// OwnerID binds remote Access resources to this installation and CR incarnation.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{28}$`
+	OwnerID string `json:"ownerId,omitempty"`
+
 	// Applications are Cloudflare Access Applications managed by this resource.
 	// +kubebuilder:validation:MaxItems=64
 	Applications []AccessApplicationObserved `json:"applications,omitempty"`

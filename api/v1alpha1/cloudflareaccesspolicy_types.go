@@ -679,6 +679,11 @@ type PolicyAncestorStatus struct {
 
 // CloudflareAccessPolicyStatus defines the observed state of a CloudflareAccessPolicy resource.
 type CloudflareAccessPolicyStatus struct {
+	// OwnerID binds remote Access resources to this installation and CR incarnation.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{28}$`
+	OwnerID string `json:"ownerId,omitempty"`
+
 	// PolicyID is the Cloudflare Access reusable policy ID.
 	PolicyID string `json:"policyId,omitempty"`
 
