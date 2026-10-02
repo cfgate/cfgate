@@ -91,7 +91,7 @@ Deletion removes the reusable policy only when Cloudflare reports `appCount == 0
 
 When `spec.serviceTokens` changes, tokens removed from the spec are revoked in Cloudflare and removed from `status.serviceTokenIds`.
 
-The controller owns service token Secrets it creates. It updates Secrets it already owns and can adopt unmanaged Secrets, but it does not overwrite a Secret controlled by another Kubernetes owner. If an existing unexpired Cloudflare service token has a missing, incomplete, or client-ID-mismatched Kubernetes Secret, the controller rotates the token and writes a fresh Secret. Cloudflare does not return the client secret after creation or rotation, so a Secret with the expected client ID and a non-empty client secret is treated as current.
+The controller owns service token Secrets it creates. It updates only Secrets controlled by the same policy UID; unmanaged or foreign Secrets are rejected before creating or rotating a token. If an existing unexpired Cloudflare service token has a missing, incomplete, or client-ID-mismatched Kubernetes Secret, the controller rotates the token and writes a fresh Secret. Cloudflare does not return the client secret after creation or rotation, so a Secret with the expected client ID and a non-empty client secret is treated as current.
 
 ## Example With Service Token
 
@@ -122,3 +122,7 @@ spec:
 `spec.cloudflareRef.secretKeys.apiToken` selects the Secret data key containing the Cloudflare API token. It defaults to `CLOUDFLARE_API_TOKEN`. A missing or empty selected key is an error; cfgate does not fall back to another token stored in the same Secret. Clients cached for different keys remain separate.
 
 Credential cleanup preserves `status.credentialSecretKeys` alongside the resolved Secret reference and account. Cross-namespace credential references require a Secret ReferenceGrant from `CloudflareAccessPolicy`; see [authorization and ownership](authorization-and-ownership.md).
+
+If storing a rotated token fails, cfgate retains the remote token for recovery
+rather than deleting it. Reconciliation retries storage through rotation when
+needed; resolve Secret ownership and write errors before retrying.

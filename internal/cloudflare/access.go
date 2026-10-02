@@ -967,6 +967,12 @@ func corsHeadersEqual(a, b *CORSHeadersParam) bool {
 // tokens are rotated and the new secret is stored.
 // If not exists, a new token is created and the secret is stored.
 func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string, params ServiceTokenParams, secretWriter SecretWriter) (*ServiceToken, error) {
+	return s.EnsureServiceTokenByID(ctx, accountID, "", params, secretWriter)
+}
+
+// EnsureServiceTokenByID preserves the recorded token identity across display-name changes.
+func (s *AccessService) EnsureServiceTokenByID(ctx context.Context, accountID, statusID string, params ServiceTokenParams, secretWriter SecretWriter) (*ServiceToken, error) {
+
 	s.log.Info("ensuring service token exists",
 		"accountID", accountID,
 		"tokenName", params.Name,
@@ -980,9 +986,23 @@ func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string
 
 	var existing *ServiceToken
 	for i := range tokens {
-		if tokens[i].Name == params.Name {
+		if (statusID != "" && tokens[i].ID == statusID) || (statusID == "" && tokens[i].Name == params.Name) {
+			if existing != nil {
+				return nil, fmt.Errorf("ambiguous service token identity for %q", params.Name)
+			}
 			existing = &tokens[i]
-			break
+		}
+	}
+
+	needsRefresh := false
+	if checker, ok := secretWriter.(ServiceTokenSecretRefreshChecker); ok {
+		clientID := ""
+		if existing != nil {
+			clientID = existing.ClientID
+		}
+		needsRefresh, err = checker.ServiceTokenSecretNeedsRefresh(ctx, params.Name, clientID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to check service token secret: %w", err)
 		}
 	}
 
@@ -997,18 +1017,8 @@ func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string
 			return s.rotateServiceTokenAndStoreSecret(ctx, accountID, existing.ID, params.Name, secretWriter)
 		}
 
-		if checker, ok := secretWriter.(ServiceTokenSecretRefreshChecker); ok {
-			needsRefresh, err := checker.ServiceTokenSecretNeedsRefresh(ctx, params.Name, existing.ClientID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to check service token secret: %w", err)
-			}
-			if needsRefresh {
-				s.log.Info("service token secret missing or stale, rotating",
-					"tokenId", existing.ID,
-					"tokenName", existing.Name,
-				)
-				return s.rotateServiceTokenAndStoreSecret(ctx, accountID, existing.ID, params.Name, secretWriter)
-			}
+		if needsRefresh {
+			return s.rotateServiceTokenAndStoreSecret(ctx, accountID, existing.ID, params.Name, secretWriter)
 		}
 
 		s.log.V(1).Info("service token already exists",
@@ -1066,24 +1076,18 @@ func (s *AccessService) rotateServiceTokenAndStoreSecret(ctx context.Context, ac
 		return nil, fmt.Errorf("failed to rotate service token: %w", err)
 	}
 
-	// Store the new secret. If this fails, the old secret is already
-	// invalidated by rotation. Delete the token so the next reconcile
-	// creates a fresh token+secret pair.
+	// A failed local write is retryable. Retain the remote identity so cleanup
+	// and the next rotation can recover it without deleting an existing token.
 	if secretWriter != nil {
 		if err := secretWriter.WriteSecret(ctx, tokenName, map[string][]byte{
 			"CF_ACCESS_CLIENT_ID":     []byte(rotated.ClientID),
 			"CF_ACCESS_CLIENT_SECRET": []byte(rotated.ClientSecret),
 		}); err != nil {
-			s.log.Info("secret write failed after token rotation, deleting token to allow retry on next reconcile",
+			s.log.Info("secret write failed after token rotation, retaining token for recovery",
 				"tokenId", rotated.ID,
 				"tokenName", rotated.Name,
 				"writeError", err.Error(),
 			)
-			if delErr := s.client.DeleteServiceToken(ctx, accountID, rotated.ID); delErr != nil {
-				s.log.Error(delErr, "failed to delete service token after secret write failure",
-					"tokenId", rotated.ID,
-				)
-			}
 			return nil, fmt.Errorf("failed to store rotated service token secret: %w", err)
 		}
 		s.log.Info("service token rotated, secret stored",
