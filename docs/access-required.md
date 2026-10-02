@@ -58,3 +58,8 @@ Deletion is intentionally conservative. An unannotated forwarding rule on the sa
 ## Remaining asynchronous risks
 
 The ordering guarantee covers the selected application and its selected policies in the active manager. Creation of a different overlapping Access application, external dashboard edits, manager restart/leader failover, uncertain server completion after a client timeout, and Cloudflare edge propagation can create windows. Remote shadow checks detect conflicting applications during subsequent publication/reconciliation; they cannot retroactively prevent a different controller or administrator from changing the account. No cross-cluster or edge-atomic guarantee is made. Origin authentication remains necessary for strict protection, and live release tests complement rather than eliminate these limits.
+
+New coordination dependencies require an admitted route, a cfgate-managed Gateway,
+and the applicable ReferenceGrants in both directions. Rejected references do not
+consume another tunnel's application budget or delay application cleanup. Previously
+published dependency receipts remain until remote withdrawal is confirmed.

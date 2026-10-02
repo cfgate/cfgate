@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"reflect"
 	"regexp"
 	"sort"
@@ -88,15 +90,26 @@ func accessRouteInventory(ctx context.Context, reader client.Reader) (map[types.
 	if err := reader.List(ctx, &gateways); err != nil {
 		return nil, err
 	}
-	parents := map[types.NamespacedName]types.NamespacedName{}
+	parents := map[types.NamespacedName]gateway.Gateway{}
+	tunnels := map[types.NamespacedName]types.NamespacedName{}
+	classes := map[gateway.ObjectName]bool{}
 	for _, gw := range gateways.Items {
-		ns, name, err := annotations.ParseNamespacedName(annotations.GetAnnotation(&gw, annotations.AnnotationTunnelRef), gw.Namespace)
-		if err == nil {
-			parents[client.ObjectKeyFromObject(&gw)] = types.NamespacedName{Namespace: ns, Name: name}
+		key, managed, err := managedGatewayTunnel(ctx, reader, &gw, classes)
+		if err != nil {
+			return nil, err
 		}
+		if !managed {
+			continue
+		}
+		parents[client.ObjectKeyFromObject(&gw)] = gw
+		tunnels[client.ObjectKeyFromObject(&gw)] = key
 	}
 	for _, route := range requiredRoutes {
+		if err := validateHTTPRouteFeatures(&route); err != nil {
+			continue
+		}
 		ref, _, _ := accessRequiredReference(&route)
+
 		for _, parent := range route.Spec.ParentRefs {
 			if !isGatewayParentRef(parent) {
 				continue
@@ -105,16 +118,45 @@ func accessRouteInventory(ctx context.Context, reader client.Reader) (map[types.
 			if parent.Namespace != nil {
 				ns = string(*parent.Namespace)
 			}
-			tunnel, found := parents[types.NamespacedName{Namespace: ns, Name: string(parent.Name)}]
+			parentKey := types.NamespacedName{Namespace: ns, Name: string(parent.Name)}
+			gw, found := parents[parentKey]
 			if !found {
 				continue
 			}
+			hosts, err := acceptedRouteHostnames(ctx, reader, &route, &gw, parent)
+			if err != nil {
+				return nil, err
+			}
+			if len(hosts) == 0 {
+				continue
+			}
+			if err := requireReferenceGrant(ctx, reader, route.Namespace, gateway.GroupName, "HTTPRoute", ref.Namespace, "cfgate.io", "CloudflareAccessApplication", ref.Name); err != nil {
+				if errors.Is(err, errReferenceNotPermitted) {
+					continue
+				}
+				return nil, err
+			}
+			var app cfg.CloudflareAccessApplication
+			if err := reader.Get(ctx, ref, &app); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return nil, err
+			}
+			if err := (&CloudflareTunnelReconciler{}).requiredAccessTargetPermitted(ctx, reader, &app, &route); err != nil {
+				if errors.Is(err, errReferenceNotPermitted) {
+					continue
+				}
+				return nil, err
+			}
+			tunnel := tunnels[parentKey]
 			if inventory[tunnel] == nil {
 				inventory[tunnel] = map[string]bool{}
 			}
 			inventory[tunnel][ref.String()] = true
 		}
 	}
+
 	return inventory, nil
 }
 
@@ -222,15 +264,18 @@ func (r *CloudflareTunnelReconciler) requiredAccessAllows(ctx context.Context, s
 	if err := state.reader.Get(ctx, ref, &app); err != nil {
 		return fmt.Errorf("required Access application: %w", err)
 	}
+	if err := requireReferenceGrant(ctx, state.reader, route.Namespace, gateway.GroupName, "HTTPRoute", app.Namespace, "cfgate.io", "CloudflareAccessApplication", app.Name); err != nil {
+		return err
+	}
+	if err := r.requiredAccessTargetPermitted(ctx, state.reader, &app, route); err != nil {
+		return err
+	}
 	dep := cfg.TunnelAccessDependency{Namespace: ref.Namespace, Name: ref.Name, UID: string(app.UID)}
 	for _, host := range hosts {
 		dep.Hostnames = append(dep.Hostnames, string(host))
 	}
 	dependencyIndex := len(state.dependencies)
 	state.dependencies = append(state.dependencies, dep)
-	if err := requireReferenceGrant(ctx, state.reader, route.Namespace, gateway.GroupName, "HTTPRoute", app.Namespace, "cfgate.io", "CloudflareAccessApplication", app.Name); err != nil {
-		return err
-	}
 	if !app.DeletionTimestamp.IsZero() || !currentReady(app.Status.Conditions, app.Generation, app.Status.ObservedGeneration) {
 		return fmt.Errorf("required Access application is not current and ready")
 	}
@@ -402,7 +447,7 @@ func (r *CloudflareTunnelReconciler) requiredAccessTargetPermitted(ctx context.C
 			return requireReferenceGrant(ctx, reader, app.Namespace, "cfgate.io", "CloudflareAccessApplication", ns, gateway.GroupName, ref.Kind, ref.Name)
 		}
 	}
-	return fmt.Errorf("required Access application does not target this route or its Gateway")
+	return fmt.Errorf("%w: required Access application does not target this route or its Gateway", errReferenceNotPermitted)
 }
 
 func knownGRPCBackend(ctx context.Context, reader client.Reader, route *gateway.HTTPRoute) error {
