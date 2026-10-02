@@ -2,9 +2,15 @@ package controller
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
+	"math/big"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -193,7 +199,7 @@ func TestValidateOriginCAPoolSecretRef(t *testing.T) {
 	t.Run("passes with default key", func(t *testing.T) {
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: "default"},
-			Data:       map[string][]byte{"ca.crt": []byte("pem")},
+			Data:       map[string][]byte{"ca.crt": testOriginCA(t)},
 		}
 		reconciler := &CloudflareTunnelReconciler{
 			Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build(),
@@ -217,7 +223,7 @@ func TestValidateOriginCAPoolSecretRef(t *testing.T) {
 		explicit.Spec.OriginDefaults.CAPoolSecretRef.Key = "bundle.pem"
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: "default"},
-			Data:       map[string][]byte{"ca.crt": []byte("pem")},
+			Data:       map[string][]byte{"ca.crt": testOriginCA(t)},
 		}
 		reconciler := &CloudflareTunnelReconciler{
 			Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build(),
@@ -454,4 +460,18 @@ func (c *statusResettingPatchClient) Patch(ctx context.Context, obj client.Objec
 		tunnel.Status = serverStatus
 	}
 	return nil
+}
+
+func testOriginCA(t *testing.T) []byte {
+	t.Helper()
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &x509.Certificate{SerialNumber: big.NewInt(1), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

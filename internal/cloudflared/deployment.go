@@ -2,7 +2,9 @@
 package cloudflared
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -173,24 +175,24 @@ func (b *DefaultBuilder) BuildTokenSecret(tunnel *cfgatev1alpha1.CloudflareTunne
 
 // DeploymentName returns the name for the cloudflared Deployment.
 func DeploymentName(tunnelName string) string {
-	return tunnelName + "-cloudflared"
+	return generatedName(tunnelName, "-cloudflared")
 }
 
 // ConfigMapName returns the name for the cloudflared ConfigMap.
 func ConfigMapName(tunnelName string) string {
-	return tunnelName + "-cloudflared-config"
+	return generatedName(tunnelName, "-cloudflared-config")
 }
 
 // TokenSecretName returns the name for the tunnel token Secret.
 func TokenSecretName(tunnelName string) string {
-	return tunnelName + "-tunnel-token"
+	return generatedName(tunnelName, "-tunnel-token")
 }
 
 // Labels returns the standard labels for cloudflared resources.
 func Labels(tunnelName string) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":       "cloudflared",
-		"app.kubernetes.io/instance":   tunnelName,
+		"app.kubernetes.io/instance":   generatedName(tunnelName, ""),
 		"app.kubernetes.io/component":  "tunnel",
 		"app.kubernetes.io/managed-by": "cfgate",
 	}
@@ -200,7 +202,7 @@ func Labels(tunnelName string) map[string]string {
 func Selector(tunnelName string) map[string]string {
 	return map[string]string{
 		"app.kubernetes.io/name":     "cloudflared",
-		"app.kubernetes.io/instance": tunnelName,
+		"app.kubernetes.io/instance": generatedName(tunnelName, ""),
 	}
 }
 
@@ -376,4 +378,14 @@ func addOriginCAPoolVolume(tunnel *cfgatev1alpha1.CloudflareTunnel, deployment *
 			},
 		},
 	})
+}
+
+func generatedName(name, suffix string) string {
+	// Preserve existing valid selectors and object names across upgrades.
+	if len(name) <= 63 {
+		return name + suffix
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(name)))[:16]
+	prefix := strings.TrimRight(name[:63-len(suffix)-len(hash)-1], "-.")
+	return prefix + "-" + hash + suffix
 }

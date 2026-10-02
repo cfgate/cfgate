@@ -2,6 +2,8 @@ package cloudflared
 
 import (
 	"fmt"
+	"k8s.io/apimachinery/pkg/util/validation"
+	"strings"
 	"testing"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
@@ -1046,5 +1048,30 @@ func TestConnectorDoesNotMountKubernetesCredentials(t *testing.T) {
 	deployment := NewBuilder().BuildDeployment(newDeploymentTestTunnel("edge"), "token")
 	if v := deployment.Spec.Template.Spec.AutomountServiceAccountToken; v == nil || *v {
 		t.Fatal("connector can inherit Kubernetes credentials")
+	}
+}
+
+func TestGeneratedNamesRemainValidAndDistinct(t *testing.T) {
+	for _, length := range []int{63, 64, 253} {
+		name := strings.Repeat("a", length)
+		for _, value := range Labels(name) {
+			if errs := validation.IsValidLabelValue(value); len(errs) > 0 {
+				t.Fatal(errs)
+			}
+		}
+		for _, build := range []func(string) string{DeploymentName, TokenSecretName, ConfigMapName} {
+			if errs := validation.IsDNS1123Subdomain(build(name)); len(errs) > 0 {
+				t.Fatal(errs)
+			}
+			if length > 63 && build(name) == build(name[:len(name)-1]+"b") {
+				t.Fatal("long names collide")
+			}
+		}
+		if Labels(name)["app.kubernetes.io/instance"] != Selector(name)["app.kubernetes.io/instance"] {
+			t.Fatal("selector mismatch")
+		}
+	}
+	if DeploymentName("existing") != "existing-cloudflared" {
+		t.Fatal("existing name changed")
 	}
 }
