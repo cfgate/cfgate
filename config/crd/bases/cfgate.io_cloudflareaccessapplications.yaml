@@ -736,6 +736,70 @@ spec:
                   and CR incarnation.
                 pattern: ^[a-f0-9]{28}$
                 type: string
+              pendingApplications:
+                description: PendingApplications checkpoint successful targets while
+                  previous protection is retained.
+                items:
+                  description: AccessApplicationObserved records a Cloudflare Access
+                    Application created for one host/path target.
+                  properties:
+                    aud:
+                      description: AUD is the Application Audience Tag.
+                      maxLength: 255
+                      type: string
+                    domain:
+                      description: Domain is the protected hostname/path in Cloudflare.
+                      maxLength: 1024
+                      type: string
+                    id:
+                      description: ID is the Cloudflare Access Application ID.
+                      maxLength: 36
+                      type: string
+                    targetRef:
+                      description: TargetRef identifies the Gateway API target that
+                        produced this application.
+                      properties:
+                        group:
+                          default: gateway.networking.k8s.io
+                          description: Group is the API group of the target resource.
+                          maxLength: 253
+                          type: string
+                        kind:
+                          description: Kind is the kind of the target resource.
+                          enum:
+                          - Gateway
+                          - HTTPRoute
+                          maxLength: 63
+                          type: string
+                        name:
+                          description: Name is the name of the target resource.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        namespace:
+                          description: |-
+                            Namespace is the namespace of the target resource.
+                            Cross-namespace targeting requires ReferenceGrant.
+                          maxLength: 253
+                          type: string
+                        sectionName:
+                          description: SectionName targets specific listener (Gateway)
+                            or rule (Route).
+                          maxLength: 253
+                          type: string
+                      required:
+                      - group
+                      - kind
+                      - name
+                      type: object
+                      x-kubernetes-validations:
+                      - message: group must be gateway.networking.k8s.io
+                        rule: self.group == 'gateway.networking.k8s.io'
+                      - message: kind must be Gateway or HTTPRoute
+                        rule: self.kind in ['Gateway', 'HTTPRoute']
+                  type: object
+                maxItems: 64
+                type: array
             type: object
         type: object
     served: true

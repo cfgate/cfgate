@@ -622,7 +622,7 @@ func (r *CloudflareAccessPolicyReconciler) removeFinalizer(ctx context.Context, 
 
 func (r *CloudflareAccessPolicyReconciler) updateStatus(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
 	var current cfgatev1alpha1.CloudflareAccessPolicy
-	if err := r.Get(ctx, types.NamespacedName{Name: policy.Name, Namespace: policy.Namespace}, &current); err != nil {
+	if err := accessReader(r.APIReader, r.Client).Get(ctx, types.NamespacedName{Name: policy.Name, Namespace: policy.Namespace}, &current); err != nil {
 		return fmt.Errorf("failed to re-fetch policy: %w", err)
 	}
 	if current.UID != policy.UID {

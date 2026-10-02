@@ -42,6 +42,7 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 
 		// Create Cloudflare credentials secret
 		createCloudflareCredentialsSecret(namespace.Name)
+		caBundle, _ := e2eTLSCertificate()
 		originCASecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      testID("origin-ca"),
@@ -49,7 +50,7 @@ var _ = Describe("HTTPRoute Annotations E2E", Ordered, func() {
 			},
 			Type: corev1.SecretTypeOpaque,
 			StringData: map[string]string{
-				"ca.crt": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+				"ca.crt": string(caBundle),
 			},
 		}
 		Expect(k8sClient.Create(ctx, originCASecret)).To(Succeed())

@@ -2,13 +2,8 @@ package e2e_test
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -57,8 +52,8 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 
 	It("reloads origin CA trust after Secret rotation", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
 		skipIfNoZone()
-		certA, keyA := maintenanceTLSCertificate()
-		certB, keyB := maintenanceTLSCertificate()
+		certA, keyA := e2eTLSCertificate()
+		certB, keyB := e2eTLSCertificate()
 		ca := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "origin-ca", Namespace: namespace.Name}, Data: map[string][]byte{"ca.crt": certA}}
 		tlsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "origin-tls", Namespace: namespace.Name}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{"tls.crt": certA, "tls.key": keyA}}
 		Expect(k8sClient.Create(ctx, ca)).To(Succeed())
@@ -219,13 +214,15 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 		Expect(config.Config.Ingress).To(HaveLen(1))
 		Expect(config.Config.Ingress[0].Service).To(Equal("http_status:418"))
 		By("Expiring persisted lifecycle age without changing desired configuration or applied hash")
-		expireMaintenanceLifecycle(ctx, tunnel)
-		expectService(serviceURL)
 		Eventually(ctx, func(g Gomega) {
+			// An already-running reconciliation can overwrite the injected age.
+			// Keep expiring it until a full audit actually restores remote state.
+			expireMaintenanceLifecycle(ctx, tunnel)
 			config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnel.Status.TunnelID)
 			g.Expect(err).NotTo(HaveOccurred())
 			rule, found := findRawTunnelIngress(config, hostname)
 			g.Expect(found).To(BeTrue())
+			g.Expect(rule.Service).To(Equal(serviceURL))
 			value, present := rawOriginRequestBool(rule.OriginRequest, "h2cOrigin")
 			g.Expect(present && value).To(BeTrue(), "drift repair must preserve h2cOrigin")
 		}, 2*time.Minute, 3*time.Second).Should(Succeed())
@@ -660,17 +657,4 @@ func expectMaintenanceResponse(ctx context.Context, hostname, marker, protocol s
 			g.Expect(strings.TrimSpace(string(body))).To(Equal(marker))
 		}
 	}, LongTimeout, 5*time.Second).Should(Succeed())
-}
-
-func maintenanceTLSCertificate() ([]byte, []byte) {
-	pub, key, err := ed25519.GenerateKey(rand.Reader)
-	Expect(err).NotTo(HaveOccurred())
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
-	Expect(err).NotTo(HaveOccurred())
-	cert := &x509.Certificate{SerialNumber: serial, DNSNames: []string{"origin.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
-	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
-	Expect(err).NotTo(HaveOccurred())
-	private, err := x509.MarshalPKCS8PrivateKey(key)
-	Expect(err).NotTo(HaveOccurred())
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private})
 }

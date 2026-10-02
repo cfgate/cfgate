@@ -436,6 +436,7 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			caPoolTunnelName := testID("capool-secret")
 
 			By("Creating origin CA Secret")
+			caBundle, _ := e2eTLSCertificate()
 			secret := &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testID("origin-ca"),
@@ -443,7 +444,7 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 				},
 				Type: corev1.SecretTypeOpaque,
 				StringData: map[string]string{
-					"bundle.pem": "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+					"bundle.pem": string(caBundle),
 				},
 			}
 			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
@@ -1001,11 +1002,15 @@ var _ = Describe("CloudflareTunnel E2E", Label("cloudflare"), func() {
 			Expect(tunnel.Status.TunnelID).NotTo(BeEmpty())
 
 			By("Verifying new tunnel exists in CF API with non-deleted status")
-			cfTunnel, err := getTunnelFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, deletedTunnelName)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cfTunnel).NotTo(BeNil(), "New tunnel should exist in Cloudflare")
-			Expect(cfTunnel.ID).To(Equal(tunnel.Status.TunnelID))
-			Expect(cfTunnel.Status).NotTo(Equal("deleted"))
+			Eventually(ctx, func(g Gomega) {
+				cfTunnel, err := getTunnelByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cfTunnel).NotTo(BeNil(), "New tunnel should exist in Cloudflare")
+				g.Expect(cfTunnel.ID).To(Equal(tunnel.Status.TunnelID))
+				g.Expect(cfTunnel.Name).To(Equal(deletedTunnelName))
+				g.Expect(cfTunnel.DeletedAt.IsZero()).To(BeTrue())
+				g.Expect(cfTunnel.Status).NotTo(Equal("deleted"))
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 		})
 	})
 

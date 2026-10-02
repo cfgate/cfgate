@@ -3,10 +3,14 @@ package e2e_test
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -619,8 +623,8 @@ type CloudflareServiceTokenInfo struct {
 	ExpiresAt string
 }
 
-// getServiceTokenFromCloudflare fetches a Service Token by name from Cloudflare.
-func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tokenName string) (*CloudflareServiceTokenInfo, error) {
+// getServiceTokenFromCloudflare fetches a Service Token by its recorded remote ID.
+func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Client, accountID, tokenID string) (*CloudflareServiceTokenInfo, error) {
 	ctx, cancel := context.WithTimeout(ctx, controller.DefaultReconciliationTimeout)
 	defer cancel()
 	iter := cfcloudflare.AllPages(ctx, func(opts ...option.RequestOption) (*pagination.V4PagePaginationArray[zero_trust.ServiceToken], error) {
@@ -633,7 +637,7 @@ func getServiceTokenFromCloudflare(ctx context.Context, cfClient *cloudflare.Cli
 		if err != nil {
 			return nil, fmt.Errorf("failed to list service tokens: %w", err)
 		}
-		if token.Name == tokenName {
+		if token.ID == tokenID {
 			return &CloudflareServiceTokenInfo{
 				ID:        token.ID,
 				Name:      token.Name,
@@ -1164,4 +1168,18 @@ func createCloudflareAccessPolicyWithServiceToken(ctx context.Context, k8sClient
 	}})
 	createCloudflareAccessApplication(ctx, k8sClient, name, namespace, targetRouteName, cfgatev1alpha1.AccessApplication{Name: name}, cfgatev1alpha1.AccessPolicyReference{Name: name})
 	return policy
+}
+
+// e2eTLSCertificate supplies a valid short-lived CA and origin.test certificate.
+func e2eTLSCertificate() ([]byte, []byte) {
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	Expect(err).NotTo(HaveOccurred())
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	Expect(err).NotTo(HaveOccurred())
+	cert := &x509.Certificate{SerialNumber: serial, DNSNames: []string{"origin.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, cert, cert, pub, key)
+	Expect(err).NotTo(HaveOccurred())
+	private, err := x509.MarshalPKCS8PrivateKey(key)
+	Expect(err).NotTo(HaveOccurred())
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: private})
 }

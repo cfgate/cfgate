@@ -1132,11 +1132,15 @@ func createTestNamespace(prefix string) *corev1.Namespace {
 // policies after applications unlink, then Tunnels, then the namespace itself.
 // Each phase waits for completion before proceeding.
 func deleteTestNamespace(ns *corev1.Namespace) {
+	deleteTestNamespaceWithContext(ctx, ns)
+}
+
+func deleteTestNamespaceWithContext(ctx context.Context, ns *corev1.Namespace) {
 	if testEnv.SkipCleanup || ns == nil {
 		return
 	}
 
-	if namespaceGone(ns.Name) {
+	if _, err := k8sClientset.CoreV1().Namespaces().Get(ctx, ns.Name, metav1.GetOptions{}); apierrors.IsNotFound(err) {
 		return
 	}
 
@@ -1160,7 +1164,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 	}
 
 	// Wait for DNS and Access applications to be fully deleted before policies.
-	waitForCleanupPhase(ns.Name, "DNS/AccessApplication CRs", func(ctx context.Context) bool {
+	waitForCleanupPhase(ctx, ns.Name, "DNS/AccessApplication CRs", func(ctx context.Context) bool {
 		var dCheck cfgatev1alpha1.CloudflareDNSList
 		var aCheck cfgatev1alpha1.CloudflareAccessApplicationList
 		dErr := k8sClient.List(ctx, &dCheck, client.InNamespace(ns.Name))
@@ -1183,7 +1187,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		}
 	}
 
-	waitForCleanupPhase(ns.Name, "AccessPolicy CRs", func(ctx context.Context) bool {
+	waitForCleanupPhase(ctx, ns.Name, "AccessPolicy CRs", func(ctx context.Context) bool {
 		var pCheck cfgatev1alpha1.CloudflareAccessPolicyList
 		pErr := k8sClient.List(ctx, &pCheck, client.InNamespace(ns.Name))
 		if apierrors.IsNotFound(pErr) {
@@ -1200,7 +1204,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		}
 	}
 
-	waitForCleanupPhase(ns.Name, "Tunnel CRs", func(ctx context.Context) bool {
+	waitForCleanupPhase(ctx, ns.Name, "Tunnel CRs", func(ctx context.Context) bool {
 		var tCheck cfgatev1alpha1.CloudflareTunnelList
 		tErr := k8sClient.List(ctx, &tCheck, client.InNamespace(ns.Name))
 		if apierrors.IsNotFound(tErr) {
@@ -1220,7 +1224,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 		Expect(err == nil || apierrors.IsNotFound(err)).To(BeTrue(), "failed to delete namespace %s", ns.Name)
 	}
 
-	Eventually(func() bool {
+	Eventually(ctx, func() bool {
 		_, err := k8sClientset.CoreV1().Namespaces().Get(ctx, ns.Name, metav1.GetOptions{})
 		return apierrors.IsNotFound(err)
 	}, 120*time.Second, 1*time.Second).Should(BeTrue(),
@@ -1230,7 +1234,7 @@ func deleteTestNamespace(ns *corev1.Namespace) {
 // External cleanup may wait behind an in-flight reconciliation, exhaust one
 // attempt and requeue before completing. Keep the full deletion assertion while
 // allowing the existing long-operation budget; namespace termination stays 2m.
-func waitForCleanupPhase(namespace, phase string, done func(context.Context) bool, describe func(context.Context, string) string) {
+func waitForCleanupPhase(ctx context.Context, namespace, phase string, done func(context.Context) bool, describe func(context.Context, string) string) {
 	phaseCtx, cancel := context.WithTimeout(ctx, LongTimeout)
 	defer cancel()
 	Eventually(phaseCtx, done, LongTimeout, time.Second).Should(BeTrue(), func() string {
@@ -1313,11 +1317,6 @@ func writeCleanupObjectSummary(b *strings.Builder, kind string, obj client.Objec
 		b.WriteString("]")
 	}
 	b.WriteByte('\n')
-}
-
-func namespaceGone(name string) bool {
-	_, err := k8sClientset.CoreV1().Namespaces().Get(ctx, name, metav1.GetOptions{})
-	return apierrors.IsNotFound(err)
 }
 
 // createCloudflareCredentialsSecret creates the Cloudflare credentials secret.

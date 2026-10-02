@@ -80,6 +80,11 @@ type CloudflareAccessApplicationSpec struct {
 
 // CloudflareAccessApplicationStatus defines observed Access application state.
 type CloudflareAccessApplicationStatus struct {
+	// PendingApplications checkpoint successful targets while previous protection is retained.
+	// +optional
+	// +kubebuilder:validation:MaxItems=64
+	PendingApplications []AccessApplicationObserved `json:"pendingApplications,omitempty"`
+
 	// OwnerID binds remote Access resources to this installation and CR incarnation.
 	// +optional
 	// +kubebuilder:validation:Pattern=`^[a-f0-9]{28}$`

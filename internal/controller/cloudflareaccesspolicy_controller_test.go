@@ -89,6 +89,7 @@ func TestAccessPolicyReconcileSuccess(t *testing.T) {
 
 func TestAccessPolicyReconcileClearsServiceTokensReadyWhenTokensRemoved(t *testing.T) {
 	policy := baseAccessPolicy("app", "policy")
+	policy.Annotations = map[string]string{adoptExistingAnnotation: "true"}
 	policy.Finalizers = []string{accessPolicyFinalizer}
 	policy.Generation = 2
 	policy.Status.ServiceTokenIDs = map[string]string{"old": "old-token-id"}
@@ -104,6 +105,9 @@ func TestAccessPolicyReconcileClearsServiceTokensReadyWhenTokensRemoved(t *testi
 	mock.ListAccessPoliciesFunc = func(context.Context, string) ([]cloudflare.AccessPolicy, error) { return nil, nil }
 	mock.CreateAccessPolicyFunc = func(context.Context, string, cloudflare.PolicyParams) (*cloudflare.AccessPolicy, error) {
 		return &cloudflare.AccessPolicy{ID: "policy-id", Name: "policy", Reusable: true, AppCount: 0}, nil
+	}
+	mock.GetServiceTokenFunc = func(_ context.Context, _, id string) (*cloudflare.ServiceToken, error) {
+		return &cloudflare.ServiceToken{ID: id, Name: ownedAccessName("old", policy.Status.OwnerID)}, nil
 	}
 	reconciler := newAccessPolicyReconciler(t, mock, policy)
 	reconciler.Recorder = nil
@@ -676,6 +680,9 @@ func TestAccessPolicyDeletePaths(t *testing.T) {
 			deletedTokens = append(deletedTokens, tokenID)
 			return nil
 		}
+		mock.GetServiceTokenFunc = func(_ context.Context, _, id string) (*cloudflare.ServiceToken, error) {
+			return &cloudflare.ServiceToken{ID: id, Name: ownedAccessName("old", policy.Status.OwnerID)}, nil
+		}
 		reconciler := newAccessPolicyReconciler(t, mock, policy)
 		if _, err := reconciler.reconcileDelete(ctx, policy); err != nil {
 			t.Fatalf("reconcileDelete() error = %v", err)
@@ -713,6 +720,9 @@ func TestAccessPolicyDeletePaths(t *testing.T) {
 			policy := policyWithDeleteStatus()
 			mock := cloudflare.NewMockClient()
 			tt.setup(mock)
+			mock.GetServiceTokenFunc = func(_ context.Context, _, id string) (*cloudflare.ServiceToken, error) {
+				return &cloudflare.ServiceToken{ID: id, Name: ownedAccessName("old", policy.Status.OwnerID)}, nil
+			}
 			reconciler := newAccessPolicyReconciler(t, mock, policy)
 			result, err := reconciler.reconcileDelete(ctx, policy)
 			if err != nil {
