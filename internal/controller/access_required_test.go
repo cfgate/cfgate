@@ -6,6 +6,7 @@ import (
 	"cfgate.io/cfgate/internal/controller/status"
 	"context"
 	"fmt"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -405,5 +406,87 @@ func TestAccessIsolationDeniedAccessGrantReceipt(t *testing.T) {
 	}
 	if len(current.Status.AccessDependencies) != 0 {
 		t.Fatalf("unexpected deps: %+v", current.Status.AccessDependencies)
+	}
+}
+
+func TestOverloadWithdrawsRevokedBackend(t *testing.T) {
+	f := newAccessFixture(t)
+	if err := gatewaybeta.Install(f.r.Scheme); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	delete(f.route.Annotations, "cfgate.io/access-required")
+	f.route.Spec.Rules[0].BackendRefs[0].Namespace = ptr.To(gateway.Namespace("backend-ns"))
+	if err := f.r.Update(ctx, f.route); err != nil {
+		t.Fatal(err)
+	}
+	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "backend", Namespace: "backend-ns"}, Spec: corev1.ServiceSpec{Ports: []corev1.ServicePort{{Port: 8080}}}}
+	grant := &gatewaybeta.ReferenceGrant{ObjectMeta: metav1.ObjectMeta{Name: "permit", Namespace: "backend-ns"}, Spec: gatewaybeta.ReferenceGrantSpec{From: []gatewaybeta.ReferenceGrantFrom{{Group: gateway.GroupName, Kind: "HTTPRoute", Namespace: gatewaybeta.Namespace(f.route.Namespace)}}, To: []gatewaybeta.ReferenceGrantTo{{Kind: "Service"}}}}
+	for _, obj := range []client.Object{service, grant} {
+		if err := f.r.Create(ctx, obj); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.r.ClientSettings.MaxIngressRules = 2
+	f.sync(t)
+	puts := f.puts
+	if err := f.r.Delete(ctx, grant); err != nil {
+		t.Fatal(err)
+	}
+	extra := f.route.DeepCopy()
+	extra.Name = "extra"
+	extra.ResourceVersion = ""
+	extra.UID = ""
+	extra.Spec.Hostnames = []gateway.Hostname{"extra.example.com"}
+	if err := f.r.Create(ctx, extra); err != nil {
+		t.Fatal(err)
+	}
+	err := f.r.syncConfiguration(ctx, f.tunnel)
+	if err == nil || !strings.Contains(err.Error(), "ingress rules") {
+		t.Fatalf("expected overload: %v", err)
+	}
+	if f.puts != puts+1 || len(f.remoteConfig.Ingress) != 1 || f.remoteConfig.Ingress[0].Service != "http_status:503" {
+		t.Fatal("revocation scenario not reproduced")
+	}
+	if len(f.tunnel.Status.AccessDependencies) != 0 {
+		t.Fatal("confirmed withdrawal retained receipts")
+	}
+}
+
+func TestOverloadWithdrawalPreservesReceiptsUntilConfirmed(t *testing.T) {
+	for _, failure := range []string{"write", "readback", "none"} {
+		t.Run(failure, func(t *testing.T) {
+			f := newAccessFixture(t)
+			f.sync(t)
+			f.r.ClientSettings.MaxIngressRules = 1
+			mock := f.r.CFClient.(*cloudflare.MockClient)
+			if failure == "write" {
+				mock.UpdateTunnelConfigurationFunc = func(context.Context, string, string, cloudflare.TunnelConfiguration) error {
+					return fmt.Errorf("write failed")
+				}
+			}
+			if failure == "readback" {
+				mock.GetTunnelConfigurationFunc = func(context.Context, string, string) (*cloudflare.TunnelConfiguration, error) {
+					return nil, fmt.Errorf("read failed")
+				}
+			}
+			if err := f.r.syncConfiguration(context.Background(), f.tunnel); err == nil {
+				t.Fatal("overload not reported")
+			}
+			var current cfg.CloudflareTunnel
+			if err := f.r.Get(context.Background(), client.ObjectKeyFromObject(f.tunnel), &current); err != nil {
+				t.Fatal(err)
+			}
+			if (len(current.Status.AccessDependencies) > 0) != (failure != "none") {
+				t.Fatalf("receipt state after %s: %+v", failure, current.Status.AccessDependencies)
+			}
+			if failure == "none" {
+				f.r.ClientSettings.MaxIngressRules = 1000
+				f.sync(t)
+				if !strings.HasPrefix(f.remoteConfig.Ingress[0].Service, "http://") {
+					t.Fatal("recovery retained emergency denial")
+				}
+			}
+		})
 	}
 }
