@@ -116,7 +116,7 @@ type CloudflaredConfig struct {
 	Replicas int32 `json:"replicas,omitempty"`
 
 	// Image is the cloudflared container image.
-	// +kubebuilder:default="ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1"
+	// +kubebuilder:default="ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1@sha256:6c46ca006f9d6af5e973e59f2d71f5d6d3dc138c8a5484380d5797092171e3ad"
 	// +kubebuilder:validation:MaxLength=255
 	Image string `json:"image,omitempty"`
 

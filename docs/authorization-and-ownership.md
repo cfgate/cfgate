@@ -103,6 +103,7 @@ DNS operations reread data and companion TXT records, reject foreign or ambiguou
 - new remote policy and token names include an ownership suffix; Kubernetes references and `serviceTokens[].name` stay unchanged
 - over-limit tunnel configurations now serve HTTP 503 until they fit; remove excess entries or raise the relevant limits
 - origin CA Secret updates now roll connector Pods; selected keys must contain PEM certificates
+- new connector defaults are pinned by digest; existing CRs retain their stored image, so set `spec.cloudflared.image` to the [new default](cloudflare-tunnel.md#image) to opt into the pin
 
 Access ownership uses the installation namespace UID and resource UID, plus
 immutable claims keyed by account, resource kind and remote ID. New application
