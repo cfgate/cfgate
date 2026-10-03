@@ -66,6 +66,13 @@ func verifyTokenRenewalContinuity(ctx SpecContext, policy *cfgatev1alpha1.Cloudf
 	defer httpClient.CloseIdleConnections()
 	probeCtx, cancelProbe := context.WithCancel(ctx)
 	defer cancelProbe()
+	By("Establishing consecutive authenticated responses before measuring renewal")
+	baselineCtx, cancelBaseline := context.WithTimeout(ctx, DefaultTimeout)
+	baselineErr := waitForOriginBaseline(baselineCtx, func(ctx context.Context) error {
+		return probeAuthenticatedOrigin(ctx, httpClient, hostname, marker, headers)
+	}, 250*time.Millisecond)
+	cancelBaseline()
+	Expect(baselineErr).NotTo(HaveOccurred(), "establish authenticated traffic before testing renewal")
 	failures := make(chan error, 1)
 	done := make(chan struct{})
 	var samples [3]atomic.Int32
@@ -73,19 +80,9 @@ func verifyTokenRenewalContinuity(ctx SpecContext, policy *cfgatev1alpha1.Cloudf
 		defer close(done)
 		for {
 			phase := delayed.phase.Load()
-			request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "https://"+hostname+"/?renewal="+fmt.Sprint(time.Now().UnixNano()), nil)
-			if err == nil {
-				request.Header = headers.Clone()
-				var response *http.Response
-				response, err = httpClient.Do(request)
-				if err == nil {
-					var body []byte
-					body, err = io.ReadAll(io.LimitReader(response.Body, 4096))
-					_ = response.Body.Close()
-					if err == nil && (response.StatusCode != http.StatusOK || strings.TrimSpace(string(body)) != marker) {
-						err = fmt.Errorf("renewal phase %d: status=%d, expected authenticated origin response", phase, response.StatusCode)
-					}
-				}
+			err := probeAuthenticatedOrigin(probeCtx, httpClient, hostname, marker, headers)
+			if err != nil {
+				err = fmt.Errorf("renewal phase %d: %w", phase, err)
 			}
 			if err != nil {
 				if probeCtx.Err() == nil {
@@ -102,14 +99,19 @@ func verifyTokenRenewalContinuity(ctx SpecContext, policy *cfgatev1alpha1.Cloudf
 		}
 	}()
 	defer func() { cancelProbe(); <-done }()
-	Eventually(ctx, func() int32 { return samples[0].Load() }, ShortTimeout, DefaultInterval).Should(BeNumerically(">=", 2))
+	waitSamples := func(phase int, minimum int32) {
+		sampleCtx, cancel := context.WithTimeout(ctx, ShortTimeout)
+		defer cancel()
+		Expect(waitForContinuitySamples(sampleCtx, &samples[phase], failures, minimum)).To(Succeed(), "renewal phase %d", phase)
+	}
+	waitSamples(0, 2)
 	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 	Expect(meta.IsStatusConditionTrue(policy.Status.Conditions, "Ready")).To(BeTrue(), "renewal failed: %+v", policy.Status.Conditions)
 	Expect(delayed.calls.Load()).To(Equal(int32(1)), "renewal was not attempted: result=%+v conditions=%+v", result, policy.Status.Conditions)
-	Eventually(ctx, func() int32 { return samples[2].Load() }, ShortTimeout, DefaultInterval).Should(BeNumerically(">=", 4))
+	waitSamples(2, 4)
 	cancelProbe()
 	<-done
 	select {
@@ -125,4 +127,78 @@ func verifyTokenRenewalContinuity(ctx SpecContext, policy *cfgatev1alpha1.Cloudf
 	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
 	Expect(meta.IsStatusConditionTrue(policy.Status.Conditions, "Ready")).To(BeTrue())
 	GinkgoWriter.Printf("renewal continuity samples: before=%d during=%d after=%d\n", samples[0].Load(), samples[1].Load(), samples[2].Load())
+}
+
+// The baseline is a readiness precondition; no renewal occurs until it succeeds.
+// Once continuity sampling starts, every request failure remains fatal.
+func waitForOriginBaseline(ctx context.Context, probe func(context.Context) error, interval time.Duration) error {
+	consecutive := 0
+	var lastErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("authenticated baseline unavailable (last probe: %v): %w", lastErr, err)
+		}
+		if err := probe(ctx); err != nil {
+			consecutive = 0
+			lastErr = err
+		} else {
+			consecutive++
+		}
+		if consecutive >= 2 {
+			return nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("authenticated baseline unavailable (last probe: %v): %w", lastErr, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func probeAuthenticatedOrigin(ctx context.Context, httpClient *http.Client, hostname, marker string, headers http.Header) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+hostname+"/?renewal="+fmt.Sprint(time.Now().UnixNano()), nil)
+	if err != nil {
+		return err
+	}
+	request.Header = headers.Clone()
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4096))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("authenticated origin returned HTTP %d", response.StatusCode)
+	}
+	if strings.TrimSpace(string(body)) != marker {
+		return fmt.Errorf("authenticated origin returned an unexpected body")
+	}
+	return nil
+}
+
+func waitForContinuitySamples(ctx context.Context, samples *atomic.Int32, failures <-chan error, minimum int32) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-failures:
+			return err
+		default:
+		}
+		if samples.Load() >= minimum {
+			return nil
+		}
+		select {
+		case err := <-failures:
+			return err
+		case <-ctx.Done():
+			return fmt.Errorf("received %d of %d required continuity samples: %w", samples.Load(), minimum, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
