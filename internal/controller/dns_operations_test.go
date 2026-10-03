@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -269,5 +270,54 @@ func TestDNSUnusedWriteIntentDoesNotConsumeRecoveryCapacity(t *testing.T) {
 	}
 	if len(store["zone"]) != 0 {
 		t.Fatal("unused intent stranded final cleanup")
+	}
+}
+
+func TestDNSCancellationAfterRemoteCreation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dns := dnsIdentityFixture()
+	dns.Spec.Policy = cfg.DNSPolicySync
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operator", UID: "installation"}}
+	kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithStatusSubresource(dns).WithObjects(ns, dns).
+		WithInterceptorFuncs(interceptor.Funcs{SubResourceUpdate: func(ctx context.Context, c client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			return c.SubResource(sub).Update(ctx, obj, opts...)
+		}}).Build()
+	store := map[string]map[string]cloudflare.DNSRecord{}
+	mock := dnsLifecycleStore(t, store)
+	create := mock.CreateDNSRecordFunc
+	mock.CreateDNSRecordFunc = func(ctx context.Context, zone string, record cloudflare.DNSRecord) (*cloudflare.DNSRecord, error) {
+		result, err := create(ctx, zone, record)
+		if err == nil && record.Type == "CNAME" {
+			cancel()
+		}
+		return result, err
+	}
+	r := &CloudflareDNSReconciler{Client: kube, APIReader: kube, CFClient: mock, InstallationNamespace: "operator", Recorder: &fakeEventRecorder{}}
+	_, _ = r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(dns)})
+	ctx = context.Background()
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(dns), dns); err != nil {
+		t.Fatal(err)
+	}
+	if len(dns.Status.PendingWrites) == 0 || len(store["zone"]) != 2 {
+		t.Fatalf("interruption did not retain intent and remote pair: %+v, %v", dns.Status, store)
+	}
+	// A replacement worker has no in-memory observations from the first attempt.
+	r = &CloudflareDNSReconciler{Client: kube, APIReader: kube, CFClient: mock, InstallationNamespace: "operator", Recorder: &fakeEventRecorder{}}
+	mock.CreateDNSRecordFunc = create
+	if err := kube.Delete(ctx, dns); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(dns)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store["zone"]) != 0 {
+		t.Fatalf("remote records remain: %v", store)
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(dns), dns); !apierrors.IsNotFound(err) {
+		t.Fatalf("finalizer did not complete: %v", err)
 	}
 }

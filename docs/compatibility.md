@@ -85,6 +85,21 @@ finish, then back up the objects and credentials before assessing a downgrade.
 Removing status, finalizers, or pending markers is not a rollback procedure. There
 is no automatic translation of unfinished operations for alpha.7 or older versions.
 
+## Post-alpha.8 development
+
+The next controller and CRDs reject `everyone: false` and
+`anyValidServiceToken: false` in Access policy rules. Remove those whole rule
+items before upgrading; use `true` only when that match is intended. An empty
+include list is not a replacement for a valid policy. Existing invalid objects
+are also rejected before remote policy or service-token changes.
+
+Proxied DNS records use Auto TTL regardless of the configured TTL. DNS-only
+records retain their configured TTL. No spec migration is needed for this change.
+
+Health and metrics listeners must have separate, non-overlapping bind addresses.
+The defaults remain unchanged. Correct colliding custom ports before upgrading;
+Service-facing ports are independent of these process listeners.
+
 ## Dependency maintenance
 
 Keep Kubernetes libraries and controller-runtime on compatible release families,
