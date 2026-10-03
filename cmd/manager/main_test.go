@@ -623,3 +623,43 @@ func TestManagerInfrastructureSettings(t *testing.T) {
 		}
 	}
 }
+
+func TestManagerEndpointCollisions(t *testing.T) {
+	for _, tt := range []struct {
+		name, metrics, health string
+		conflict              bool
+	}{
+		{"same", ":8081", ":8081", true},
+		{"wildcard ipv4", "0.0.0.0:8081", ":8081", true},
+		{"wildcard ipv6", "[::]:8081", ":8081", true},
+		{"wildcard and specific", ":8081", "127.0.0.1:8081", true},
+		{"same ipv6", "[::1]:8081", "[0:0:0:0:0:0:0:1]:8081", true},
+		{"mapped ipv4", "[::ffff:127.0.0.1]:8081", "127.0.0.1:8081", true},
+		{"different ports", ":8080", ":8081", false},
+		{"different hosts", "127.0.0.1:8081", "127.0.0.2:8081", false},
+		{"metrics disabled", "0", ":8081", false},
+		{"health disabled", ":8080", "0", false},
+		{"ephemeral", ":0", ":0", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseManagerConfig([]string{"--metrics-bind-address=" + tt.metrics, "--health-probe-bind-address=" + tt.health}, func(string) string { return "" }, io.Discard)
+			if (err != nil) != tt.conflict {
+				t.Fatalf("error = %v, want conflict %v", err, tt.conflict)
+			}
+			if err != nil && !strings.Contains(err.Error(), "overlap") {
+				t.Fatal(err)
+			}
+		})
+	}
+	t.Run("environment", func(t *testing.T) {
+		_, err := parseManagerConfig(nil, func(key string) string {
+			if key == envMetricsPort || key == envHealthPort {
+				return "8090"
+			}
+			return ""
+		}, io.Discard)
+		if err == nil {
+			t.Fatal("accepted overlapping environment ports")
+		}
+	})
+}
