@@ -42,6 +42,9 @@ func TestEnsureServiceToken(t *testing.T) {
 				token.ExpiresAt = now.Add(48 * time.Hour)
 				return &token, nil
 			}
+			mock.ExtendServiceTokenExpirationFunc = func(ctx context.Context, account, id string, token ServiceToken) (*ServiceToken, error) {
+				return mock.UpdateServiceToken(ctx, account, id, ServiceTokenParams{Name: token.Name, Duration: token.Duration})
+			}
 			mock.RotateServiceTokenFunc = func(_ context.Context, _, id string, p ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
 				rotations++
 				if id != token.ID || !p.PreviousClientSecretExpiresAt.Equal(now.Add(time.Hour)) {
@@ -125,6 +128,9 @@ func TestServiceTokenMutationRecovery(t *testing.T) {
 				return &ServiceTokenWithSecret{ServiceToken: token, ClientSecret: "new-secret"}, nil
 			}
 			mock.CreateServiceTokenFunc = func(context.Context, string, ServiceTokenParams) (*ServiceTokenWithSecret, error) { return mutate() }
+			mock.ExtendServiceTokenExpirationFunc = func(ctx context.Context, account, id string, token ServiceToken) (*ServiceToken, error) {
+				return mock.UpdateServiceToken(ctx, account, id, ServiceTokenParams{Name: token.Name, Duration: token.Duration})
+			}
 			mock.RotateServiceTokenFunc = func(context.Context, string, string, ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
 				return mutate()
 			}
@@ -178,6 +184,9 @@ func TestServiceTokenMutationFailures(t *testing.T) {
 			}
 			mock.CreateServiceTokenFunc = func(context.Context, string, ServiceTokenParams) (*ServiceTokenWithSecret, error) { return nil, boom }
 			mock.UpdateServiceTokenFunc = func(context.Context, string, string, ServiceTokenParams) (*ServiceToken, error) { return nil, boom }
+			mock.ExtendServiceTokenExpirationFunc = func(ctx context.Context, account, id string, token ServiceToken) (*ServiceToken, error) {
+				return mock.UpdateServiceToken(ctx, account, id, ServiceTokenParams{Name: token.Name, Duration: token.Duration})
+			}
 			mock.RotateServiceTokenFunc = func(context.Context, string, string, ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
 				if stage == "bad identity" {
 					token.ID = "other"
@@ -292,6 +301,9 @@ func TestTokenPreconditionsPreventRemoteMutation(t *testing.T) {
 				mutations++
 				return nil, nil
 			}
+			mock.ExtendServiceTokenExpirationFunc = func(ctx context.Context, account, id string, token ServiceToken) (*ServiceToken, error) {
+				return mock.UpdateServiceToken(ctx, account, id, ServiceTokenParams{Name: token.Name, Duration: token.Duration})
+			}
 			mock.RotateServiceTokenFunc = func(context.Context, string, string, ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
 				mutations++
 				return nil, nil
@@ -330,5 +342,14 @@ func TestTokenRenewalRejectsUnconfirmedResponse(t *testing.T) {
 				t.Fatal("unconfirmed renewal reported success")
 			}
 		})
+	}
+}
+
+func TestServiceTokenRenewalTime(t *testing.T) {
+	expiry := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	for _, tt := range []struct{ lifetime, lead time.Duration }{{time.Hour, 7 * time.Minute}, {48 * time.Hour, 4*time.Hour + 49*time.Minute}, {8760 * time.Hour, 24*time.Hour + time.Minute}} {
+		if got := expiry.Sub(ServiceTokenRenewalTime(expiry, tt.lifetime)); got != tt.lead {
+			t.Errorf("lifetime %v: lead %v want %v", tt.lifetime, got, tt.lead)
+		}
 	}
 }

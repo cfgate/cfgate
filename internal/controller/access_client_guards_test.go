@@ -16,7 +16,7 @@ import (
 )
 
 func TestTokenUpdateAndRefreshEnforceGuards(t *testing.T) {
-	for _, operation := range []string{"update", "refresh"} {
+	for _, operation := range []string{"update", "refresh", "extend"} {
 		t.Run(operation, func(t *testing.T) {
 			ctx := context.Background()
 			mock := cloudflare.NewMockClient()
@@ -32,7 +32,15 @@ func TestTokenUpdateAndRefreshEnforceGuards(t *testing.T) {
 				calls++
 				return &cloudflare.ServiceToken{ID: "remote"}, nil
 			}
+			mock.ExtendServiceTokenExpirationFunc = func(context.Context, string, string, cloudflare.ServiceToken) (*cloudflare.ServiceToken, error) {
+				calls++
+				return &cloudflare.ServiceToken{ID: "remote"}, nil
+			}
 			run := func(c cloudflare.AccessClient) error {
+				if operation == "extend" {
+					_, err := c.ExtendServiceTokenExpiration(ctx, "account", "remote", cloudflare.ServiceToken{})
+					return err
+				}
 				if operation == "update" {
 					_, err := c.UpdateServiceToken(ctx, "account", "remote", cloudflare.ServiceTokenParams{})
 					return err
@@ -51,6 +59,12 @@ func TestTokenUpdateAndRefreshEnforceGuards(t *testing.T) {
 			}
 			blocked := errors.New("withdrawal pending")
 			guard := &accessMutationClient{Client: owned, before: func(context.Context) error { return blocked }}
+			if operation == "extend" {
+				if err := run(guard); err != nil || calls != 1 {
+					t.Fatalf("owned extension requires no withdrawal: %v calls=%d", err, calls)
+				}
+				return
+			}
 			if err := run(guard); !errors.Is(err, blocked) || calls != 0 {
 				t.Fatalf("unwithdrawn mutation: calls=%d err=%v", calls, err)
 			}

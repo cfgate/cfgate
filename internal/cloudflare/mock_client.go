@@ -16,6 +16,7 @@ var _ Client = (*MockClient)(nil)
 //	}
 //	svc := NewTunnelService(mock)
 type MockClient struct {
+	ExtendServiceTokenExpirationFunc func(context.Context, string, string, ServiceToken) (*ServiceToken, error)
 	// Tunnel operations
 	GetTunnelFunc                 func(ctx context.Context, accountID, tunnelID string) (*Tunnel, error)
 	GetTunnelByNameFunc           func(ctx context.Context, accountID, name string) (*Tunnel, error)
@@ -412,6 +413,14 @@ func (m *MockClient) RefreshServiceToken(ctx context.Context, accountID, tokenID
 func (m *MockClient) GetTunnelConfiguration(ctx context.Context, accountID, tunnelID string) (*TunnelConfiguration, error) {
 	if m.GetTunnelConfigurationFunc != nil {
 		return m.GetTunnelConfigurationFunc(ctx, accountID, tunnelID)
+	}
+	return nil, nil
+}
+
+// ExtendServiceTokenExpiration delegates the narrowly scoped renewal operation.
+func (m *MockClient) ExtendServiceTokenExpiration(ctx context.Context, account, id string, expected ServiceToken) (*ServiceToken, error) {
+	if m.ExtendServiceTokenExpirationFunc != nil {
+		return m.ExtendServiceTokenExpirationFunc(ctx, account, id, expected)
 	}
 	return nil, nil
 }

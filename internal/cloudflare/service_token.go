@@ -12,6 +12,13 @@ func ServiceTokenRenewalWindow(lifetime time.Duration) time.Duration {
 	return min(lifetime/10, 24*time.Hour)
 }
 
+// ServiceTokenRenewalTime reserves up to one minute before the renewal window
+// for queue delay and a retry. The window itself remains available for retries.
+func ServiceTokenRenewalTime(expires time.Time, lifetime time.Duration) time.Time {
+	window := ServiceTokenRenewalWindow(lifetime)
+	return expires.Add(-window - min(window/6, time.Minute))
+}
+
 func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string, params ServiceTokenParams, store SecretWriter) (*ServiceToken, error) {
 	return s.EnsureServiceTokenByID(ctx, accountID, "", params, store)
 }
@@ -88,9 +95,15 @@ func (s *AccessService) EnsureServiceTokenByID(ctx context.Context, accountID, s
 	}
 	now := s.now()
 	observedDuration, parseErr := time.ParseDuration(existing.Duration)
-	renew := !existing.ExpiresAt.IsZero() && !existing.ExpiresAt.After(now.Add(ServiceTokenRenewalWindow(lifetime)))
+	renew := !existing.ExpiresAt.IsZero() && !now.Before(ServiceTokenRenewalTime(existing.ExpiresAt, lifetime))
 	if parseErr != nil || observedDuration != lifetime || existing.Name != params.Name || renew {
-		updated, err := s.client.UpdateServiceToken(ctx, accountID, existing.ID, params)
+		var updated *ServiceToken
+		var err error
+		if renew && !stale && parseErr == nil && observedDuration == lifetime && existing.Name == params.Name && existing.ExpiresAt.After(now) {
+			updated, err = s.client.ExtendServiceTokenExpiration(ctx, accountID, existing.ID, *existing)
+		} else {
+			updated, err = s.client.UpdateServiceToken(ctx, accountID, existing.ID, params)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to renew or update service token: %w", err)
 		}

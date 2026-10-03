@@ -523,7 +523,7 @@ func TestEnsureServiceTokens(t *testing.T) {
 	}
 	reconciler := newAccessPolicyReconciler(t, mock, policy)
 	service := cloudflare.NewAccessService(mock, logr.Discard())
-	if err := reconciler.syncServiceTokens(ctx, service, "account-1", policy); err != nil {
+	if _, err := reconciler.syncServiceTokens(ctx, service, "account-1", policy); err != nil {
 		t.Fatalf("syncServiceTokens() error = %v", err)
 	}
 	if policy.Status.ServiceTokenIDs["svc"] != "token-id" {
@@ -547,7 +547,7 @@ func TestEnsureServiceTokens(t *testing.T) {
 		return nil
 	}
 	reconciler = newAccessPolicyReconciler(t, mock, policy)
-	if err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy); err != nil {
+	if _, err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy); err != nil {
 		t.Fatalf("syncServiceTokens(stale) error = %v", err)
 	}
 	if len(deletedTokens) != 1 || deletedTokens[0] != "old-token-id" || len(policy.Status.ServiceTokenIDs) != 0 {
@@ -571,7 +571,7 @@ func TestEnsureServiceTokens(t *testing.T) {
 		}, nil
 	}
 	reconciler = newAccessPolicyReconciler(t, mock, policy)
-	if err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy); err != nil {
+	if _, err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy); err != nil {
 		t.Fatalf("syncServiceTokens(rename) error = %v", err)
 	}
 	if len(deletedTokens) != 1 || deletedTokens[0] != "old-token-id" || len(policy.Status.ServiceTokenIDs) != 1 || policy.Status.ServiceTokenIDs["new"] != "new-token-id" {
@@ -583,7 +583,7 @@ func TestEnsureServiceTokens(t *testing.T) {
 	mock = cloudflare.NewMockClient()
 	mock.DeleteServiceTokenFunc = func(context.Context, string, string) error { return errors.New("delete failed") }
 	reconciler = newAccessPolicyReconciler(t, mock, policy)
-	err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy)
+	_, err := reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy)
 	if err == nil || !strings.Contains(err.Error(), "failed to delete removed service token old (old-token-id)") {
 		t.Fatalf("syncServiceTokens(delete failure) error = %v, want wrapped delete error", err)
 	}
@@ -595,7 +595,7 @@ func TestEnsureServiceTokens(t *testing.T) {
 	policy = baseAccessPolicy("app", "policy")
 	policy.Spec.ServiceTokens = []cfgatev1alpha1.ServiceTokenConfig{{Name: "svc", Duration: "8760h", SecretRef: cfgatev1alpha1.ServiceTokenSecretRef{Name: "svc-secret"}}}
 	reconciler = newAccessPolicyReconciler(t, mock, policy)
-	err = reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy)
+	_, err = reconciler.syncServiceTokens(ctx, cloudflare.NewAccessService(mock, logr.Discard()), "account-1", policy)
 	if err == nil || !strings.Contains(err.Error(), "failed to ensure service token svc") {
 		t.Fatalf("syncServiceTokens() error = %v, want token name wrapper", err)
 	}

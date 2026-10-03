@@ -91,14 +91,24 @@ Deletion removes the reusable policy only when Cloudflare reports `appCount == 0
 
 Each managed token needs a unique name and destination Secret within its policy.
 `duration` is a positive number of hours and defaults to `8760h`. cfgate renews
-expiration in the last 10% of that duration, capped at 24 hours before expiry.
+expiration before its final 10%, capped at 24 hours, with up to one additional
+minute reserved for queue delay and a retry. Successful reconciliations requeue
+at the earliest token renewal deadline or after five minutes, whichever is sooner.
+A one-hour token is first due seven minutes before expiration.
 Changing the duration also renews expiration. An unchanged token outside that
 window is left alone. Disabled tokens report an error; cfgate does not enable them.
-Removing a token from `spec.serviceTokens` revokes it in Cloudflare.
+The duration remains a renewable lifetime while the token is desired, not a
+one-time deadline for revoking access. Removing a token from `spec.serviceTokens`
+revokes it in Cloudflare.
 
 Renewal preserves the client secret. It uses Cloudflare's duration update API;
 the separate refresh endpoint always adds a year and would not preserve a custom
-duration. See [Cloudflare's service token lifecycle](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
+duration. An enabled, unexpired token with unchanged name and duration uses an
+expiration-only operation. It retains ownership checks and application locks,
+but does not withdraw healthy `access-required` forwarding. Expired tokens,
+configuration edits, and secret rotations still require withdrawal. Failed renewal
+verification reports the policy unavailable; continuity is not guaranteed during
+provider failures or after expiration. See [Cloudflare's service token lifecycle](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
 
 ### Secret distribution
 

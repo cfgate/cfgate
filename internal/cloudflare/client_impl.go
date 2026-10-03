@@ -1350,3 +1350,43 @@ func convertServiceToken(token zero_trust.ServiceToken) ServiceToken {
 	}
 	return result
 }
+
+// ExtendServiceTokenExpiration only extends the existing lifetime. Re-read the
+// provider state so stale inventory cannot authorize shortening or reactivation.
+func (c *clientImpl) ExtendServiceTokenExpiration(ctx context.Context, account, id string, expected ServiceToken) (*ServiceToken, error) {
+	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
+	defer cancel()
+	current, err := c.GetServiceToken(ctx, account, id)
+	if err != nil {
+		return nil, err
+	}
+	lifetime, err := time.ParseDuration(expected.Duration)
+	observedLifetime := time.Duration(0)
+	if current != nil {
+		observedLifetime, _ = time.ParseDuration(current.Duration)
+	}
+	now := time.Now()
+	if current == nil || id == "" || current.ID != id || expected.ID != id || current.ClientID == "" || current.ClientID != expected.ClientID || current.Name != expected.Name {
+		return nil, fmt.Errorf("service token identity changed before expiration-only renewal")
+	}
+	if err != nil || lifetime <= 0 || observedLifetime != lifetime {
+		return nil, fmt.Errorf("service token duration changed before expiration-only renewal")
+	}
+	if (current.Enabled != nil && !*current.Enabled) || !current.ExpiresAt.After(now) || !now.Add(lifetime).After(current.ExpiresAt) {
+		return nil, fmt.Errorf("service token no longer permits expiration-only renewal")
+	}
+
+	result, err := c.api.ZeroTrust.Access.ServiceTokens.Update(ctx, id, zero_trust.AccessServiceTokenUpdateParams{AccountID: cf.F(account), Duration: cf.F(current.Duration)})
+	if err != nil {
+		return nil, fmt.Errorf("failed to extend service token expiration: %w", err)
+	}
+	if result == nil {
+		return nil, fmt.Errorf("service token expiration-only renewal returned no token")
+	}
+	updated := convertServiceToken(*result)
+	updatedLifetime, parseErr := time.ParseDuration(updated.Duration)
+	if parseErr != nil || updatedLifetime != lifetime || updated.ID != current.ID || updated.ClientID != current.ClientID || updated.Name != current.Name || (updated.Enabled != nil && !*updated.Enabled) || !updated.ExpiresAt.After(current.ExpiresAt) {
+		return nil, fmt.Errorf("service token expiration-only renewal could not be verified")
+	}
+	return &updated, nil
+}
