@@ -54,6 +54,8 @@ func (c *renewalDueClient) ExtendServiceTokenExpiration(ctx context.Context, acc
 }
 
 func verifyTokenRenewalContinuity(ctx SpecContext, policy *cfgatev1alpha1.CloudflareAccessPolicy, tokenName, hostname, marker string, headers http.Header) {
+	// Serial runs on process 1, which owns the in-process manager and its locks.
+	Expect(suiteAccessLocks).NotTo(BeNil(), "renewal must share the running manager application locks")
 	realClient, err := cloudflare.NewClient(testEnv.CloudflareAPIToken)
 	Expect(err).NotTo(HaveOccurred())
 	delayed := &renewalDueClient{Client: realClient, tokenID: policy.Status.ServiceTokenIDs[tokenName]}
