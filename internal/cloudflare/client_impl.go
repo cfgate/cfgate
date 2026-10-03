@@ -621,9 +621,8 @@ func (c *clientImpl) GetAccountByName(ctx context.Context, name string) (*Accoun
 	return nil, nil
 }
 
-// validateOriginRequests checks that no origin config sets both HTTP2Origin and
-// H2cOrigin. CRD validation prevents this, but the client layer should not
-// depend on admission control alone.
+// validateOriginRequests checks the effective transport of each origin, including
+// inherited settings. The client boundary remains independent of route admission.
 func validateOriginRequests(config TunnelConfiguration) error {
 	globalHTTP2, globalH2c := false, false
 	if config.OriginRequest != nil {
@@ -634,13 +633,8 @@ func validateOriginRequests(config TunnelConfiguration) error {
 		return errors.New("http2Origin and h2cOrigin are mutually exclusive in global origin defaults")
 	}
 	for i, rule := range config.Ingress {
-		http2, h2c := globalHTTP2, globalH2c
-		if rule.OriginRequest != nil {
-			http2 = ptr.Deref(rule.OriginRequest.HTTP2Origin, http2)
-			h2c = ptr.Deref(rule.OriginRequest.H2cOrigin, h2c)
-		}
-		if http2 && h2c {
-			return fmt.Errorf("http2Origin and h2cOrigin are mutually exclusive in ingress rule %d (%s)", i, rule.Hostname)
+		if err := ValidateOriginTransport(rule.Service, config.OriginRequest, rule.OriginRequest); err != nil {
+			return fmt.Errorf("ingress rule %d (%s): %w", i, rule.Hostname, err)
 		}
 	}
 	return nil

@@ -150,6 +150,16 @@ func accessRouteInventory(ctx context.Context, reader client.Reader) (map[types.
 				return nil, err
 			}
 			tunnel := tunnels[parentKey]
+			var tunnelObject cfg.CloudflareTunnel
+			if err := reader.Get(ctx, tunnel, &tunnelObject); err != nil {
+				if apierrors.IsNotFound(err) {
+					continue
+				}
+				return nil, err
+			}
+			if err := validateRouteTransport(&route, &tunnelObject); err != nil {
+				continue
+			}
 			if inventory[tunnel] == nil {
 				inventory[tunnel] = map[string]bool{}
 			}

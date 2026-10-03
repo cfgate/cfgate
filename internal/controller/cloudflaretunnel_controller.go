@@ -701,6 +701,16 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 		}
 	}
 
+	for i := range config.Ingress {
+		rule := &config.Ingress[i]
+		if err := cloudflare.ValidateOriginTransport(rule.Service, config.OriginRequest, rule.OriginRequest); err != nil {
+			rule.Service, rule.OriginRequest = "http_status:503", nil
+			if r.Recorder != nil {
+				r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "InvalidOriginTransport", "Publish", "%s", err.Error())
+			}
+		}
+	}
+
 	if blocked := applyConnectorCompatibility(tunnel, &config); blocked > 0 && r.Recorder != nil {
 		r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "IncompatibleConnectorImage", "Publish", "stock cloudflared does not support h2cOrigin; blocked %d HTTP origin rules", blocked)
 	}
@@ -911,7 +921,17 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules", "skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
 			continue
 		}
-		if err := r.requiredAccessAllows(ctx, accessState, tunnel, resolvedRoute, hostnames); err != nil {
+		if err := validateRouteTransport(&route, tunnel); err != nil {
+			_, accessRequired, _ := accessRequiredReference(&route)
+			for i := range routeRules {
+				routeRules[i].accessDenied = accessRequired
+				routeRules[i].Service = "http_status:503"
+				routeRules[i].OriginRequest = nil
+			}
+			if r.Recorder != nil {
+				r.Recorder.Eventf(&route, nil, corev1.EventTypeWarning, "InvalidOriginTransport", "Publish", "%s", err.Error())
+			}
+		} else if err := r.requiredAccessAllows(ctx, accessState, tunnel, resolvedRoute, hostnames); err != nil {
 			for i := range routeRules {
 				routeRules[i].Service = "http_status:503"
 				routeRules[i].accessDenied = true

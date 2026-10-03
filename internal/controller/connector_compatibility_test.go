@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"cfgate.io/cfgate/internal/cloudflared"
@@ -128,4 +129,25 @@ func TestStockConnectorHonorsExplicitH2CDisable(t *testing.T) {
 		}
 	}
 	t.Fatal("route absent")
+}
+
+func TestInvalidH2CFallbackDoesNotBlockValidRoute(t *testing.T) {
+	f := newAccessFixture(t)
+	delete(f.route.Annotations, "cfgate.io/access-required")
+	if err := f.r.Update(context.Background(), f.route); err != nil {
+		t.Fatal(err)
+	}
+	f.tunnel.Spec.OriginDefaults.H2cOrigin = true
+	f.tunnel.Spec.FallbackTarget = "https://fallback.example:443"
+	f.sync(t)
+	if f.remoteConfig.Ingress[len(f.remoteConfig.Ingress)-1].Service != "http_status:503" {
+		t.Fatal("incompatible fallback published")
+	}
+	forwarded := false
+	for _, rule := range f.remoteConfig.Ingress {
+		forwarded = forwarded || strings.HasPrefix(rule.Service, "http://")
+	}
+	if !forwarded {
+		t.Fatal("valid sibling blocked")
+	}
 }

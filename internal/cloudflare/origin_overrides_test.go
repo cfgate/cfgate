@@ -29,7 +29,7 @@ func TestOriginBooleanWireInheritance(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				err = client.UpdateTunnelConfiguration(context.Background(), "account", "tunnel", TunnelConfiguration{OriginRequest: globalConfig, Ingress: []IngressRule{{Service: "https://origin", OriginRequest: ruleConfig}, {Service: "http_status:404"}}})
+				err = client.UpdateTunnelConfiguration(context.Background(), "account", "tunnel", TunnelConfiguration{OriginRequest: globalConfig, Ingress: []IngressRule{{Service: "http://origin", OriginRequest: ruleConfig}, {Service: "http_status:404"}}})
 				if err != nil {
 					t.Fatal(err)
 				}

@@ -142,7 +142,7 @@ func TestValidateParentRef(t *testing.T) {
 	route := &gatewayv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{Name: "route", Namespace: "app"},
 	}
-	r := newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass)
+	r := newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, &cfgatev1alpha1.CloudflareTunnel{ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"}})
 
 	statusResult := r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
 		Name:        "gateway",
@@ -154,7 +154,7 @@ func TestValidateParentRef(t *testing.T) {
 
 	gateway = gateway.DeepCopy()
 	delete(gateway.Annotations, annotations.AnnotationTunnelRef)
-	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass)
+	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, &cfgatev1alpha1.CloudflareTunnel{ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"}})
 	statusResult = r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{Name: "gateway"})
 	if statusResult.Conditions[0].Reason != status.ReasonNoTunnelRef {
 		t.Fatalf("validateParentRef() reason = %q, want %q", statusResult.Conditions[0].Reason, status.ReasonNoTunnelRef)
@@ -168,7 +168,7 @@ func TestValidateParentRef(t *testing.T) {
 	}
 	route.Namespace = "other"
 	gatewayNS := gatewayv1.Namespace("app")
-	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass)
+	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, &cfgatev1alpha1.CloudflareTunnel{ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"}})
 	statusResult = r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
 		Namespace:   &gatewayNS,
 		Name:        "gateway",
@@ -196,7 +196,7 @@ func TestValidateParentRef(t *testing.T) {
 			Labels: map[string]string{"team": "payments"},
 		},
 	}
-	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, routeNS)
+	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, routeNS, &cfgatev1alpha1.CloudflareTunnel{ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"}})
 	statusResult = r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
 		Namespace:   &gatewayNS,
 		Name:        "gateway",
@@ -207,7 +207,7 @@ func TestValidateParentRef(t *testing.T) {
 	}
 
 	routeNS.Labels = map[string]string{"team": "platform"}
-	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, routeNS)
+	r = newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, routeNS, &cfgatev1alpha1.CloudflareTunnel{ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"}})
 	statusResult = r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
 		Namespace:   &gatewayNS,
 		Name:        "gateway",
@@ -259,7 +259,7 @@ func TestValidateParentRefStatusReasons(t *testing.T) {
 		},
 	}
 
-	r := newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass)
+	r := newHTTPRouteTestReconciler(t, scheme, gateway, gatewayClass, &cfgatev1alpha1.CloudflareTunnel{ObjectMeta: metav1.ObjectMeta{Name: "tunnel", Namespace: "app"}})
 	statusResult := r.validateParentRef(context.Background(), route, gatewayv1.ParentReference{
 		Name:        "gateway",
 		SectionName: &listenerName,
