@@ -861,3 +861,59 @@ type patchNotFoundClient struct {
 func (c *patchNotFoundClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 	return apierrors.NewNotFound(schema.GroupResource{Group: cfgatev1alpha1.GroupVersion.Group, Resource: "cloudflareaccesspolicies"}, obj.GetName())
 }
+
+func TestAccessBooleanSelectors(t *testing.T) {
+	for _, set := range []string{"include", "exclude", "require"} {
+		for _, selector := range []string{"everyone", "anyValidServiceToken"} {
+			for _, value := range []string{"absent", "true", "false"} {
+				t.Run(set+"/"+selector+"/"+value, func(t *testing.T) {
+					policy := baseAccessPolicy("app", "policy")
+					policy.Finalizers = []string{accessPolicyFinalizer}
+					policy.Generation = 2
+					rule := cfgatev1alpha1.AccessRule{}
+					if value != "absent" {
+						v := value == "true"
+						if selector == "everyone" {
+							rule.Everyone = &v
+						} else {
+							rule.AnyValidServiceToken = &v
+						}
+					}
+					switch set {
+					case "include":
+						policy.Spec.Include = []cfgatev1alpha1.AccessRule{rule}
+					case "exclude":
+						policy.Spec.Exclude = []cfgatev1alpha1.AccessRule{rule}
+					case "require":
+						policy.Spec.Require = []cfgatev1alpha1.AccessRule{rule}
+					}
+					_, err := buildReusablePolicyParams(policy)
+					if value == "true" {
+						if err != nil {
+							t.Fatal(err)
+						}
+						return
+					}
+					if err == nil {
+						t.Fatal("invalid selector accepted")
+					}
+					// A nil underlying client panics if validation reaches any provider operation.
+					r := newAccessPolicyReconciler(t, &unexpectedPolicyClient{}, policy)
+					_, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := r.Get(context.Background(), client.ObjectKeyFromObject(policy), policy); err != nil {
+						t.Fatal(err)
+					}
+					condition := status.FindCondition(policy.Status.Conditions, status.ConditionTypePolicySynced)
+					if condition == nil || condition.Status != metav1.ConditionFalse || condition.ObservedGeneration != 2 {
+						t.Fatalf("invalid policy not reported: %+v", policy.Status.Conditions)
+					}
+				})
+			}
+		}
+	}
+}
+
+type unexpectedPolicyClient struct{ cloudflare.Client }

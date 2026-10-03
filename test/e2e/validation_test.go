@@ -90,6 +90,42 @@ var _ = Describe("CEL Validation E2E", func() {
 	})
 
 	Context("CloudflareAccessPolicy validation", func() {
+		It("validates boolean selectors in every rule list", func() {
+			for _, list := range []string{"include", "exclude", "require"} {
+				for _, selector := range []string{"everyone", "anyValidServiceToken"} {
+					for _, value := range []string{"absent", "true", "false"} {
+						policy := validReusablePolicy(testID("boolean-selector"), namespace.Name)
+						rule := cfgatev1alpha1.AccessRule{}
+						if value != "absent" {
+							v := value == "true"
+							if selector == "everyone" {
+								rule.Everyone = &v
+							} else {
+								rule.AnyValidServiceToken = &v
+							}
+						}
+						switch list {
+						case "include":
+							policy.Spec.Include = []cfgatev1alpha1.AccessRule{rule}
+						case "exclude":
+							policy.Spec.Exclude = []cfgatev1alpha1.AccessRule{rule}
+						case "require":
+							policy.Spec.Require = []cfgatev1alpha1.AccessRule{rule}
+						}
+						err := k8sClient.Create(ctx, policy, client.DryRunAll)
+						if value == "true" {
+							Expect(err).NotTo(HaveOccurred(), "%s/%s/%s", list, selector, value)
+						} else {
+							Expect(err).To(HaveOccurred(), "%s/%s/%s", list, selector, value)
+							if value == "false" {
+								Expect(err.Error()).To(ContainSubstring("must be true"))
+							}
+						}
+					}
+				}
+			}
+		})
+
 		It("rejects reusable policy with no include rules", func() {
 			policy := validReusablePolicy(testID("no-include"), namespace.Name)
 			policy.Spec.Include = nil

@@ -294,9 +294,11 @@ type AccessRule struct {
 	// +optional
 	Country *AccessCountryRule `json:"country,omitempty"`
 
-	// Everyone matches all users (use with caution).
+	// Everyone matches all users. When present, it must be true.
+	// Omit the rule to disable it.
 	// SDK: EveryoneRule
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == true",message="must be true; omit the rule to disable it"
 	Everyone *bool `json:"everyone,omitempty"`
 
 	// ServiceToken matches a specific service token by ID.
@@ -304,9 +306,11 @@ type AccessRule struct {
 	// +optional
 	ServiceToken *AccessServiceTokenRule `json:"serviceToken,omitempty"`
 
-	// AnyValidServiceToken matches any valid service token.
+	// AnyValidServiceToken matches any valid service token. When present, it must be true.
+	// Omit the rule to disable it.
 	// SDK: AnyValidServiceTokenRule
 	// +optional
+	// +kubebuilder:validation:XValidation:rule="self == true",message="must be true; omit the rule to disable it"
 	AnyValidServiceToken *bool `json:"anyValidServiceToken,omitempty"`
 
 	// ============================================================
