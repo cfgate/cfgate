@@ -161,7 +161,7 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 		waitForAccessPolicyDeleted(ctx, k8sClient, policyName, namespace, LongTimeout)
 	})
 
-	It("renews and distributes service tokens without losing authentication", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
+	It("renews and distributes service tokens without losing authentication", Serial, SpecTimeout(12*time.Minute), func(ctx SpecContext) {
 		skipIfNoZone()
 		gatewayClassName := testID("access-gc-token")
 		createGatewayClass(ctx, k8sClient, gatewayClassName)
