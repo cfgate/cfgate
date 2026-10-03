@@ -134,7 +134,7 @@ Automatic DNS publication requires a cfgate-managed Gateway, permission for its 
 
 Configures automatic hostname discovery from Gateway API HTTPRoute resources. Route discovery is enabled by the presence of this block. If `source.gatewayRoutes` is absent, the resource is explicit-only and does not watch routes. If the block is present and `enabled` is omitted, it defaults to `true`.
 
-**`annotationFilter`:** An opt-in filter that restricts which routes trigger DNS sync. The controller checks this annotation on HTTPRoute resources, never on Gateways. You can use any annotation key=value pair of your choosing. The format is `key=value`. See [Annotations Reference](annotations.md#notes-on-annotationfilter) for details on how annotation filtering works.
+**`annotationFilter`:** An opt-in filter that restricts which routes trigger DNS sync. The controller checks this annotation on HTTPRoute resources, never on Gateways. You can use any annotation key=value pair; adding, changing, or removing it triggers discovery and cleanup without waiting for the periodic reconciliation. The format is `key=value`. See [Annotations Reference](annotations.md#notes-on-annotationfilter) for details on how annotation filtering works.
 
 A common convention is `cfgate.io/dns-sync=enabled`, but this is not a controller-defined annotation; it is a user-chosen convention. The controller simply checks whether the route has the specified annotation with the specified value.
 
@@ -156,7 +156,7 @@ spec:
 
 ### `spec.source.explicit`
 
-Defines explicit hostnames to sync without depending on Gateway API route discovery. Route discovery can add hostnames, but when the same hostname appears in both sources, the explicit entry wins for target, proxied, and ttl.
+Defines explicit hostnames independently of Gateway API route discovery. Hostnames are case-insensitive and an optional trailing dot is ignored before merging or recording write intents. An explicit entry overrides the discovered settings for the same hostname. Equivalent explicit entries are deduplicated; conflicting settings within the same source are rejected before publication.
 
 The `target` field overrides the resource-level resolved target for that hostname. It supports the `{{ .TunnelDomain }}` template variable, which resolves to the tunnel's CNAME target domain when `tunnelRef` is set. When `target` is omitted, the resource-level resolved target is used.
 
@@ -487,3 +487,25 @@ For resources created before this change, the first reconciliation records their
 current prefix. cfgate cannot reconstruct prefixes changed before that checkpoint.
 Inspect any older ownership claims during such a migration. Install the matching CRD
 before updating the controller so Kubernetes preserves the recovery fields.
+
+### Request budget
+
+The 1,000-entry inventory ceiling bounds stored cleanup state. It is not a tested
+operating capacity. Cloudflare's standard limit is
+[1,200 API requests per five minutes](https://developers.cloudflare.com/fundamentals/api/reference/limits/),
+shared with other calls using the applicable identity.
+
+The controller's synthetic CNAME tests count about 12 provider operations per new
+hostname, 6 per unchanged hostname, and 8 per hostname during cleanup, plus zone
+inventory reads. Each hostname includes its TXT claim. These counts exclude SDK
+retries, additional pagination, zone resolution, and other controllers. Consequently,
+1,000 unchanged hostnames already exceed the standard window. Smaller resources
+still share the same quota; splitting them does not increase it.
+
+Quota tests cover two resources with 10, 50, or 100 hostnames each, interrupted
+publication, and cleanup across renewed shared windows. They establish recovery in
+that model, not a production capacity recommendation. Measure request volume and
+reconciliation latency for your account before increasing scale. Large inventories
+need additional batching and shared-budget scheduling; retries alone do not guarantee
+progress when preliminary reads consume the entire window. Fresh ownership checks
+remain required before writes.

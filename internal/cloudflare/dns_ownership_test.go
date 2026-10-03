@@ -3,6 +3,7 @@ package cloudflare
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/go-logr/logr"
 	"testing"
 )
@@ -180,5 +181,53 @@ func TestDNSExplicitUnmarkedAdoptionAndDeletion(t *testing.T) {
 	deleted, err := service.DeleteOwnedRecord(context.Background(), "zone", *record, "ours", "_cfgate")
 	if err != nil || deleted || deletes != 0 {
 		t.Fatalf("changed ownership deleted=%v calls=%d err=%v", deleted, deletes, err)
+	}
+}
+
+func TestDNSNoopRequiresFreshOwnedPair(t *testing.T) {
+	for _, foreign := range []bool{false, true} {
+		t.Run(fmt.Sprint(foreign), func(t *testing.T) {
+			record := BuildDNSRecord("app.example.com", "target.example.net", "CNAME", false, 1, OwnershipComment("ours")+",op=0123456789")
+			record.ID = "data"
+			claim := BuildOwnershipTXTRecord(record.Name, "ours", "resource", "_cfgate")
+			cache := NewDNSRecordCache()
+			cache.Set("zone", record.Name, "CNAME", &record)
+			cache.Set("zone", claim.Name, "TXT", &claim)
+			remoteClaim := claim
+			if foreign {
+				remoteClaim = BuildOwnershipTXTRecord(record.Name, "foreign", "resource", "_cfgate")
+			}
+			reads := 0
+			mock := NewMockClient()
+			mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, _, name, kind string) ([]DNSRecord, error) {
+				reads++
+				if name == record.Name && kind == "CNAME" {
+					return []DNSRecord{record}, nil
+				}
+				if name == claim.Name && kind == "TXT" {
+					return []DNSRecord{remoteClaim}, nil
+				}
+				return nil, nil
+			}
+			mock.CreateDNSRecordFunc = func(context.Context, string, DNSRecord) (*DNSRecord, error) {
+				t.Fatal("unchanged pair must not write")
+				return nil, nil
+			}
+			mock.UpdateDNSRecordFunc = func(context.Context, string, string, DNSRecord) (*DNSRecord, error) {
+				t.Fatal("unchanged pair must not write")
+				return nil, nil
+			}
+			result, changed, err := NewDNSService(mock, logr.Discard()).WithCache(cache).SyncOwnedRecord(context.Background(), "zone", record, "ours", "resource", "_cfgate", PolicySync, true, false)
+			if foreign {
+				if err == nil {
+					t.Fatal("stale cached ownership accepted")
+				}
+			} else if err != nil || changed || result.ID != record.ID {
+				t.Fatalf("unexpected no-op: result=%v changed=%v error=%v", result, changed, err)
+			}
+			if reads != 4 {
+				t.Fatalf("expected fresh incompatible/data/claim reads, got %d", reads)
+			}
+		})
 	}
 }
