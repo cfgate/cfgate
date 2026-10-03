@@ -99,6 +99,10 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 	}
 
+	if err := validateServiceTokens(policy.Spec.ServiceTokens); err != nil {
+		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions, status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionFalse, status.ReasonServiceTokenError, err.Error(), policy.Generation))
+		return ctrl.Result{}, r.updateStatus(ctx, &policy)
+	}
 	creds, err := r.resolveCredentials(ctx, &policy)
 	if err != nil {
 		log.Error(err, "failed to resolve credentials")
@@ -426,6 +430,9 @@ func convertApprovalGroups(groups []cfgatev1alpha1.ApprovalGroup) []cloudflare.A
 }
 
 func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context, accessService *cloudflare.AccessService, accountID string, policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
+	if err := validateServiceTokens(policy.Spec.ServiceTokens); err != nil {
+		return err
+	}
 	if policy.Status.ServiceTokenIDs == nil {
 		if len(policy.Spec.ServiceTokens) == 0 {
 			return nil
@@ -448,14 +455,17 @@ func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context
 	for _, tokenConfig := range policy.Spec.ServiceTokens {
 		secretWriter := &k8sSecretWriter{
 			client:    r.Client,
+			reader:    accessReader(r.APIReader, r.Client),
 			namespace: policy.Namespace,
 			secretRef: tokenConfig.SecretRef,
 			owner:     policy,
 			scheme:    r.Scheme,
 		}
+		overlap, _ := time.ParseDuration(tokenConfig.RotationOverlap)
 		token, err := accessService.EnsureServiceTokenByID(ctx, accountID, policy.Status.ServiceTokenIDs[tokenConfig.Name], cloudflare.ServiceTokenParams{
-			Name:     ownedAccessName(tokenConfig.Name, policy.Status.OwnerID),
-			Duration: tokenConfig.Duration,
+			Name:            ownedAccessName(tokenConfig.Name, policy.Status.OwnerID),
+			Duration:        tokenConfig.Duration,
+			RotationOverlap: overlap,
 		}, secretWriter)
 		if err != nil {
 			return fmt.Errorf("failed to ensure service token %s: %w", tokenConfig.Name, err)
@@ -465,7 +475,35 @@ func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context
 	return nil
 }
 
+func validateServiceTokens(tokens []cfgatev1alpha1.ServiceTokenConfig) error {
+	names, secrets := map[string]bool{}, map[string]bool{}
+	for _, token := range tokens {
+		if names[token.Name] || secrets[token.SecretRef.Name] {
+			return fmt.Errorf("service token names and destination Secrets must be unique")
+		}
+		names[token.Name], secrets[token.SecretRef.Name] = true, true
+		duration := token.Duration
+		if duration == "" {
+			duration = "8760h"
+		}
+		lifetime, err := time.ParseDuration(duration)
+		if err != nil || lifetime <= 0 {
+			return fmt.Errorf("invalid duration for service token %s", token.Name)
+		}
+		if token.RotationOverlap != "" {
+			overlap, err := time.ParseDuration(token.RotationOverlap)
+			if err != nil || overlap < 0 || overlap > 720*time.Hour {
+				return fmt.Errorf("rotationOverlap for %s must be between 0h and 720h", token.Name)
+			}
+		}
+	}
+	return nil
+}
+
+const serviceTokenRotationPending = "cfgate.io/service-token-rotation-pending"
+
 type k8sSecretWriter struct {
+	reader    client.Reader
 	client    client.Client
 	namespace string
 	secretRef cfgatev1alpha1.ServiceTokenSecretRef
@@ -483,7 +521,7 @@ func (w *k8sSecretWriter) WriteSecret(ctx context.Context, name string, data map
 		return fmt.Errorf("setting owner reference: %w", err)
 	}
 	existing := &corev1.Secret{}
-	err := w.client.Get(ctx, client.ObjectKeyFromObject(secret), existing)
+	err := accessReader(w.reader, w.client).Get(ctx, client.ObjectKeyFromObject(secret), existing)
 	if apierrors.IsNotFound(err) {
 		return w.client.Create(ctx, secret)
 	}
@@ -501,12 +539,13 @@ func (w *k8sSecretWriter) WriteSecret(ctx context.Context, name string, data map
 		return fmt.Errorf("setting owner reference: %w", err)
 	}
 	existing.Data = data
+	delete(existing.Annotations, serviceTokenRotationPending)
 	return w.client.Update(ctx, existing)
 }
 
 func (w *k8sSecretWriter) ServiceTokenSecretNeedsRefresh(ctx context.Context, _ string, clientID string) (bool, error) {
 	var secret corev1.Secret
-	err := w.client.Get(ctx, types.NamespacedName{Name: w.secretRef.Name, Namespace: w.namespace}, &secret)
+	err := accessReader(w.reader, w.client).Get(ctx, types.NamespacedName{Name: w.secretRef.Name, Namespace: w.namespace}, &secret)
 	if apierrors.IsNotFound(err) {
 		return true, nil
 	}
@@ -516,12 +555,43 @@ func (w *k8sSecretWriter) ServiceTokenSecretNeedsRefresh(ctx context.Context, _ 
 	if err := requireControllerOwner(&secret, w.owner); err != nil {
 		return false, err
 	}
-	storedClientID := secret.Data["CF_ACCESS_CLIENT_ID"]
-	storedClientSecret := secret.Data["CF_ACCESS_CLIENT_SECRET"]
-	if len(storedClientID) == 0 || len(storedClientSecret) == 0 {
-		return true, nil
+	stale := len(secret.Data["CF_ACCESS_CLIENT_SECRET"]) == 0 || clientID == "" || string(secret.Data["CF_ACCESS_CLIENT_ID"]) != clientID || secret.Annotations[serviceTokenRotationPending] != ""
+	if stale && secret.Immutable != nil && *secret.Immutable {
+		return false, fmt.Errorf("secret %s/%s is immutable and needs new credentials", secret.Namespace, secret.Name)
 	}
-	return string(storedClientID) != clientID, nil
+	return stale, nil
+}
+
+// BeginServiceTokenRotation preserves old data while recording the recovery
+// obligation before the one-time remote secret can change.
+func (w *k8sSecretWriter) BeginServiceTokenRotation(ctx context.Context, _ string) error {
+	var secret corev1.Secret
+	err := accessReader(w.reader, w.client).Get(ctx, types.NamespacedName{Name: w.secretRef.Name, Namespace: w.namespace}, &secret)
+	missing := apierrors.IsNotFound(err)
+	if err != nil && !missing {
+		return err
+	}
+	if missing {
+		secret = corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: w.secretRef.Name, Namespace: w.namespace}, Type: corev1.SecretTypeOpaque}
+		if err := controllerutil.SetControllerReference(w.owner, &secret, w.scheme); err != nil {
+			return err
+		}
+	} else {
+		if err := requireControllerOwner(&secret, w.owner); err != nil {
+			return err
+		}
+		if secret.Immutable != nil && *secret.Immutable {
+			return fmt.Errorf("secret %s/%s is immutable", secret.Namespace, secret.Name)
+		}
+	}
+	if secret.Annotations == nil {
+		secret.Annotations = map[string]string{}
+	}
+	secret.Annotations[serviceTokenRotationPending] = "true"
+	if missing {
+		return w.client.Create(ctx, &secret)
+	}
+	return w.client.Update(ctx, &secret)
 }
 
 func (r *CloudflareAccessPolicyReconciler) reconcileDelete(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (ctrl.Result, error) {
@@ -621,6 +691,7 @@ func (r *CloudflareAccessPolicyReconciler) removeFinalizer(ctx context.Context, 
 }
 
 func (r *CloudflareAccessPolicyReconciler) updateStatus(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
+	policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions, status.NewAccessPolicyReadyCondition(policy.Status.Conditions, len(policy.Spec.ServiceTokens) > 0, policy.Generation))
 	var current cfgatev1alpha1.CloudflareAccessPolicy
 	if err := accessReader(r.APIReader, r.Client).Get(ctx, types.NamespacedName{Name: policy.Name, Namespace: policy.Namespace}, &current); err != nil {
 		return fmt.Errorf("failed to re-fetch policy: %w", err)

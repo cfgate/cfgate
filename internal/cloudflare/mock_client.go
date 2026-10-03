@@ -78,7 +78,7 @@ type MockClient struct {
 	UpdateServiceTokenFunc  func(ctx context.Context, accountID, tokenID string, params ServiceTokenParams) (*ServiceToken, error)
 	DeleteServiceTokenFunc  func(ctx context.Context, accountID, tokenID string) error
 	ListServiceTokensFunc   func(ctx context.Context, accountID string) ([]ServiceToken, error)
-	RotateServiceTokenFunc  func(ctx context.Context, accountID, tokenID string) (*ServiceTokenWithSecret, error)
+	RotateServiceTokenFunc  func(ctx context.Context, accountID, tokenID string, params ServiceTokenRotateParams) (*ServiceTokenWithSecret, error)
 	RefreshServiceTokenFunc func(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
 }
 
@@ -395,9 +395,9 @@ func (m *MockClient) ListServiceTokens(ctx context.Context, accountID string) ([
 	return nil, nil
 }
 
-func (m *MockClient) RotateServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceTokenWithSecret, error) {
+func (m *MockClient) RotateServiceToken(ctx context.Context, accountID, tokenID string, params ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
 	if m.RotateServiceTokenFunc != nil {
-		return m.RotateServiceTokenFunc(ctx, accountID, tokenID)
+		return m.RotateServiceTokenFunc(ctx, accountID, tokenID, params)
 	}
 	return nil, nil
 }

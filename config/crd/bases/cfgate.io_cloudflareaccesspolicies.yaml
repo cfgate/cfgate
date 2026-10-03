@@ -817,13 +817,23 @@ spec:
                       description: |-
                         Duration is the token validity period using Go duration format.
                         Only hours (h) supported by Cloudflare API. Use "8760h" for 1 year.
-                      pattern: ^[0-9]+h$
+                      pattern: ^[1-9][0-9]*h$
                       type: string
                     name:
                       description: Name is the token display name.
                       maxLength: 255
                       minLength: 1
                       type: string
+                    rotationOverlap:
+                      default: 0h
+                      description: |-
+                        RotationOverlap keeps the previous secret valid during credential distribution.
+                        Zero expires the previous secret immediately. Consumers must reload credentials.
+                      pattern: ^(0|[1-9][0-9]{0,2})h$
+                      type: string
+                      x-kubernetes-validations:
+                      - message: rotationOverlap must not exceed 720h
+                        rule: duration(self) <= duration('720h')
                     secretRef:
                       description: SecretRef stores the generated token credentials.
                       properties:
@@ -841,6 +851,12 @@ spec:
                   type: object
                 maxItems: 10
                 type: array
+                x-kubernetes-validations:
+                - message: service token names must be unique
+                  rule: self.all(t, self.filter(x, x.name == t.name).size() == 1)
+                - message: service token destination Secrets must be unique
+                  rule: self.all(t, self.filter(x, x.secretRef.name == t.secretRef.name).size()
+                    == 1)
               sessionDuration:
                 description: SessionDuration overrides application session duration
                   for this policy.

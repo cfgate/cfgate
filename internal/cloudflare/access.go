@@ -18,6 +18,7 @@ import (
 type AccessService struct {
 	client AccessClient
 	log    logr.Logger
+	now    func() time.Time
 }
 
 // NewAccessService creates a new AccessService with the given client and logger.
@@ -25,6 +26,7 @@ type AccessService struct {
 func NewAccessService(client AccessClient, log logr.Logger) *AccessService {
 	return &AccessService{
 		client: client,
+		now:    time.Now,
 		log:    log.WithName("access-service"),
 	}
 }
@@ -34,10 +36,12 @@ func NewAccessService(client AccessClient, log logr.Logger) *AccessService {
 type SecretWriter interface {
 	// WriteSecret creates or updates a secret with the given name and data.
 	WriteSecret(ctx context.Context, name string, data map[string][]byte) error
+	BeginServiceTokenRotation(ctx context.Context, name string) error
+	ServiceTokenSecretRefreshChecker
 }
 
-// ServiceTokenSecretRefreshChecker can report whether a stored service token
-// secret is missing or stale and therefore requires token rotation.
+// ServiceTokenSecretRefreshChecker validates the destination before mutations and
+// reports missing credentials or an incomplete distribution attempt.
 type ServiceTokenSecretRefreshChecker interface {
 	ServiceTokenSecretNeedsRefresh(ctx context.Context, name, clientID string) (bool, error)
 }
@@ -438,6 +442,9 @@ type GroupParams struct {
 
 // ServiceToken represents a Cloudflare Access Service Token.
 type ServiceToken struct {
+	// Enabled is nil when the provider omits the field.
+	Enabled *bool
+
 	// ID is the unique token identifier.
 	ID string
 
@@ -464,7 +471,14 @@ type ServiceTokenWithSecret struct {
 }
 
 // ServiceTokenParams contains parameters for creating or updating a service token.
+type ServiceTokenRotateParams struct {
+	PreviousClientSecretExpiresAt time.Time
+}
+
 type ServiceTokenParams struct {
+	// RotationOverlap retains the previous secret during credential distribution.
+	RotationOverlap time.Duration
+
 	// Name is the token display name.
 	Name string
 
@@ -959,145 +973,6 @@ func corsHeadersEqual(a, b *CORSHeadersParam) bool {
 		return false
 	}
 	return true
-}
-
-// EnsureServiceToken ensures a service token exists with the given configuration.
-// If a token with the name exists and is not expired, it is returned unless the
-// secret writer can detect a missing or stale stored secret. Stale or expired
-// tokens are rotated and the new secret is stored.
-// If not exists, a new token is created and the secret is stored.
-func (s *AccessService) EnsureServiceToken(ctx context.Context, accountID string, params ServiceTokenParams, secretWriter SecretWriter) (*ServiceToken, error) {
-	return s.EnsureServiceTokenByID(ctx, accountID, "", params, secretWriter)
-}
-
-// EnsureServiceTokenByID preserves the recorded token identity across display-name changes.
-func (s *AccessService) EnsureServiceTokenByID(ctx context.Context, accountID, statusID string, params ServiceTokenParams, secretWriter SecretWriter) (*ServiceToken, error) {
-
-	s.log.Info("ensuring service token exists",
-		"accountID", accountID,
-		"tokenName", params.Name,
-	)
-
-	// Try to find existing token by name
-	tokens, err := s.client.ListServiceTokens(ctx, accountID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to list service tokens: %w", err)
-	}
-
-	var existing *ServiceToken
-	for i := range tokens {
-		if (statusID != "" && tokens[i].ID == statusID) || (statusID == "" && tokens[i].Name == params.Name) {
-			if existing != nil {
-				return nil, fmt.Errorf("ambiguous service token identity for %q", params.Name)
-			}
-			existing = &tokens[i]
-		}
-	}
-
-	needsRefresh := false
-	if checker, ok := secretWriter.(ServiceTokenSecretRefreshChecker); ok {
-		clientID := ""
-		if existing != nil {
-			clientID = existing.ClientID
-		}
-		needsRefresh, err = checker.ServiceTokenSecretNeedsRefresh(ctx, params.Name, clientID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check service token secret: %w", err)
-		}
-	}
-
-	if existing != nil {
-		// Check if expired
-		if time.Now().After(existing.ExpiresAt) {
-			s.log.Info("service token expired, rotating",
-				"tokenId", existing.ID,
-				"tokenName", existing.Name,
-				"expiredAt", existing.ExpiresAt,
-			)
-			return s.rotateServiceTokenAndStoreSecret(ctx, accountID, existing.ID, params.Name, secretWriter)
-		}
-
-		if needsRefresh {
-			return s.rotateServiceTokenAndStoreSecret(ctx, accountID, existing.ID, params.Name, secretWriter)
-		}
-
-		s.log.V(1).Info("service token already exists",
-			"tokenId", existing.ID,
-			"tokenName", existing.Name,
-			"expiresAt", existing.ExpiresAt,
-		)
-		return existing, nil
-	}
-
-	// Create new token
-	s.log.Info("creating new service token",
-		"accountID", accountID,
-		"tokenName", params.Name,
-	)
-
-	created, err := s.client.CreateServiceToken(ctx, accountID, params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create service token: %w", err)
-	}
-
-	// Store the secret. If this fails, delete the token so the next reconcile
-	// creates a fresh token+secret pair. The client secret is only available at
-	// creation time, so an orphaned token without a stored secret is unusable.
-	if secretWriter != nil {
-		if err := secretWriter.WriteSecret(ctx, params.Name, map[string][]byte{
-			"CF_ACCESS_CLIENT_ID":     []byte(created.ClientID),
-			"CF_ACCESS_CLIENT_SECRET": []byte(created.ClientSecret),
-		}); err != nil {
-			s.log.Info("secret write failed after token creation, deleting token to allow retry on next reconcile",
-				"tokenId", created.ID,
-				"tokenName", created.Name,
-				"writeError", err.Error(),
-			)
-			if delErr := s.client.DeleteServiceToken(ctx, accountID, created.ID); delErr != nil {
-				s.log.Error(delErr, "failed to delete service token after secret write failure",
-					"tokenId", created.ID,
-				)
-			}
-			return nil, fmt.Errorf("failed to store service token secret: %w", err)
-		}
-		s.log.Info("service token created, secret stored",
-			"tokenId", created.ID,
-			"tokenName", created.Name,
-			"expiresAt", created.ExpiresAt,
-		)
-	}
-
-	return &created.ServiceToken, nil
-}
-
-func (s *AccessService) rotateServiceTokenAndStoreSecret(ctx context.Context, accountID, tokenID, tokenName string, secretWriter SecretWriter) (*ServiceToken, error) {
-	rotated, err := s.client.RotateServiceToken(ctx, accountID, tokenID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to rotate service token: %w", err)
-	}
-
-	// A failed local write is retryable. Retain the remote identity so cleanup
-	// and the next rotation can recover it without deleting an existing token.
-	if secretWriter != nil {
-		if err := secretWriter.WriteSecret(ctx, tokenName, map[string][]byte{
-			"CF_ACCESS_CLIENT_ID":     []byte(rotated.ClientID),
-			"CF_ACCESS_CLIENT_SECRET": []byte(rotated.ClientSecret),
-		}); err != nil {
-			s.log.Info("secret write failed after token rotation, retaining token for recovery",
-				"tokenId", rotated.ID,
-				"tokenName", rotated.Name,
-				"writeError", err.Error(),
-			)
-			return nil, fmt.Errorf("failed to store rotated service token secret: %w", err)
-		}
-		s.log.Info("service token rotated, secret stored",
-			"tokenId", rotated.ID,
-			"tokenName", rotated.Name,
-			"expiresAt", rotated.ExpiresAt,
-		)
-	}
-
-	return &rotated.ServiceToken, nil
 }
 
 // Client returns the underlying Cloudflare client.

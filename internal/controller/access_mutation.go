@@ -54,11 +54,11 @@ func (c *accessMutationClient) DeleteServiceToken(ctx context.Context, account, 
 	}
 	return c.Client.DeleteServiceToken(ctx, account, id)
 }
-func (c *accessMutationClient) RotateServiceToken(ctx context.Context, account, id string) (*cloudflare.ServiceTokenWithSecret, error) {
+func (c *accessMutationClient) RotateServiceToken(ctx context.Context, account, id string, params cloudflare.ServiceTokenRotateParams) (*cloudflare.ServiceTokenWithSecret, error) {
 	if err := c.before(ctx); err != nil {
 		return nil, err
 	}
-	return c.Client.RotateServiceToken(ctx, account, id)
+	return c.Client.RotateServiceToken(ctx, account, id, params)
 }
 func guardAccessMutations(ctx context.Context, cfClient cloudflare.AccessClient) cloudflare.AccessClient {
 	if before, ok := ctx.Value(accessMutationContextKey{}).(func(context.Context) error); ok {

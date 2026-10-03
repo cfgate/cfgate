@@ -177,7 +177,7 @@ type ServiceTokenOps interface {
 
 	// RotateServiceToken rotates a service token.
 	// The returned token includes the new client secret.
-	RotateServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceTokenWithSecret, error)
+	RotateServiceToken(ctx context.Context, accountID, tokenID string, params ServiceTokenRotateParams) (*ServiceTokenWithSecret, error)
 
 	// RefreshServiceToken refreshes a service token's expiration.
 	RefreshServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)

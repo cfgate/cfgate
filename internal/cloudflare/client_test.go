@@ -346,7 +346,7 @@ func TestMockClientUnstubbedAccessMethods(t *testing.T) {
 	if tokens, err := mock.ListServiceTokens(ctx, "account"); tokens != nil || err != nil {
 		t.Fatalf("ListServiceTokens() = (%+v, %v), want nil nil", tokens, err)
 	}
-	if token, err := mock.RotateServiceToken(ctx, "account", "token"); token != nil || err != nil {
+	if token, err := mock.RotateServiceToken(ctx, "account", "token", ServiceTokenRotateParams{}); token != nil || err != nil {
 		t.Fatalf("RotateServiceToken() = (%+v, %v), want nil nil", token, err)
 	}
 	if token, err := mock.RefreshServiceToken(ctx, "account", "token"); token != nil || err != nil {

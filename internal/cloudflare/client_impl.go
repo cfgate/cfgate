@@ -1202,20 +1202,15 @@ func (c *clientImpl) CreateServiceToken(ctx context.Context, accountID string, p
 func (c *clientImpl) GetServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error) {
 	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
 	defer cancel()
-	// The SDK doesn't have a direct Get method, so we list and filter
-	tokens, err := c.ListServiceTokens(ctx, accountID)
+	result, err := c.api.ZeroTrust.Access.ServiceTokens.Get(ctx, tokenID, zero_trust.AccessServiceTokenGetParams{AccountID: cf.F(accountID)})
+	if isNotFound(err) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get service token: %w", err)
 	}
-
-	for _, token := range tokens {
-		if token.ID == tokenID {
-			tokenCopy := token
-			return &tokenCopy, nil
-		}
-	}
-
-	return nil, nil // Not found
+	token := convertServiceToken(*result)
+	return &token, nil
 }
 
 // UpdateServiceToken updates an existing service token.
@@ -1231,13 +1226,8 @@ func (c *clientImpl) UpdateServiceToken(ctx context.Context, accountID, tokenID 
 		return nil, fmt.Errorf("failed to update service token: %w", err)
 	}
 
-	return &ServiceToken{
-		ID:       result.ID,
-		Name:     result.Name,
-		ClientID: result.ClientID,
-		Duration: result.Duration,
-		// ExpiresAt not in update response
-	}, nil
+	token := convertServiceToken(*result)
+	return &token, nil
 }
 
 // DeleteServiceToken deletes a service token.
@@ -1273,25 +1263,21 @@ func (c *clientImpl) ListServiceTokens(ctx context.Context, accountID string) ([
 		if err != nil {
 			return nil, fmt.Errorf("failed to list service tokens: %w", err)
 		}
-		tokens = append(tokens, ServiceToken{
-			ID:        token.ID,
-			Name:      token.Name,
-			ClientID:  token.ClientID,
-			Duration:  token.Duration,
-			ExpiresAt: token.ExpiresAt,
-		})
+		tokens = append(tokens, convertServiceToken(token))
 	}
 
 	return tokens, nil
 }
 
 // RotateServiceToken rotates a service token.
-func (c *clientImpl) RotateServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceTokenWithSecret, error) {
+func (c *clientImpl) RotateServiceToken(ctx context.Context, accountID, tokenID string, params ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
 	ctx, cancel := context.WithTimeout(ctx, apiOperationTimeout)
 	defer cancel()
-	result, err := c.api.ZeroTrust.Access.ServiceTokens.Rotate(ctx, tokenID, zero_trust.AccessServiceTokenRotateParams{
-		AccountID: cf.F(accountID),
-	})
+	rotation := zero_trust.AccessServiceTokenRotateParams{AccountID: cf.F(accountID)}
+	if !params.PreviousClientSecretExpiresAt.IsZero() {
+		rotation.PreviousClientSecretExpiresAt = cf.F(params.PreviousClientSecretExpiresAt)
+	}
+	result, err := c.api.ZeroTrust.Access.ServiceTokens.Rotate(ctx, tokenID, rotation)
 	if err != nil {
 		return nil, fmt.Errorf("failed to rotate service token: %w", err)
 	}
@@ -1355,4 +1341,12 @@ func AllPages[T any](ctx context.Context, fetch func(...option.RequestOption) (*
 		}
 		yield(zero, fmt.Errorf("cloudflare list exceeded %d pages", maxListPages))
 	}
+}
+
+func convertServiceToken(token zero_trust.ServiceToken) ServiceToken {
+	result := ServiceToken{ID: token.ID, Name: token.Name, ClientID: token.ClientID, Duration: token.Duration, ExpiresAt: token.ExpiresAt}
+	if !token.JSON.Enabled.IsNull() && !token.JSON.Enabled.IsInvalid() {
+		result.Enabled = &token.Enabled
+	}
+	return result
 }
