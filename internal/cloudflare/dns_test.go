@@ -112,8 +112,8 @@ func TestBuildDNSRecord(t *testing.T) {
 		comment    string
 		wantTTL    int
 	}{
-		{"CNAME record", "app.example.com", "uuid.cfargotunnel.com", "CNAME", true, 300, "managed", 300},
-		{"A record", "app.example.com", "1.2.3.4", "A", true, 60, "managed", 60},
+		{"CNAME record", "app.example.com", "uuid.cfargotunnel.com", "CNAME", true, 300, "managed", 1},
+		{"A record", "app.example.com", "1.2.3.4", "A", true, 60, "managed", 1},
 		{"AAAA record", "app.example.com", "2001:db8::1", "AAAA", false, 120, "managed", 120},
 		{"ttl zero defaults to auto", "app.example.com", "1.2.3.4", "A", true, 0, "", 1},
 		{"ttl negative defaults to auto", "app.example.com", "1.2.3.4", "A", false, -5, "", 1},
@@ -155,7 +155,7 @@ func TestBuildCNAMERecord(t *testing.T) {
 		comment      string
 		wantTTL      int
 	}{
-		{"standard", "app.example.com", "uuid.cfargotunnel.com", true, 300, "managed", 300},
+		{"standard", "app.example.com", "uuid.cfargotunnel.com", true, 300, "managed", 1},
 		{"ttl zero defaults to auto", "app.example.com", "uuid.cfargotunnel.com", true, 0, "", 1},
 		{"ttl negative defaults to auto", "app.example.com", "uuid.cfargotunnel.com", false, -5, "", 1},
 		{"ttl one passthrough", "app.example.com", "uuid.cfargotunnel.com", true, 1, "", 1},

@@ -486,6 +486,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 					}},
 					Defaults: cfgatev1alpha1.DNSRecordDefaults{
 						Proxied: true,
+						TTL:     3600,
 					},
 					Policy: cfgatev1alpha1.DNSPolicySync,
 					Source: cfgatev1alpha1.DNSHostnameSource{
@@ -508,6 +509,25 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 				g.Expect(record).NotTo(BeNil())
 				g.Expect(record.Proxied).To(BeFalse())
 			}, DefaultTimeout, DefaultInterval).Should(Succeed())
+			By("Applying Auto TTL while proxied and restoring configured TTL when DNS-only")
+			for _, proxied := range []bool{true, false} {
+				Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dnsResource), dnsResource)).To(Succeed())
+				original := dnsResource.DeepCopy()
+				dnsResource.Spec.Zones[0].Proxied = &proxied
+				Expect(k8sClient.Patch(ctx, dnsResource, client.MergeFrom(original))).To(Succeed())
+				wantTTL := float64(3600)
+				if proxied {
+					wantTTL = 1
+				}
+				Eventually(func(g Gomega) {
+					record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(record).NotTo(BeNil())
+					g.Expect(record.Proxied).To(Equal(proxied))
+					g.Expect(record.TTL).To(Equal(wantTTL))
+				}, DefaultTimeout, DefaultInterval).Should(Succeed())
+			}
+
 		})
 
 		It("handles hostname matching zone correctly", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
