@@ -151,3 +151,16 @@ func TestInvalidH2CFallbackDoesNotBlockValidRoute(t *testing.T) {
 		t.Fatal("valid sibling blocked")
 	}
 }
+
+func TestStockConnectorBlocksHTTPOriginSpellings(t *testing.T) {
+	for _, service := range []string{"HTTP://origin", "ws://origin", "hello-world", "hello_world"} {
+		t.Run(service, func(t *testing.T) {
+			f := newAccessFixture(t)
+			f.tunnel.Spec.Cloudflared.Image = "cloudflare/cloudflared:latest"
+			config := cloudflare.TunnelConfiguration{OriginRequest: &cloudflare.OriginRequestConfig{H2cOrigin: ptr.To(true)}, Ingress: []cloudflare.IngressRule{{Service: service}}}
+			if applyConnectorCompatibility(f.tunnel, &config) != 1 || config.Ingress[0].Service != "http_status:503" {
+				t.Fatalf("stock connector accepted h2c origin %+v", config)
+			}
+		})
+	}
+}
