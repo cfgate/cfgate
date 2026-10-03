@@ -231,3 +231,50 @@ func TestDNSNoopRequiresFreshOwnedPair(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnedDNSProxyTTLTransitions(t *testing.T) {
+	var current *DNSRecord
+	writes := 0
+	mock := NewMockClient()
+	mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, _, name, kind string) ([]DNSRecord, error) {
+		if current != nil && current.Name == name && current.Type == kind {
+			return []DNSRecord{*current}, nil
+		}
+		return nil, nil
+	}
+	persist := func(record DNSRecord) (*DNSRecord, error) {
+		writes++
+		if record.Proxied && record.TTL != 1 {
+			t.Fatalf("proxied TTL sent to provider: %d", record.TTL)
+		}
+		record.ID = "record-id"
+		current = &record
+		return current, nil
+	}
+	mock.CreateDNSRecordFunc = func(_ context.Context, _ string, record DNSRecord) (*DNSRecord, error) { return persist(record) }
+	mock.UpdateDNSRecordFunc = func(_ context.Context, _, _ string, record DNSRecord) (*DNSRecord, error) { return persist(record) }
+	svc := NewDNSService(mock, logr.Discard())
+	for _, proxied := range []bool{true, false, true} {
+		desired := BuildDNSRecord("app.example.com", "target.example.com", "CNAME", proxied, 3600, "")
+		for pass := range 2 {
+			before := writes
+			record, _, err := svc.SyncOwnedRecord(context.Background(), "zone", desired, "ours", "resource", "_cfgate", PolicySync, false, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantTTL := 3600
+			if proxied {
+				wantTTL = 1
+			}
+			if record.TTL != wantTTL {
+				t.Fatalf("TTL=%d, want %d", record.TTL, wantTTL)
+			}
+			if pass == 1 && writes != before {
+				t.Fatal("converged record was rewritten")
+			}
+		}
+	}
+	if writes != 3 {
+		t.Fatalf("writes=%d, want one per transition", writes)
+	}
+}

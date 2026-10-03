@@ -191,7 +191,11 @@ spec:
 
 Fallback values for records that do not have explicit settings. Per-hostname and per-zone settings take precedence.
 
-A TTL of `1` means "auto": Cloudflare manages the TTL (typically 300 seconds). Explicit TTL values must be between 60 and 86400 seconds.
+A TTL of `1` means Auto. DNS-only records accept explicit TTL values from 60 to
+86400 seconds. [Proxied records always use Auto](https://developers.cloudflare.com/dns/manage-dns-records/reference/ttl/),
+currently 300 seconds. cfgate sends the API value `1` whenever the effective record
+is proxied, after applying defaults and overrides. The configured TTL stays in
+your resource and takes effect if proxying is disabled.
 
 ```yaml
 spec:

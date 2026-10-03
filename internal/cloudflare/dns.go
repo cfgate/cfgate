@@ -497,7 +497,7 @@ func ValidateTTL(ttl int) error {
 // BuildDNSRecord builds a DNS record with the specified type (CNAME, A, or AAAA).
 // If ttl is zero or negative, it defaults to 1 (Cloudflare auto TTL, resolves to 300s).
 func BuildDNSRecord(hostname, target, recordType string, proxied bool, ttl int, comment string) DNSRecord {
-	if ttl <= 0 {
+	if proxied || ttl <= 0 {
 		ttl = 1
 	}
 	return DNSRecord{
