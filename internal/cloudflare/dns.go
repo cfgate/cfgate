@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	"golang.org/x/net/publicsuffix"
 )
 
 // ErrDNSRecordSkipped reports a desired update intentionally blocked by DNS policy.
@@ -425,20 +424,36 @@ func (s *DNSService) ResolveZone(ctx context.Context, zoneName string) (*Zone, e
 	return s.client.GetZoneByName(ctx, zoneName)
 }
 
-// ExtractZoneFromHostname extracts the zone name from a hostname using public suffix list.
-// Handles complex TLDs correctly (e.g., .co.uk, .com.au).
-func ExtractZoneFromHostname(hostname string) string {
-	// Use public suffix list for correct TLD handling
-	etld, err := publicsuffix.EffectiveTLDPlusOne(hostname)
-	if err != nil {
-		// Fallback to simple heuristic for non-standard hostnames
-		parts := strings.Split(hostname, ".")
-		if len(parts) < 2 {
-			return hostname
+// NormalizeDNSName removes the optional root dot and folds DNS names to lowercase.
+func NormalizeDNSName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, "."))
+}
+
+// SelectDNSZone returns the most specific configured zone containing hostname.
+// Matching respects DNS label boundaries and ignores case and the root dot.
+// It rejects missing matches and conflicting IDs for the selected zone.
+func SelectDNSZone(hostname string, zones map[string]string) (string, string, error) {
+	hostname = NormalizeDNSName(hostname)
+	selected := ""
+	for name := range zones {
+		name = NormalizeDNSName(name)
+		if name != "" && (hostname == name || strings.HasSuffix(hostname, "."+name)) && len(name) > len(selected) {
+			selected = name
 		}
-		return strings.Join(parts[len(parts)-2:], ".")
 	}
-	return etld
+	if selected == "" {
+		return "", "", fmt.Errorf("no configured zone contains hostname %s", hostname)
+	}
+	id, found := "", false
+	for name, candidate := range zones {
+		if NormalizeDNSName(name) == selected {
+			if found && candidate != id {
+				return "", "", fmt.Errorf("conflicting IDs for configured zone %s", selected)
+			}
+			id, found = candidate, true
+		}
+	}
+	return selected, id, nil
 }
 
 // ValidateTTL validates a TTL value before API calls.

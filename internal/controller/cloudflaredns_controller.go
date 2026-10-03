@@ -266,6 +266,7 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err := r.syncRecords(ctx, &dns, target, hostnames, zones, dnsService); err != nil {
 		logger.Error(err, "failed to sync records")
 		r.setCondition(&dns, status.ConditionTypeRecordsSynced, metav1.ConditionFalse, status.ReasonRecordSyncFailed, err.Error())
+		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonRecordSyncFailed, err.Error())
 		if updateErr := r.updateStatus(ctx, &dns); updateErr != nil {
 			logger.Error(updateErr, "failed to update status")
 		}
@@ -750,23 +751,35 @@ func (r *CloudflareDNSReconciler) resolveZones(ctx context.Context, dns *cfgatev
 	zones := make(map[string]string)
 
 	for _, zoneConfig := range dns.Spec.Zones {
+		name := cloudflare.NormalizeDNSName(zoneConfig.Name)
+		if _, exists := zones[name]; exists {
+			return nil, fmt.Errorf("duplicate configured zone %s", name)
+		}
 		if zoneConfig.ID != "" {
 			// Use cached ID
-			zones[zoneConfig.Name] = zoneConfig.ID
+			zones[name] = zoneConfig.ID
 		} else {
 			// Look up zone
-			zone, err := dnsService.ResolveZone(ctx, zoneConfig.Name)
+			zone, err := dnsService.ResolveZone(ctx, name)
 			if err != nil {
 				return nil, fmt.Errorf("failed to resolve zone %s: %w", zoneConfig.Name, err)
 			}
 			if zone == nil {
 				return nil, fmt.Errorf("zone %s not found", zoneConfig.Name)
 			}
-			zones[zoneConfig.Name] = zone.ID
+			zones[name] = zone.ID
 		}
 	}
 
 	return zones, nil
+}
+
+func configuredDNSZones(dns *cfgatev1alpha1.CloudflareDNS) map[string]string {
+	zones := make(map[string]string, len(dns.Spec.Zones))
+	for _, zone := range dns.Spec.Zones {
+		zones[zone.Name] = zone.ID
+	}
+	return zones
 }
 
 func zoneProxiedOverrides(dns *cfgatev1alpha1.CloudflareDNS) map[string]*bool {
@@ -774,7 +787,7 @@ func zoneProxiedOverrides(dns *cfgatev1alpha1.CloudflareDNS) map[string]*bool {
 	for i := range dns.Spec.Zones {
 		zone := dns.Spec.Zones[i]
 		if zone.Proxied != nil {
-			overrides[zone.Name] = zone.Proxied
+			overrides[cloudflare.NormalizeDNSName(zone.Name)] = zone.Proxied
 		}
 	}
 	return overrides
@@ -786,6 +799,15 @@ func zoneProxiedOverrides(dns *cfgatev1alpha1.CloudflareDNS) map[string]*bool {
 // proxied, and record type after source merging.
 func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, target string, hostnameConfigs map[string]HostnameConfig, zones map[string]string, dnsService *cloudflare.DNSService) error {
 	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
+	normalized := make(map[string]HostnameConfig, len(hostnameConfigs))
+	for hostname, config := range hostnameConfigs {
+		hostname = cloudflare.NormalizeDNSName(hostname)
+		if previous, exists := normalized[hostname]; exists && !reflect.DeepEqual(previous, config) {
+			return fmt.Errorf("conflicting configuration for hostname %s", hostname)
+		}
+		normalized[hostname] = config
+	}
+	hostnameConfigs = normalized
 	zoneProxied := zoneProxiedOverrides(dns)
 
 	ownershipPrefix := dns.Spec.Ownership.TXTRecord.Prefix
@@ -803,8 +825,21 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 		policy = cloudflare.PolicySync
 	}
 
-	var recordStatuses []cfgatev1alpha1.DNSRecordSyncStatus
-	var syncedCount, pendingCount, failedCount int32
+	// Withdraw obsolete identities first: a type change can otherwise conflict
+	// with the old record, and removing its TXT claim after publication would
+	// remove the replacement's ownership evidence.
+	recordStatuses, err := r.deleteOrphanedRecords(ctx, dns, hostnameConfigs, zones, dnsService, ownerID, ownershipPrefix)
+	if err != nil {
+		setDNSRecordStatuses(dns, dns.Status.Records)
+		return err
+	}
+
+	// Keep the cleanup inventory within the CRD's status.records limit before
+	// creating external resources whose identities could not be persisted.
+	if len(recordStatuses)+len(hostnameConfigs) > 1000 {
+		setDNSRecordStatuses(dns, dns.Status.Records)
+		return fmt.Errorf("DNS status inventory exceeds 1000 records; enable cleanup or reduce desired hostnames")
+	}
 
 	for hostname, hostnameConfig := range hostnameConfigs {
 		recordType := hostnameConfig.RecordType
@@ -812,21 +847,11 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			recordType = "CNAME"
 		}
 
-		// Determine zone for this hostname
-		zoneName := cloudflare.ExtractZoneFromHostname(hostname)
-		zoneID, ok := zones[zoneName]
-		if !ok {
-			logger.Info("zone not configured for hostname",
-				"hostname", hostname,
-				"zone", zoneName,
-			)
+		zoneName, zoneID, err := cloudflare.SelectDNSZone(hostname, zones)
+		if err != nil {
 			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{
-				Hostname: hostname,
-				Type:     recordType,
-				Status:   "Failed",
-				Error:    fmt.Sprintf("zone %s not configured", zoneName),
+				Hostname: hostname, Type: recordType, Status: "Failed", Error: err.Error(),
 			})
-			failedCount++
 			continue
 		}
 
@@ -866,19 +891,25 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 		record, modified, err := dnsService.SyncOwnedRecord(ctx, zoneID, desired, ownerID, fmt.Sprintf("CloudflareDNS/%s/%s", dns.Namespace, dns.Name), ownershipPrefix, policy, r.shouldCreateTXTRecords(dns), dns.Annotations[adoptExistingAnnotation] == "true")
 		if errors.Is(err, cloudflare.ErrDNSRecordSkipped) {
 			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{Hostname: hostname, Type: recordType, Status: "Skipped", Error: err.Error(), RecordID: record.ID, ZoneID: zoneID})
-			pendingCount++
 			continue
 		}
 		if err != nil {
 			logger.Error(err, "failed to sync DNS record", "hostname", hostname)
+			recordID := ""
+			for _, previous := range dns.Status.Records {
+				if previous.Hostname == hostname && previous.Type == recordType && previous.ZoneID == zoneID {
+					recordID = previous.RecordID
+					break
+				}
+			}
 			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{
 				Hostname: hostname,
 				Type:     recordType,
 				Status:   "Failed",
 				Error:    err.Error(),
 				ZoneID:   zoneID,
+				RecordID: recordID,
 			})
-			failedCount++
 			continue
 		}
 
@@ -901,81 +932,80 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			RecordID: record.ID,
 			ZoneID:   zoneID,
 		})
-		syncedCount++
 	}
 
-	// Delete orphaned records (previously synced but no longer wanted)
-	// Only if policy allows deletion
-	if policy == cloudflare.PolicySync {
-		if err := r.deleteOrphanedRecords(ctx, dns, hostnameKeys(hostnameConfigs), zones, dnsService, ownerID, ownershipPrefix); err != nil {
-			logger.Error(err, "failed to delete orphaned records")
-			// Non-fatal, continue
-		}
-	}
-
-	// Update status
-	dns.Status.Records = recordStatuses
-	dns.Status.SyncedRecords = syncedCount
-	dns.Status.PendingRecords = pendingCount
-	dns.Status.FailedRecords = failedCount
-
+	setDNSRecordStatuses(dns, recordStatuses)
 	return nil
 }
 
-// deleteOrphanedRecords deletes records that were previously synced but are no longer wanted.
-// Respects CleanupPolicy.DeleteOnRouteRemoval — when explicitly set to false, orphaned
-// records are retained even if their source routes are removed.
-func (r *CloudflareDNSReconciler) deleteOrphanedRecords(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, hostnames []string, zones map[string]string, dnsService *cloudflare.DNSService, ownerID, ownershipPrefix string) error {
-	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
-
-	// Check DeleteOnRouteRemoval policy (nil defaults to true)
-	if dns.Spec.CleanupPolicy.DeleteOnRouteRemoval != nil && !*dns.Spec.CleanupPolicy.DeleteOnRouteRemoval {
-		logger.V(1).Info("skipping orphaned record deletion, deleteOnRouteRemoval is disabled")
-		return nil
-	}
-
-	for _, prevRecord := range dns.Status.Records {
-		found := false
-		for _, hostname := range hostnames {
-			if prevRecord.Hostname == hostname {
-				found = true
-				break
-			}
-		}
-		if !found && prevRecord.RecordID != "" {
-			// This record was previously synced but hostname is no longer wanted
-			zoneName := cloudflare.ExtractZoneFromHostname(prevRecord.Hostname)
-			zoneID := prevRecord.ZoneID
-			if zoneID == "" {
-				var ok bool
-				zoneID, ok = zones[zoneName]
-				if !ok {
-					continue
-				}
-			}
-
-			deleted, err := r.deleteManagedStatusRecord(ctx, dns, dnsService, zoneID, prevRecord, ownerID, ownershipPrefix)
-			if err != nil {
-				logger.Error(err, "failed to delete orphaned DNS record",
-					"hostname", prevRecord.Hostname,
-					"recordID", prevRecord.RecordID,
-				)
-				continue
-			}
-			if deleted {
-				logger.Info("deleted orphaned DNS record",
-					"hostname", prevRecord.Hostname,
-					"recordID", prevRecord.RecordID,
-				)
-				r.Recorder.Eventf(dns, nil, corev1.EventTypeNormal, "RecordDeleted", "Delete", "DNS record deleted: %s", prevRecord.Hostname)
-			}
+func setDNSRecordStatuses(dns *cfgatev1alpha1.CloudflareDNS, records []cfgatev1alpha1.DNSRecordSyncStatus) {
+	dns.Status.Records = records
+	dns.Status.SyncedRecords, dns.Status.PendingRecords, dns.Status.FailedRecords = 0, 0, 0
+	for _, record := range records {
+		switch record.Status {
+		case "Synced":
+			dns.Status.SyncedRecords++
+		case "Pending", "Skipped":
+			dns.Status.PendingRecords++
+		case "Failed":
+			dns.Status.FailedRecords++
 		}
 	}
+}
 
-	return nil
+// deleteOrphanedRecords retains cleanup obligations until deletion succeeds.
+// It returns deliberately retained obsolete records for the next status inventory.
+func (r *CloudflareDNSReconciler) deleteOrphanedRecords(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, hostnames map[string]HostnameConfig, zones map[string]string, dnsService *cloudflare.DNSService, ownerID, ownershipPrefix string) ([]cfgatev1alpha1.DNSRecordSyncStatus, error) {
+	deleteAllowed := (dns.Spec.Policy == "" || cloudflare.DNSPolicy(dns.Spec.Policy) == cloudflare.PolicySync) &&
+		(dns.Spec.CleanupPolicy.DeleteOnRouteRemoval == nil || *dns.Spec.CleanupPolicy.DeleteOnRouteRemoval)
+	var remaining, retained []cfgatev1alpha1.DNSRecordSyncStatus
+	var cleanupErrors []error
+	for _, previous := range dns.Status.Records {
+		previous.Hostname = cloudflare.NormalizeDNSName(previous.Hostname)
+		if previous.RecordID == "" && previous.ZoneID == "" && previous.Status == "Failed" {
+			continue
+		}
+		zoneID := previous.ZoneID
+		var err error
+		if zoneID == "" {
+			_, zoneID, err = cloudflare.SelectDNSZone(previous.Hostname, zones)
+		}
+		wanted := false
+		if config, exists := hostnames[previous.Hostname]; exists {
+			kind := config.RecordType
+			if kind == "" {
+				kind = "CNAME"
+			}
+			_, desiredZone, selectionErr := cloudflare.SelectDNSZone(previous.Hostname, zones)
+			wanted = selectionErr == nil && err == nil && kind == previous.Type && zoneID == desiredZone
+		}
+		if wanted {
+			previous.ZoneID = zoneID
+			remaining = append(remaining, previous)
+			continue
+		}
+		if !deleteAllowed {
+			remaining = append(remaining, previous)
+			retained = append(retained, previous)
+			continue
+		}
+		if err == nil {
+			previous.ZoneID = zoneID
+			_, err = r.deleteManagedStatusRecord(ctx, dns, dnsService, zoneID, previous, ownerID, ownershipPrefix)
+		}
+		if err != nil {
+			previous.Status = "Failed"
+			previous.Error = fmt.Sprintf("cleanup failed: %v", err)
+			remaining = append(remaining, previous)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("cleanup %s (%s, zone %s): %w", previous.Hostname, previous.Type, zoneID, err))
+		}
+	}
+	dns.Status.Records = remaining
+	return retained, errors.Join(cleanupErrors...)
 }
 
 func (r *CloudflareDNSReconciler) deleteManagedStatusRecord(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, dnsService *cloudflare.DNSService, zoneID string, statusRecord cfgatev1alpha1.DNSRecordSyncStatus, ownerID, ownershipPrefix string) (bool, error) {
+	statusRecord.Hostname = cloudflare.NormalizeDNSName(statusRecord.Hostname)
 	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
 
 	existingRecord, err := dnsService.FindRecordByName(ctx, zoneID, statusRecord.Hostname, statusRecord.Type)
@@ -1005,11 +1035,12 @@ func (r *CloudflareDNSReconciler) deleteManagedStatusRecord(ctx context.Context,
 		return false, nil
 	}
 	if existingRecord != nil && statusRecord.RecordID == "" {
-		logger.Info("skipping DNS cleanup because status record ID is missing",
-			"hostname", statusRecord.Hostname,
-			"type", statusRecord.Type,
-		)
-		return false, nil
+		// A create can succeed remotely without returning its ID. Recover only
+		// exact ownership; a recorded ID above always takes precedence.
+		if !cloudflare.IsOwnedByCfgate(existingRecord, ownerID) {
+			return false, nil
+		}
+		statusRecord.RecordID = existingRecord.ID
 	}
 
 	deleted := false
@@ -1045,10 +1076,10 @@ func (r *CloudflareDNSReconciler) verifyOwnership(ctx context.Context, dns *cfga
 	}
 
 	for _, hostname := range hostnames {
-		zoneName := cloudflare.ExtractZoneFromHostname(hostname)
-		zoneID, ok := zones[zoneName]
-		if !ok {
-			continue
+		hostname = cloudflare.NormalizeDNSName(hostname)
+		_, zoneID, err := cloudflare.SelectDNSZone(hostname, zones)
+		if err != nil {
+			return false, err
 		}
 
 		txtName := fmt.Sprintf("%s.%s", ownershipPrefix, hostname)
@@ -1385,7 +1416,7 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 
 	resolveZoneID := func(zoneName string) (string, error) {
 		for _, zoneConfig := range dns.Spec.Zones {
-			if zoneConfig.Name != zoneName {
+			if cloudflare.NormalizeDNSName(zoneConfig.Name) != zoneName {
 				continue
 			}
 			if zoneConfig.ID != "" {
@@ -1400,17 +1431,7 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 			}
 			return zone.ID, nil
 		}
-		if zoneName == "" {
-			return "", fmt.Errorf("zone name is empty")
-		}
-		zone, err := dnsService.ResolveZone(ctx, zoneName)
-		if err != nil {
-			return "", err
-		}
-		if zone == nil {
-			return "", fmt.Errorf("zone %s not found", zoneName)
-		}
-		return zone.ID, nil
+		return "", fmt.Errorf("zone %s is not configured and no historical zone ID was recorded", zoneName)
 	}
 
 	if len(dns.Status.Records) > 0 {
@@ -1429,9 +1450,10 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 
 			zoneID := statusRecord.ZoneID
 			if zoneID == "" {
-				zoneName := cloudflare.ExtractZoneFromHostname(statusRecord.Hostname)
-				var err error
-				zoneID, err = resolveZoneID(zoneName)
+				zoneName, _, err := cloudflare.SelectDNSZone(statusRecord.Hostname, configuredDNSZones(dns))
+				if err == nil {
+					zoneID, err = resolveZoneID(zoneName)
+				}
 				if err != nil {
 					logger.Error(err, "failed to resolve zone for status-backed cleanup", "hostname", statusRecord.Hostname)
 					deleteErrors = append(deleteErrors, fmt.Sprintf("record %s: resolve failed: %v", statusRecord.Hostname, err))
@@ -1479,6 +1501,7 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 // status write. Recorded hostnames retain their status-backed identity guards.
 func (r *CloudflareDNSReconciler) cleanupUnrecordedRecords(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, service *cloudflare.DNSService, ownerID, prefix string, resolveZoneID func(string) (string, error)) error {
 	knownHosts := make(map[string]bool)
+	knownData := make(map[string]bool)
 	seenZones := make(map[string]bool)
 	var zones []string
 	addZone := func(id string) {
@@ -1488,22 +1511,28 @@ func (r *CloudflareDNSReconciler) cleanupUnrecordedRecords(ctx context.Context, 
 		}
 	}
 	for _, record := range dns.Status.Records {
-		knownHosts[record.Hostname] = true
 		id := record.ZoneID
 		if id == "" && (record.Status != "Failed" || record.RecordID != "") {
 			var err error
-			id, err = resolveZoneID(cloudflare.ExtractZoneFromHostname(record.Hostname))
+			zoneName, _, selectionErr := cloudflare.SelectDNSZone(record.Hostname, configuredDNSZones(dns))
+			if selectionErr != nil {
+				return selectionErr
+			}
+			id, err = resolveZoneID(zoneName)
 			if err != nil {
 				return fmt.Errorf("resolve recorded cleanup zone for %s: %w", record.Hostname, err)
 			}
 		}
+		key := id + "/" + cloudflare.NormalizeDNSName(record.Hostname)
+		knownHosts[key] = true
+		knownData[key+"/"+record.Type] = true
 		addZone(id)
 	}
 	for _, zone := range dns.Spec.Zones {
 		id := zone.ID
 		if id == "" {
 			var err error
-			id, err = resolveZoneID(zone.Name)
+			id, err = resolveZoneID(cloudflare.NormalizeDNSName(zone.Name))
 			if err != nil {
 				return fmt.Errorf("resolve recovery cleanup zone %s: %w", zone.Name, err)
 			}
@@ -1528,7 +1557,8 @@ func (r *CloudflareDNSReconciler) cleanupUnrecordedRecords(ctx context.Context, 
 				}
 				hostname = strings.TrimPrefix(record.Name, prefix+".")
 			}
-			if hostname == "" || knownHosts[hostname] {
+			key := zone + "/" + cloudflare.NormalizeDNSName(hostname)
+			if hostname == "" || (record.Type == "TXT" && knownHosts[key]) || knownData[key+"/"+record.Type] {
 				continue
 			}
 			item := candidate{zone: zone, record: record}
