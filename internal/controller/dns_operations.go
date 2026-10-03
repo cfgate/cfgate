@@ -29,6 +29,15 @@ func recoverDNSWrites(ctx context.Context, dns *cfg.CloudflareDNS, service *clou
 		if err != nil {
 			return err
 		}
+		if record == nil {
+			claim, err := service.FindRecordByName(ctx, pending.ZoneID, dnsOwnershipPrefix(dns)+"."+pending.Hostname, "TXT")
+			if err != nil {
+				return err
+			}
+			if claim == nil {
+				continue
+			} // No side effect needs an inventory slot.
+		}
 		observed := cfg.DNSRecordSyncStatus{ZoneID: pending.ZoneID, Hostname: pending.Hostname, Type: pending.Type, Status: "Pending"}
 		if record != nil {
 			baseline := pending.PreviousRecordID != "" && record.ID == pending.PreviousRecordID

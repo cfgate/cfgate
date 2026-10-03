@@ -246,3 +246,28 @@ func TestDNSPendingInitialPublicationIsWithdrawnAfterRouteRemoval(t *testing.T) 
 		t.Fatal("route removal left pending initial publication active")
 	}
 }
+
+func TestDNSUnusedWriteIntentDoesNotConsumeRecoveryCapacity(t *testing.T) {
+	ctx := context.Background()
+	dns := &cfg.CloudflareDNS{Spec: cfg.CloudflareDNSSpec{Cloudflare: &cfg.CloudflareConfig{SecretRef: cfg.SecretRef{Name: "creds"}}, Zones: []cfg.DNSZoneConfig{{Name: "example.com", ID: "zone"}}}, Status: cfg.CloudflareDNSStatus{OwnerID: "install/resource", PendingWrites: []cfg.DNSPendingWrite{{ZoneID: "zone", Hostname: "unused.example.com", Type: "CNAME", OperationID: "0123456789"}}}}
+	store := map[string]map[string]cloudflare.DNSRecord{"zone": {}}
+	for i := 0; i < 1000; i++ {
+		host := fmt.Sprintf("retained-%d.example.com", i)
+		dns.Status.Records = append(dns.Status.Records, cfg.DNSRecordSyncStatus{ZoneID: "zone", Hostname: host, Type: "CNAME", RecordID: host})
+		store["zone"][host] = cloudflare.DNSRecord{ID: host, Name: host, Type: "CNAME", Comment: cloudflare.OwnershipComment(dns.Status.OwnerID)}
+	}
+	mock := dnsLifecycleStore(t, store)
+	if err := recoverDNSWrites(ctx, dns, cloudflare.NewDNSService(mock, logr.Discard())); err != nil {
+		t.Fatal(err)
+	}
+	if len(dns.Status.PendingWrites) != 0 || len(dns.Status.Records) != 1000 || len(store["zone"]) != 1000 {
+		t.Fatal("unused intent changed the retained inventory")
+	}
+	r := &CloudflareDNSReconciler{CFClient: mock}
+	if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
+		t.Fatal(err)
+	}
+	if len(store["zone"]) != 0 {
+		t.Fatal("unused intent stranded final cleanup")
+	}
+}

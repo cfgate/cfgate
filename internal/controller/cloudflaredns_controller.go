@@ -177,7 +177,8 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if err := r.ensureDNSOwnerIdentity(ctx, &dns); err != nil {
-		return ctrl.Result{}, err
+		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonOwnershipFailed, err.Error())
+		return ctrl.Result{}, errors.Join(err, r.updateStatus(ctx, &dns))
 	}
 
 	// 3. Resolve target (tunnel or external)
