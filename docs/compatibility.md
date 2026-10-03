@@ -4,11 +4,11 @@ cfgate, its CRDs, the connector, Gateway API and Helm chart are separate version
 components. Install matching cfgate CRDs before upgrading the controller so the
 API server retains ownership and recovery status.
 
-## Alpha.8 component pins
+## Alpha.10 component pins
 
 | Component | Version |
 |---|---|
-| cfgate | 0.2.0-alpha.8 |
+| cfgate | 0.2.0-alpha.10 |
 | Go | 1.27.1 |
 | Cloudflare SDK | 7.11.0 |
 | Kubernetes Go libraries | 0.37.1 |
@@ -85,9 +85,9 @@ finish, then back up the objects and credentials before assessing a downgrade.
 Removing status, finalizers, or pending markers is not a rollback procedure. There
 is no automatic translation of unfinished operations for alpha.7 or older versions.
 
-## Post-alpha.8 development
+## Upgrade from v0.2.0-alpha.8 to v0.2.0-alpha.9
 
-The next controller and CRDs reject `everyone: false` and
+The alpha.9 controller and CRDs reject `everyone: false` and
 `anyValidServiceToken: false` in Access policy rules. Remove those whole rule
 items before upgrading; use `true` only when that match is intended. An empty
 include list is not a replacement for a valid policy. Existing invalid objects
@@ -103,6 +103,25 @@ installing the new CRD. Keep `ttl: 1` where Auto is intentional.
 Health and metrics listeners must have separate, non-overlapping bind addresses.
 The defaults remain unchanged. Correct colliding custom ports before upgrading;
 Service-facing ports are independent of these process listeners.
+
+## Upgrade from v0.2.0-alpha.9 to v0.2.0-alpha.10
+
+Route transport annotations now preserve explicit Boolean overrides. In particular,
+`origin-ssl-verify: "true"` restores certificate verification even when the tunnel
+sets `originDefaults.noTLSVerify: true`. Check origin certificates and configured
+CA bundles before rollout: routes that previously ignored this override may now
+reject untrusted certificates. Protocol values and documented Boolean aliases are
+case-insensitive. Invalid transport values are rejected before publication.
+Connect timeouts must represent positive whole seconds.
+
+An omitted route `cfgate.io/ttl` now inherits `CloudflareDNS.spec.defaults.ttl`,
+matching explicit hostname entries. Set the annotation to `"1"` to retain Auto
+for a DNS-only route under a custom default. Proxied records still use Auto.
+Duplicate hostname settings are compared after inheritance and provider
+normalization; incompatible effective settings still prevent publication.
+
+No new CRD fields or connector image changes are required for these fixes. Retain
+the matching schemas and existing ownership and recovery metadata when upgrading.
 
 ## Dependency maintenance
 

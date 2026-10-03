@@ -156,7 +156,7 @@ spec:
 
 ### `spec.source.explicit`
 
-Defines explicit hostnames independently of Gateway API route discovery. Hostnames are case-insensitive and an optional trailing dot is ignored before merging or recording write intents. An explicit entry overrides the discovered settings for the same hostname. Equivalent explicit entries are deduplicated; conflicting settings within the same source are rejected before publication.
+Defines explicit hostnames independently of Gateway API route discovery. Hostnames are case-insensitive and an optional trailing dot is ignored before merging or recording write intents. An explicit entry overrides the discovered settings for the same hostname. Equivalent explicit entries are deduplicated; settings within the same source are compared after default inheritance and proxied-TTL normalization. Equivalent effective records converge; different targets, proxy settings or effective TTLs are rejected before publication. A later default change can make previously equivalent sources conflict.
 
 The `target` field overrides the resource-level resolved target for that hostname. It supports the `{{ .TunnelDomain }}` template variable, which resolves to the tunnel's CNAME target domain when `tunnelRef` is set. When `target` is omitted, the resource-level resolved target is used.
 
@@ -196,7 +196,7 @@ A TTL of `1` means Auto. DNS-only records accept explicit TTL values from 60 to
 currently 300 seconds. cfgate sends the API value `1` whenever the effective record
 is proxied, after applying defaults and overrides. The configured TTL stays in
 your resource and takes effect if proxying is disabled. An omitted per-hostname
-TTL inherits `spec.defaults.ttl`; an explicit `ttl: 1` selects Auto instead.
+TTL inherits `spec.defaults.ttl`; an explicit `ttl: 1` selects Auto instead. The same rule applies to discovered routes: omit `cfgate.io/ttl` to inherit, or set it to `"1"` for Auto. Proxy settings inherit from the most specific configured zone, then the resource defaults, unless the hostname or route overrides them.
 
 ```yaml
 spec:
