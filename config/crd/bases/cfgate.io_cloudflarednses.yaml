@@ -307,10 +307,9 @@ spec:
                           maxLength: 253
                           type: string
                         ttl:
-                          default: 1
                           description: |-
                             TTL is the DNS record TTL in seconds. 1 means auto (Cloudflare managed).
-                            Valid values: 1 (auto) or 60-86400 (explicit).
+                            Omitted values inherit spec.defaults.ttl. Valid values: 1 (auto) or 60-86400.
                           format: int32
                           maximum: 86400
                           minimum: 1

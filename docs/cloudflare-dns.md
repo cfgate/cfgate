@@ -37,7 +37,7 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.source.explicit[].hostname` | `string` | *none* | Yes | DNS hostname to create. 1-253 chars. |
 | `spec.source.explicit[].target` | `string` | *(resource-level resolved target)* | No | Per-hostname target override. Supports `{{ .TunnelDomain }}` when using `tunnelRef`. Max 253 chars. |
 | `spec.source.explicit[].proxied` | `*bool` | *(inherits from zone or defaults)* | No | Per-hostname Cloudflare proxy setting. `nil` inherits from zone then defaults. |
-| `spec.source.explicit[].ttl` | `int32` | `1` | No | DNS record TTL in seconds. `1` = auto (Cloudflare-managed, typically 300s). Explicit range: 60-86400. |
+| `spec.source.explicit[].ttl` | `int32` | inherited | No | DNS record TTL in seconds. `1` = auto (Cloudflare-managed, typically 300s). Explicit range: 60-86400. |
 | `spec.defaults.proxied` | `bool` | `true` | No | Default Cloudflare proxy setting for all records. |
 | `spec.defaults.ttl` | `int32` | `1` | No | Default DNS record TTL. `1` = auto. Explicit range: 60-86400. |
 | `spec.ownership.ownerId` | `string` | *none* | No | Deprecated legacy hint; cannot override `status.ownerId` or authorize adoption. Retained in the schema for compatibility. |
@@ -195,7 +195,8 @@ A TTL of `1` means Auto. DNS-only records accept explicit TTL values from 60 to
 86400 seconds. [Proxied records always use Auto](https://developers.cloudflare.com/dns/manage-dns-records/reference/ttl/),
 currently 300 seconds. cfgate sends the API value `1` whenever the effective record
 is proxied, after applying defaults and overrides. The configured TTL stays in
-your resource and takes effect if proxying is disabled.
+your resource and takes effect if proxying is disabled. An omitted per-hostname
+TTL inherits `spec.defaults.ttl`; an explicit `ttl: 1` selects Auto instead.
 
 ```yaml
 spec:

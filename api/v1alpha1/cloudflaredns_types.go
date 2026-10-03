@@ -177,11 +177,10 @@ type DNSExplicitHostname struct {
 	Proxied *bool `json:"proxied,omitempty"`
 
 	// TTL is the DNS record TTL in seconds. 1 means auto (Cloudflare managed).
-	// Valid values: 1 (auto) or 60-86400 (explicit).
+	// Omitted values inherit spec.defaults.ttl. Valid values: 1 (auto) or 60-86400.
 	// +optional
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=86400
-	// +kubebuilder:default=1
 	TTL int32 `json:"ttl,omitempty"`
 }
 

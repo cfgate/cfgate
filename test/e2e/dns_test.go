@@ -508,6 +508,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(record).NotTo(BeNil())
 				g.Expect(record.Proxied).To(BeFalse())
+				g.Expect(record.TTL).To(Equal(float64(3600)))
 			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 			By("Applying Auto TTL while proxied and restoring configured TTL when DNS-only")
 			for _, proxied := range []bool{true, false} {
