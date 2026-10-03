@@ -183,6 +183,18 @@ type ServiceTokenOps interface {
 	RefreshServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
 }
 
+// AccessClient exposes only the capabilities used by Access reconciliation.
+// Security wrappers implement every method explicitly so newly added mutations
+// cannot silently bypass ownership or publication coordination.
+type AccessClient interface {
+	AccessAppOps
+	AccessPolicyOps
+	ServiceTokenOps
+	CreateAccessTag(context.Context, string, string) (*AccessTag, error)
+	ListAccessTags(context.Context, string) ([]AccessTag, error)
+	DeleteAccessTag(context.Context, string, string) error
+}
+
 // Client defines the Cloudflare API operations composed from domain interfaces.
 //
 // Client wraps cloudflare-go v7 SDK and handles error normalization, 404 patterns,

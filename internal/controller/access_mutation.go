@@ -14,7 +14,7 @@ import (
 
 type accessMutationContextKey struct{}
 type accessMutationClient struct {
-	cloudflare.Client
+	Client cloudflare.AccessClient
 	before func(context.Context) error
 }
 
@@ -60,7 +60,7 @@ func (c *accessMutationClient) RotateServiceToken(ctx context.Context, account, 
 	}
 	return c.Client.RotateServiceToken(ctx, account, id)
 }
-func guardAccessMutations(ctx context.Context, cfClient cloudflare.Client) cloudflare.Client {
+func guardAccessMutations(ctx context.Context, cfClient cloudflare.AccessClient) cloudflare.AccessClient {
 	if before, ok := ctx.Value(accessMutationContextKey{}).(func(context.Context) error); ok {
 		return &accessMutationClient{Client: cfClient, before: before}
 	}
