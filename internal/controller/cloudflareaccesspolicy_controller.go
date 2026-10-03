@@ -124,28 +124,15 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 			status.ReasonCredentialsValid, "Credentials validated successfully.", policy.Generation),
 	)
 
-	if len(policy.Spec.ServiceTokens) > 0 {
-		if err := r.syncServiceTokens(ctx, creds.Service, creds.AccountID, &policy); err != nil {
-			log.Error(err, "failed to ensure service tokens")
-			policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
-				status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionFalse,
-					status.ReasonServiceTokenError, status.Error2ConditionMsg(err), policy.Generation),
-			)
-			_ = r.updateStatus(ctx, &policy)
-			return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterError}, nil
-		}
-		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
-			status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionTrue,
-				status.ReasonServiceTokensReady, "Service tokens ready.", policy.Generation),
-		)
-	} else if err := r.syncServiceTokens(ctx, creds.Service, creds.AccountID, &policy); err != nil {
-		log.Error(err, "failed to sync removed service tokens")
-		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
-			status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionFalse,
-				status.ReasonServiceTokenError, status.Error2ConditionMsg(err), policy.Generation),
-		)
+	nextTokenCheck, err := r.syncServiceTokens(ctx, creds.Service, creds.AccountID, &policy)
+	if err != nil {
+		log.Error(err, "failed to sync service tokens")
+		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions, status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionFalse, status.ReasonServiceTokenError, status.Error2ConditionMsg(err), policy.Generation))
 		_ = r.updateStatus(ctx, &policy)
 		return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterError}, nil
+	}
+	if len(policy.Spec.ServiceTokens) > 0 {
+		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions, status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionTrue, status.ReasonServiceTokensReady, "Service tokens ready.", policy.Generation))
 	} else {
 		policy.Status.Conditions = status.RemoveCondition(policy.Status.Conditions, status.ConditionTypeServiceTokensReady)
 	}
@@ -190,7 +177,11 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 	if r.Recorder != nil {
 		r.Recorder.Eventf(&policy, nil, corev1.EventTypeNormal, "Reconciled", "Reconcile", "Access policy reconciled successfully")
 	}
-	return ctrl.Result{RequeueAfter: accessPolicyRequeueAfterSuccess}, nil
+	nextDelay := accessPolicyRequeueAfterSuccess
+	if !nextTokenCheck.IsZero() {
+		nextDelay = min(nextDelay, max(time.Second, time.Until(nextTokenCheck)))
+	}
+	return ctrl.Result{RequeueAfter: nextDelay}, nil
 }
 
 func (r *CloudflareAccessPolicyReconciler) resolveCredentials(ctx context.Context, policy *cfgatev1alpha1.CloudflareAccessPolicy) (*accessPolicyCredentials, error) {
@@ -429,16 +420,17 @@ func convertApprovalGroups(groups []cfgatev1alpha1.ApprovalGroup) []cloudflare.A
 	return result
 }
 
-func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context, accessService *cloudflare.AccessService, accountID string, policy *cfgatev1alpha1.CloudflareAccessPolicy) error {
+func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context, accessService *cloudflare.AccessService, accountID string, policy *cfgatev1alpha1.CloudflareAccessPolicy) (time.Time, error) {
 	if err := validateServiceTokens(policy.Spec.ServiceTokens); err != nil {
-		return err
+		return time.Time{}, err
 	}
 	if policy.Status.ServiceTokenIDs == nil {
 		if len(policy.Spec.ServiceTokens) == 0 {
-			return nil
+			return time.Time{}, nil
 		}
 		policy.Status.ServiceTokenIDs = make(map[string]string)
 	}
+	var nextCheck time.Time
 	desired := make(map[string]struct{}, len(policy.Spec.ServiceTokens))
 	for _, tokenConfig := range policy.Spec.ServiceTokens {
 		desired[tokenConfig.Name] = struct{}{}
@@ -448,7 +440,7 @@ func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context
 			continue
 		}
 		if err := accessService.Client().DeleteServiceToken(ctx, accountID, tokenID); err != nil {
-			return fmt.Errorf("failed to delete removed service token %s (%s): %w", name, tokenID, err)
+			return time.Time{}, fmt.Errorf("failed to delete removed service token %s (%s): %w", name, tokenID, err)
 		}
 		delete(policy.Status.ServiceTokenIDs, name)
 	}
@@ -468,11 +460,21 @@ func (r *CloudflareAccessPolicyReconciler) syncServiceTokens(ctx context.Context
 			RotationOverlap: overlap,
 		}, secretWriter)
 		if err != nil {
-			return fmt.Errorf("failed to ensure service token %s: %w", tokenConfig.Name, err)
+			return time.Time{}, fmt.Errorf("failed to ensure service token %s: %w", tokenConfig.Name, err)
+		}
+		duration := tokenConfig.Duration
+		if duration == "" {
+			duration = "8760h"
+		}
+		lifetime, _ := time.ParseDuration(duration)
+		if lifetime > 0 && !token.ExpiresAt.IsZero() {
+			if deadline := cloudflare.ServiceTokenRenewalTime(token.ExpiresAt, lifetime); nextCheck.IsZero() || deadline.Before(nextCheck) {
+				nextCheck = deadline
+			}
 		}
 		policy.Status.ServiceTokenIDs[tokenConfig.Name] = token.ID
 	}
-	return nil
+	return nextCheck, nil
 }
 
 func validateServiceTokens(tokens []cfgatev1alpha1.ServiceTokenConfig) error {

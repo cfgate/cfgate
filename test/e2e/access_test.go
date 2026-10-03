@@ -218,7 +218,10 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 			g.Expect(bytes.Equal(secret.Data["CF_ACCESS_CLIENT_SECRET"], oldSecret)).To(BeTrue(), "renewal must preserve the secret")
 		}, LongTimeout, DefaultInterval).Should(Succeed())
 
-		updateHTTPRouteAnnotations(ctx, k8sClient, "token-route", namespace, func(a map[string]string) { a["cfgate.io/dns-sync"] = "token-auth" })
+		updateHTTPRouteAnnotations(ctx, k8sClient, "token-route", namespace, func(a map[string]string) {
+			a["cfgate.io/dns-sync"] = "token-auth"
+			a["cfgate.io/access-required"] = namespace + "/token-app"
+		})
 		dns := createCloudflareDNSWithGatewayRoutes(ctx, k8sClient, "token-dns", namespace, "edge", []string{testEnv.CloudflareZoneName}, "cfgate.io/dns-sync=token-auth")
 		Eventually(ctx, func(g Gomega) {
 			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dns), dns)).To(Succeed())
@@ -227,6 +230,8 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 		headers := http.Header{"Cf-Access-Client-Id": []string{string(oldID)}, "Cf-Access-Client-Secret": []string{string(oldSecret)}}
 		expectMaintenanceResponse(ctx, hostname, origin.Name, "", http.StatusOK, headers)
 		expectMaintenanceResponse(ctx, hostname, "", "", http.StatusUnauthorized)
+		By("Serving authenticated requests throughout automatic renewal, including a delayed API response")
+		verifyTokenRenewalContinuity(ctx, policy, tokenName, hostname, origin.Name, headers)
 		By("Rotating after a missing local credential and allowing bounded overlap")
 		Eventually(ctx, func() error {
 			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(&secret), &secret); err != nil {

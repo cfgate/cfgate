@@ -114,3 +114,70 @@ func TestCreatedTokenReadbackFollowsSecretStorage(t *testing.T) {
 		t.Fatalf("incorrect created token: %+v writes=%d", token, writer.calls)
 	}
 }
+
+func TestExpirationOnlyRenewalWireContract(t *testing.T) {
+	for _, scenario := range []string{"extend", "disabled", "expired", "changed client", "changed name", "changed duration", "would shorten", "unconfirmed expiration"} {
+		t.Run(scenario, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			token := ServiceToken{ID: "token", Name: "svc", ClientID: "client", Duration: "1h", ExpiresAt: now.Add(time.Minute)}
+			puts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				current := token
+				enabled := true
+				switch r.Method {
+				case http.MethodGet:
+					switch scenario {
+					case "disabled":
+						enabled = false
+					case "expired":
+						current.ExpiresAt = now.Add(-time.Minute)
+					case "changed client":
+						current.ClientID = "other"
+					case "changed name":
+						current.Name = "other"
+					case "changed duration":
+						current.Duration = "2h"
+					case "would shorten":
+						current.ExpiresAt = now.Add(2 * time.Hour)
+					}
+				case http.MethodPut:
+					puts++
+					var body map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					if len(body) != 1 || body["duration"] != "1h" {
+						t.Errorf("renewal widened mutation: %+v", body)
+					}
+					if scenario != "unconfirmed expiration" {
+						current.ExpiresAt = now.Add(time.Hour)
+					}
+				default:
+					t.Errorf("unexpected method %s", r.Method)
+				}
+				_, _ = fmt.Fprintf(w, `{"success":true,"result":{"id":%q,"name":%q,"client_id":%q,"duration":%q,"enabled":%t,"expires_at":%q}}`, current.ID, current.Name, current.ClientID, current.Duration, enabled, current.ExpiresAt.Format(time.RFC3339))
+			}))
+			defer server.Close()
+			c, err := NewClient("test", WithHTTPClient(&http.Client{Transport: &rewriteConfigTransport{target: server.URL, delegate: server.Client().Transport}}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			renewed, err := c.ExtendServiceTokenExpiration(context.Background(), "account", "token", token)
+			if scenario == "extend" {
+				if err != nil || !renewed.ExpiresAt.After(token.ExpiresAt) {
+					t.Fatalf("renewal failed: %+v %v", renewed, err)
+				}
+			} else if err == nil {
+				t.Fatal("unsafe renewal accepted")
+			}
+			expected := 0
+			if scenario == "extend" || scenario == "unconfirmed expiration" {
+				expected = 1
+			}
+			if puts != expected {
+				t.Fatalf("mutations=%d want %d", puts, expected)
+			}
+		})
+	}
+}

@@ -166,6 +166,10 @@ type ServiceTokenOps interface {
 	// GetServiceToken retrieves a service token by ID.
 	GetServiceToken(ctx context.Context, accountID, tokenID string) (*ServiceToken, error)
 
+	// ExtendServiceTokenExpiration renews an unchanged, enabled, unexpired token.
+	// It may only update duration, and must increase the observed expiration.
+	ExtendServiceTokenExpiration(ctx context.Context, accountID, tokenID string, expected ServiceToken) (*ServiceToken, error)
+
 	// UpdateServiceToken updates an existing service token.
 	UpdateServiceToken(ctx context.Context, accountID, tokenID string, params ServiceTokenParams) (*ServiceToken, error)
 

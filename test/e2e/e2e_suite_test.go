@@ -80,6 +80,7 @@ const (
 
 var (
 	suiteKindCreated bool
+	suiteAccessLocks *controller.AccessLocks
 	// testEnv holds E2E test environment configuration.
 	testEnv *E2ETestEnv
 
@@ -247,7 +248,8 @@ var _ = SynchronizedBeforeSuite(
 
 		// Initialize shared credential cache for all CF-facing reconcilers (B3 + F3).
 		credCache := cfcloudflare.NewCredentialCache(0) // 0 = default TTL
-		accessLocks := controller.NewAccessLocks()
+		suiteAccessLocks = controller.NewAccessLocks()
+		accessLocks := suiteAccessLocks
 
 		// Register all seven controllers.
 		tunnelReconciler := &controller.CloudflareTunnelReconciler{

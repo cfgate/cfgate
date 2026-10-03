@@ -105,3 +105,15 @@ func (c *accessMutationClient) DeleteAccessTag(ctx context.Context, account, nam
 	}
 	return c.Client.DeleteAccessTag(ctx, account, name)
 }
+
+func (c *ownedAccessClient) ExtendServiceTokenExpiration(ctx context.Context, account, id string, expected cloudflare.ServiceToken) (*cloudflare.ServiceToken, error) {
+	if err := c.verify(ctx, account, "token", id); err != nil {
+		return nil, err
+	}
+	return c.Client.ExtendServiceTokenExpiration(ctx, account, id, expected)
+}
+func (c *accessMutationClient) ExtendServiceTokenExpiration(ctx context.Context, account, id string, expected cloudflare.ServiceToken) (*cloudflare.ServiceToken, error) {
+	// beginPolicyMutation still holds the affected application locks. This narrow
+	// capability preserves authentication material and never changes policy rules.
+	return c.Client.ExtendServiceTokenExpiration(ctx, account, id, expected)
+}
