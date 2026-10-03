@@ -44,7 +44,8 @@ func applyConnectorCompatibility(tunnel *cfg.CloudflareTunnel, configuration *cl
 		if rule.OriginRequest != nil {
 			rule.OriginRequest.H2cOrigin = nil
 		}
-		if h2c && (strings.HasPrefix(rule.Service, "http://") || strings.HasPrefix(rule.Service, "https://") || strings.HasPrefix(rule.Service, "unix:") || strings.HasPrefix(rule.Service, "unix+tls:")) {
+		service := strings.ToLower(rule.Service)
+		if h2c && (strings.HasPrefix(service, "http://") || strings.HasPrefix(service, "https://") || strings.HasPrefix(service, "ws://") || strings.HasPrefix(service, "wss://") || strings.HasPrefix(service, "unix:") || strings.HasPrefix(service, "unix+tls:") || service == "hello_world" || service == "hello-world") {
 			rule.Service = "http_status:503"
 			rule.OriginRequest = nil
 			blocked++
