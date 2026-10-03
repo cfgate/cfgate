@@ -653,11 +653,19 @@ func conditionsEqual(a, b []metav1.Condition) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i].Type != b[i].Type || a[i].Status != b[i].Status ||
-			a[i].Reason != b[i].Reason || a[i].Message != b[i].Message {
+	byType := make(map[string]metav1.Condition, len(a))
+	for _, condition := range a {
+		if _, exists := byType[condition.Type]; exists {
 			return false
 		}
+		byType[condition.Type] = condition
+	}
+	for _, condition := range b {
+		previous, exists := byType[condition.Type]
+		if !exists || previous.Status != condition.Status || previous.Reason != condition.Reason || previous.Message != condition.Message || previous.ObservedGeneration != condition.ObservedGeneration {
+			return false
+		}
+		delete(byType, condition.Type)
 	}
 	return true
 }

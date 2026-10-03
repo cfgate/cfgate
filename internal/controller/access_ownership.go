@@ -50,7 +50,7 @@ func ownedAccessName(name, identity string) string {
 }
 
 type ownedAccessClient struct {
-	cloudflare.Client
+	Client                 cloudflare.AccessClient
 	kube                   client.Client
 	reader                 client.Reader
 	installation, identity string

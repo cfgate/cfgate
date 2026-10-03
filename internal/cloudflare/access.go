@@ -16,13 +16,13 @@ import (
 // policies, and service tokens. It wraps the Client interface with cfgate-specific
 // logic for idempotent ensure operations and declarative policy synchronization.
 type AccessService struct {
-	client Client
+	client AccessClient
 	log    logr.Logger
 }
 
 // NewAccessService creates a new AccessService with the given client and logger.
 // The logger is named "access-service" for structured logging context.
-func NewAccessService(client Client, log logr.Logger) *AccessService {
+func NewAccessService(client AccessClient, log logr.Logger) *AccessService {
 	return &AccessService{
 		client: client,
 		log:    log.WithName("access-service"),
@@ -1102,6 +1102,6 @@ func (s *AccessService) rotateServiceTokenAndStoreSecret(ctx context.Context, ac
 
 // Client returns the underlying Cloudflare client.
 // Used for direct API operations not wrapped by AccessService.
-func (s *AccessService) Client() Client {
+func (s *AccessService) Client() AccessClient {
 	return s.client
 }

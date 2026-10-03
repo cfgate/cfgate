@@ -783,11 +783,11 @@ func TestAccessPolicyStatusHelpers(t *testing.T) {
 			}
 		})
 	}
-	if conditionsEqual(
+	if !conditionsEqual(
 		[]metav1.Condition{{Type: "A", Status: metav1.ConditionTrue}, {Type: "B", Status: metav1.ConditionTrue}},
 		[]metav1.Condition{{Type: "B", Status: metav1.ConditionTrue}, {Type: "A", Status: metav1.ConditionTrue}},
 	) {
-		t.Fatal("conditionsEqual() = true for reordered conditions, want order-sensitive false")
+		t.Fatal("conditionsEqual() = false for reordered conditions")
 	}
 
 	policy := baseAccessPolicy("app", "policy")
