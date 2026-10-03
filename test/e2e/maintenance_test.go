@@ -78,6 +78,7 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 		route := createHTTPRoute(ctx, k8sClient, "tls-route", namespace.Name, gateway.Name, []string{hostname}, service.Name, 8080)
 		updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(a map[string]string) {
 			a["cfgate.io/origin-protocol"] = "HTTPS"
+			a["cfgate.io/origin-http2"] = "false"
 			a["cfgate.io/origin-ssl-verify"] = "YES"
 			a["cfgate.io/origin-server-name"] = "origin.test"
 			a["cfgate.io/dns-sync"] = "ca-reload"
