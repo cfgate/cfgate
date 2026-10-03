@@ -130,7 +130,7 @@ spec:
 
 ### `spec.source.gatewayRoutes`
 
-Automatic DNS publication requires a cfgate-managed Gateway, permission for its tunnel reference, an admitted parent/listener attachment, and an intersecting hostname. Namespace and annotation selectors further restrict discovery; they do not grant publication authority. Backend availability is separate: an admitted route may retain DNS while its backend returns an error. Explicit hostnames remain administrator-managed.
+Automatic DNS publication requires a cfgate-managed Gateway, permission for its tunnel reference, an admitted parent/listener attachment, an intersecting hostname, and valid effective origin transport settings. Namespace and annotation selectors further restrict discovery; they do not grant publication authority. Backend availability is separate: an admitted route may retain DNS while its backend returns an error. Explicit hostnames remain administrator-managed.
 
 Configures automatic hostname discovery from Gateway API HTTPRoute resources. Route discovery is enabled by the presence of this block. If `source.gatewayRoutes` is absent, the resource is explicit-only and does not watch routes. If the block is present and `enabled` is omitted, it defaults to `true`.
 
@@ -463,7 +463,7 @@ kubectl annotate cloudflarednses my-dns -n cfgate-system \
 
 When `spec.source.gatewayRoutes.namespaceSelector` is set, only routes from matching namespaces are considered for DNS record creation. The selector supports two filters: `matchLabels` and `matchNames`.
 
-`matchLabels` uses AND semantics: all specified labels must be present on the namespace. `matchNames` matches namespaces by name. If both filters are specified, the result is a union (a namespace matching either filter is included).
+`matchLabels` uses AND semantics: all specified labels must be present on the namespace and have the required value. An empty required value matches an explicitly empty label, not a missing label. `matchNames` matches namespaces by name. If both filters are specified, the result is a union (a namespace matching either filter is included).
 
 An empty selector (`namespaceSelector: {}`) matches all namespaces, following the Kubernetes convention used by NetworkPolicy and other resources.
 

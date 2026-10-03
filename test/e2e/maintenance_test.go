@@ -88,6 +88,73 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 			g.Expect(meta.IsStatusConditionTrue(dns.Status.Conditions, "Ready")).To(BeTrue())
 		}, LongTimeout, DefaultInterval).Should(Succeed())
 		expectMaintenanceResponse(ctx, hostname, service.Name, "", http.StatusOK)
+		By("Isolating invalid effective transport while applying a sibling grant withdrawal")
+		backendNS := createTestNamespace("cfgate-transport-backend")
+		DeferCleanup(func() { deleteTestNamespace(backendNS) })
+		remoteService := createTestService(ctx, k8sClient, "withdrawn", backendNS.Name, 8080)
+		grant := &gatewayv1b1.ReferenceGrant{ObjectMeta: metav1.ObjectMeta{Name: "transport", Namespace: backendNS.Name}, Spec: gatewayv1b1.ReferenceGrantSpec{
+			From: []gatewayv1b1.ReferenceGrantFrom{{Group: gatewayv1.GroupName, Kind: "HTTPRoute", Namespace: gatewayv1b1.Namespace(namespace.Name)}},
+			To:   []gatewayv1b1.ReferenceGrantTo{{Group: "", Kind: "Service", Name: ptrTo(gatewayv1b1.ObjectName(remoteService.Name))}},
+		}}
+		withdrawn := route.DeepCopy()
+		withdrawn.ObjectMeta = metav1.ObjectMeta{Name: "withdrawn", Namespace: namespace.Name}
+		withdrawn.Status = gatewayv1.HTTPRouteStatus{}
+		withdrawn.Spec.Rules[0].Matches = []gatewayv1.HTTPRouteMatch{{Path: &gatewayv1.HTTPPathMatch{Type: ptrTo(gatewayv1.PathMatchPathPrefix), Value: ptrTo("/withdrawn")}}}
+		withdrawn.Spec.Rules[0].BackendRefs[0].Name = gatewayv1.ObjectName(remoteService.Name)
+		withdrawn.Spec.Rules[0].BackendRefs[0].Namespace = ptrTo(gatewayv1.Namespace(backendNS.Name))
+		Expect(k8sClient.Create(ctx, withdrawn)).To(Succeed())
+		invalid := withdrawn.DeepCopy()
+		invalid.ObjectMeta = metav1.ObjectMeta{Name: "invalid", Namespace: namespace.Name}
+		invalid.Spec.Rules[0].Matches[0].Path.Value = ptrTo("/invalid")
+		invalid.Spec.Rules[0].BackendRefs[0].Name = gatewayv1.ObjectName(service.Name)
+		invalid.Spec.Rules[0].BackendRefs[0].Namespace = nil
+		Expect(k8sClient.Create(ctx, invalid)).To(Succeed())
+		for _, inherited := range []bool{true, false} {
+			grant.ResourceVersion, grant.UID = "", ""
+			Expect(k8sClient.Create(ctx, grant)).To(Succeed())
+			Eventually(ctx, func(g Gomega) {
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+				forwarded := false
+				for _, rule := range config.Config.Ingress {
+					forwarded = forwarded || strings.Contains(rule.Service, "withdrawn."+backendNS.Name)
+				}
+				g.Expect(forwarded).To(BeTrue())
+			}, LongTimeout, 3*time.Second).Should(Succeed())
+			Eventually(ctx, func() error {
+				if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(tunnel), tunnel); err != nil {
+					return err
+				}
+				tunnel.Spec.OriginDefaults.HTTP2Origin = inherited
+				return k8sClient.Update(ctx, tunnel)
+			}, ShortTimeout, DefaultInterval).Should(Succeed())
+			updateHTTPRouteAnnotations(ctx, k8sClient, invalid.Name, invalid.Namespace, func(a map[string]string) {
+				a["cfgate.io/origin-h2c"] = "true"
+				if inherited {
+					a["cfgate.io/origin-protocol"] = "http"
+				} else {
+					a["cfgate.io/origin-protocol"] = "https"
+				}
+			})
+			Expect(k8sClient.Delete(ctx, grant)).To(Succeed())
+			Eventually(ctx, func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(invalid), invalid)).To(Succeed())
+				g.Expect(invalid.Status.Parents).NotTo(BeEmpty())
+				condition := meta.FindStatusCondition(invalid.Status.Parents[0].Conditions, "Accepted")
+				g.Expect(condition).NotTo(BeNil())
+				g.Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+				config, err := getRawTunnelConfigurationFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, tunnel.Status.TunnelID)
+				g.Expect(err).NotTo(HaveOccurred())
+				for _, rule := range config.Config.Ingress {
+					g.Expect(rule.Service).NotTo(ContainSubstring("withdrawn." + backendNS.Name))
+				}
+			}, LongTimeout, 3*time.Second).Should(Succeed())
+			expectMaintenancePathResponse(ctx, hostname, "/invalid", "", "", http.StatusServiceUnavailable)
+			expectMaintenancePathResponse(ctx, hostname, "/withdrawn", "", "", http.StatusInternalServerError)
+			expectMaintenanceResponse(ctx, hostname, service.Name, "", http.StatusOK)
+		}
+		Expect(k8sClient.Delete(ctx, invalid)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, withdrawn)).To(Succeed())
 		var before appsv1.Deployment
 		deploymentKey := client.ObjectKey{Namespace: tunnel.Namespace, Name: cloudflared.DeploymentName(tunnel.Name)}
 		Expect(k8sClient.Get(ctx, deploymentKey, &before)).To(Succeed())
@@ -653,10 +720,14 @@ func newMaintenanceHTTPClient() *http.Client {
 }
 
 func expectMaintenanceResponse(ctx context.Context, hostname, marker, protocol string, statusCode int, headers ...http.Header) {
+	expectMaintenancePathResponse(ctx, hostname, "/", marker, protocol, statusCode, headers...)
+}
+
+func expectMaintenancePathResponse(ctx context.Context, hostname, path, marker, protocol string, statusCode int, headers ...http.Header) {
 	httpClient := newMaintenanceHTTPClient()
 	defer httpClient.CloseIdleConnections()
 	Eventually(ctx, func(g Gomega) {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+hostname+"/?run="+testRunID+"&nonce="+fmt.Sprint(time.Now().UnixNano()), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+hostname+path+"?run="+testRunID+"&nonce="+fmt.Sprint(time.Now().UnixNano()), nil)
 		g.Expect(err).NotTo(HaveOccurred())
 		if len(headers) > 0 {
 			request.Header = headers[0].Clone()

@@ -135,3 +135,18 @@ Use `go mod tidy` and `go mod verify`, then run the repository checks described 
 cfgate uses. The SDK-unknown `h2cOrigin` field, bounded pagination and origin duration
 wire formats have dedicated regressions; changes to the Cloudflare integration
 also require live E2E.
+
+## Post-alpha.10 development
+
+The next controller update checks inherited origin settings per route before
+publishing a tunnel configuration. Correct HTTPS+h2c or simultaneous HTTP/2+h2c
+settings; an explicit `false` can disable an inherited transport. Invalid
+combinations retain matching HTTP 503 responses instead of blocking valid
+siblings or leaving the connector on an older configuration. HTTPRoute backends
+must select a TCP Service port; unsupported protocols produce HTTP 500 responses.
+
+DNS namespace label selectors now require label presence even when the selected
+value is empty. Add the intended empty label or use `matchNames` for explicit
+selection. Previously discovered records from excluded namespaces follow the
+DNS resource's existing cleanup policy. No new CRD fields or connector image are
+required by these changes.
