@@ -123,3 +123,40 @@ Successful remote operations are checkpointed, and retries or deletion recover
 missing observations from the ownership markers. An unrecoverable or ambiguous
 inventory blocks cleanup rather than permitting deletion by name. Keep the
 original credential Secret available until cleanup completes.
+
+## Controller removal and decommissioning
+
+Removing the controller does not remove its Cloudflare resources. For a temporary
+controller-only removal, retain CRDs, custom resources, credential Secrets,
+ReferenceGrants and the installation namespace with its ownership claims. Keep a
+copy of the matching controller version and configuration for reinstallation.
+Existing connector workloads and remote configuration may keep serving traffic;
+updates, drift repair, token renewal and finalization stop while the controller is
+absent. Preserve the namespace UID when restoring the installation.
+
+For full decommissioning, keep the controller, its RBAC, credentials and grants
+available until cleanup finishes:
+
+1. Inventory the resources belonging to this installation, including remote IDs,
+   pending DNS writes and pending credential distribution. Resolve failed or
+   interrupted operations before removing their dependencies.
+2. Remove the intended HTTPRoutes or their attachments. Wait for the affected
+   tunnels to publish withdrawal. Confirm the remote configuration if publication
+   fails; deleting a Kubernetes object alone does not prove remote withdrawal.
+3. Delete the installation's CloudflareDNS and CloudflareAccessApplication objects
+   and wait for finalization. Keep referenced tunnels and policies until this step
+   finishes. Check DNS retention policies and deletion-policy annotations first;
+   deliberate retention requires a separate inventory and owner handoff.
+4. Delete its CloudflareAccessPolicy objects and wait for policy and managed-token
+   cleanup. Then delete its CloudflareTunnel objects and wait for connector drain
+   and remote tunnel cleanup.
+5. Verify the intended remote resources are gone or deliberately retained. Remove
+   the controller and its RBAC, then unused credentials, claims and namespaces.
+   Remove CRDs only when no installation still uses them.
+
+Use explicit resource names and namespaces; a Helm release does not own every
+cfgate object in a cluster. If finalization stalls, inspect conditions, events and
+controller logs while the required credentials and grants still exist. Do not
+remove finalizers or recovery status to force completion: that bypasses cleanup
+and can strand external resources. See the [DNS retention rules](cloudflare-dns.md)
+and [Access-required ordering limits](access-required.md).

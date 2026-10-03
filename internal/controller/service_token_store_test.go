@@ -15,46 +15,58 @@ import (
 )
 
 func TestTokenSecretPendingSurvivesFailedWrite(t *testing.T) {
-	ctx := context.Background()
-	scheme := controllerTestScheme(t)
-	owner := baseAccessPolicy("app", "policy")
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "token", Namespace: "app"}, Data: map[string][]byte{"CF_ACCESS_CLIENT_ID": []byte("client"), "CF_ACCESS_CLIENT_SECRET": []byte("old")}}
-	if err := controllerutil.SetControllerReference(owner, secret, scheme); err != nil {
-		t.Fatal(err)
-	}
-	fail := false
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner, secret).WithInterceptorFuncs(interceptor.Funcs{
-		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-			if fail {
-				return errors.New("write denied")
+	for _, cancelled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "denied", true: "cancelled"}[cancelled], func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			scheme := controllerTestScheme(t)
+			owner := baseAccessPolicy("app", "policy")
+			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "token", Namespace: "app"}, Data: map[string][]byte{"CF_ACCESS_CLIENT_ID": []byte("client"), "CF_ACCESS_CLIENT_SECRET": []byte("old")}}
+			if err := controllerutil.SetControllerReference(owner, secret, scheme); err != nil {
+				t.Fatal(err)
 			}
-			return c.Update(ctx, obj, opts...)
-		},
-	}).Build()
-	newWriter := func() *k8sSecretWriter {
-		return &k8sSecretWriter{client: c, reader: c, namespace: "app", secretRef: cfg.ServiceTokenSecretRef{Name: "token"}, owner: owner, scheme: scheme}
-	}
-	w := newWriter()
-	if err := w.BeginServiceTokenRotation(ctx, "svc"); err != nil {
-		t.Fatal(err)
-	}
-	data := map[string][]byte{"CF_ACCESS_CLIENT_ID": []byte("client"), "CF_ACCESS_CLIENT_SECRET": []byte("new")}
-	fail = true
-	if err := w.WriteSecret(ctx, "svc", data); err == nil {
-		t.Fatal("expected failed write")
-	}
-	w = newWriter() // Restart: no in-memory mutation state survives.
-	stale, err := w.ServiceTokenSecretNeedsRefresh(ctx, "svc", "client")
-	if err != nil || !stale {
-		t.Fatalf("lost pending intent: %v %v", stale, err)
-	}
-	fail = false
-	if err := w.WriteSecret(ctx, "svc", data); err != nil {
-		t.Fatal(err)
-	}
-	stale, err = w.ServiceTokenSecretNeedsRefresh(ctx, "svc", "client")
-	if err != nil || stale {
-		t.Fatalf("did not complete intent: %v %v", stale, err)
+			fail := false
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner, secret).WithInterceptorFuncs(interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					if fail && !cancelled {
+						return errors.New("write denied")
+					}
+					return c.Update(ctx, obj, opts...)
+				},
+			}).Build()
+			newWriter := func() *k8sSecretWriter {
+				return &k8sSecretWriter{client: c, reader: c, namespace: "app", secretRef: cfg.ServiceTokenSecretRef{Name: "token"}, owner: owner, scheme: scheme}
+			}
+			w := newWriter()
+			if err := w.BeginServiceTokenRotation(ctx, "svc"); err != nil {
+				t.Fatal(err)
+			}
+			data := map[string][]byte{"CF_ACCESS_CLIENT_ID": []byte("client"), "CF_ACCESS_CLIENT_SECRET": []byte("new")}
+			fail = true
+			if cancelled {
+				cancel()
+			}
+			if err := w.WriteSecret(ctx, "svc", data); err == nil {
+				t.Fatal("expected failed write")
+			}
+			ctx = context.Background()
+			w = newWriter() // Restart: no in-memory mutation state survives.
+			stale, err := w.ServiceTokenSecretNeedsRefresh(ctx, "svc", "client")
+			if err != nil || !stale {
+				t.Fatalf("lost pending intent: %v %v", stale, err)
+			}
+			fail = false
+			if err := w.WriteSecret(ctx, "svc", data); err != nil {
+				t.Fatal(err)
+			}
+			stale, err = w.ServiceTokenSecretNeedsRefresh(ctx, "svc", "client")
+			if err != nil || stale {
+				t.Fatalf("did not complete intent: %v %v", stale, err)
+			}
+		})
 	}
 }
 
