@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 )
@@ -31,6 +32,31 @@ var _ = Describe("CEL Validation E2E", func() {
 		if !testEnv.SkipCleanup && namespace != nil {
 			deleteTestNamespace(namespace)
 		}
+	})
+
+	Context("CloudflareDNS validation", func() {
+		It("keeps TXT prefix immutable while permitting claim tracking changes", func() {
+			dns := &cfgatev1alpha1.CloudflareDNS{
+				ObjectMeta: metav1.ObjectMeta{Name: testID("immutable-prefix"), Namespace: namespace.Name, Annotations: map[string]string{"cfgate.io/deletion-policy": "orphan"}},
+				Spec: cfgatev1alpha1.CloudflareDNSSpec{
+					TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: "absent"},
+					Zones:     []cfgatev1alpha1.DNSZoneConfig{{Name: "example.com"}},
+					Ownership: cfgatev1alpha1.DNSOwnershipConfig{TXTRecord: cfgatev1alpha1.DNSTXTRecordOwnership{Prefix: "_initial"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, dns)).To(Succeed())
+			for _, prefix := range []string{"_replacement", ""} {
+				changed := dns.DeepCopy()
+				changed.Spec.Ownership.TXTRecord.Prefix = prefix
+				err := k8sClient.Patch(ctx, changed, client.MergeFrom(dns))
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("TXT ownership prefix is immutable"))
+			}
+			changed := dns.DeepCopy()
+			disabled := false
+			changed.Spec.Ownership.TXTRecord.Enabled = &disabled
+			Expect(k8sClient.Patch(ctx, changed, client.MergeFrom(dns))).To(Succeed())
+		})
 	})
 
 	Context("CloudflareTunnel validation", func() {

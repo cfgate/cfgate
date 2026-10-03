@@ -84,6 +84,12 @@ func TestPartialDNSClaimCleanup(t *testing.T) {
 				}
 				err = r.cleanupRecordsWithFallback(ctx, dns)
 			}
+			if mode == "foreign claim" {
+				if err == nil || deletes != 0 {
+					t.Fatalf("foreign claim must block without mutation: %v", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -250,8 +256,8 @@ func TestDNSUnrecordedRecordsInventoryAndRetry(t *testing.T) {
 		t.Fatalf("mutated claims before complete inventory: %v", deleted)
 	}
 	failInventory = false
-	if err := r.cleanupRecordsWithFallback(ctx, dns); err != nil {
-		t.Fatal(err)
+	if err := r.cleanupRecordsWithFallback(ctx, dns); err == nil {
+		t.Fatal("replacement without write intent must block finalization")
 	}
 	if len(deleted) != 3 {
 		t.Fatalf("want owned data and two unrecorded claims deleted, got %v", deleted)

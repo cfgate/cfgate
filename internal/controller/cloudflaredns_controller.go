@@ -23,6 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
@@ -212,7 +213,7 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Only applies in tunnel-ref mode: in external target mode (tunnel == nil),
 	// gateway route discovery is structurally unavailable and 0 hostnames is
 	// permanent, not transient.
-	hasPreviouslySyncedRecords := dns.Status.SyncedRecords > 0 || len(dns.Status.Records) > 0
+	hasPreviouslySyncedRecords := dns.Status.SyncedRecords > 0 || len(dns.Status.Records) > 0 || len(dns.Status.PendingWrites) > 0
 	if tunnel != nil &&
 		dns.Spec.Source.GatewayRoutes != nil &&
 		dns.Spec.Source.GatewayRoutes.Enabled &&
@@ -241,6 +242,7 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err != nil {
 		logger.Error(err, "failed to create Cloudflare client")
 		r.setCondition(&dns, status.ConditionTypeCredentialsValid, metav1.ConditionFalse, status.ReasonCredentialsInvalid, err.Error())
+		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonCredentialsInvalid, err.Error())
 		if updateErr := r.updateStatus(ctx, &dns); updateErr != nil {
 			logger.Error(updateErr, "failed to update status")
 		}
@@ -255,6 +257,7 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err != nil {
 		logger.Error(err, "failed to resolve zones")
 		r.setCondition(&dns, status.ConditionTypeZonesResolved, metav1.ConditionFalse, status.ReasonZoneResolutionFailed, err.Error())
+		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonZoneResolutionFailed, err.Error())
 		if updateErr := r.updateStatus(ctx, &dns); updateErr != nil {
 			logger.Error(updateErr, "failed to update status")
 		}
@@ -262,8 +265,12 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	r.setCondition(&dns, status.ConditionTypeZonesResolved, metav1.ConditionTrue, status.ReasonZonesResolved, "All zones resolved successfully")
 
-	// 7. Sync records
-	if err := r.syncRecords(ctx, &dns, target, hostnames, zones, dnsService); err != nil {
+	// Persist destinations before any external mutation.
+	err = r.prepareDNSWrites(ctx, &dns, hostnames, zones, dnsService)
+	if err == nil {
+		err = r.syncRecords(ctx, &dns, target, hostnames, zones, dnsService)
+	}
+	if err != nil {
 		logger.Error(err, "failed to sync records")
 		r.setCondition(&dns, status.ConditionTypeRecordsSynced, metav1.ConditionFalse, status.ReasonRecordSyncFailed, err.Error())
 		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonRecordSyncFailed, err.Error())
@@ -293,15 +300,13 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		r.setCondition(&dns, status.ConditionTypeOwnershipVerified, metav1.ConditionFalse, status.ReasonOwnershipFailed, "Ownership TXT records disabled")
 	}
 
-	// 9. Update overall Ready status
-	if dns.Status.PendingRecords > 0 {
-		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonSyncPartiallyFailed, "DNS policy skipped desired updates")
-	} else if dns.Status.FailedRecords > 0 {
-		msg := fmt.Sprintf("DNS sync partially failed: %d record(s) failed", dns.Status.FailedRecords)
-		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionFalse, status.ReasonSyncPartiallyFailed, msg)
-	} else {
-		r.setCondition(&dns, status.ConditionTypeReady, metav1.ConditionTrue, status.ReasonReady, "DNS sync is operational")
+	// Readiness requires current observations, including ownership when enabled.
+	required := []string{}
+	if r.shouldCreateTXTRecords(&dns) {
+		required = append(required, status.ConditionTypeOwnershipVerified)
 	}
+	ready := status.NewDNSReadyCondition(dns.Status.Conditions, dns.Generation, required...)
+	r.setCondition(&dns, ready.Type, ready.Status, ready.Reason, ready.Message)
 	dns.Status.ObservedGeneration = dns.Generation
 	now := metav1.Now()
 	dns.Status.LastSyncTime = &now
@@ -365,6 +370,9 @@ func (r *CloudflareDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findAffectedDNSByGateway),
 			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate, GatewayCreateAnnotationFilter),
 		).
+		Watches(&gateway.GatewayClass{}, handler.EnqueueRequestsFromMapFunc(r.findAffectedDNSByGateway)).
+		Watches(&gatewayv1beta1.ReferenceGrant{}, handler.EnqueueRequestsFromMapFunc(r.findAffectedDNSByGateway)).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.findAffectedDNSByGateway), builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Complete(withReconcileProgress("cloudflaredns", r))
 }
 
@@ -660,16 +668,13 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 
 	var relevantGateways []gateway.Gateway
 
+	classes := make(map[gateway.ObjectName]bool)
 	for _, gw := range gateways.Items {
-		ref := annotations.GetAnnotation(&gw, annotations.AnnotationTunnelRef)
-		if ref == "" {
-			continue
-		}
-		ns, name, err := annotations.ParseNamespacedName(ref, gw.Namespace)
+		key, managed, err := managedGatewayTunnel(ctx, r.APIReader, &gw, classes)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		if name == tunnel.Name && ns == tunnel.Namespace {
+		if managed && key == client.ObjectKeyFromObject(tunnel) {
 			relevantGateways = append(relevantGateways, gw)
 		}
 	}
@@ -721,7 +726,11 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 						config.Proxied = &proxied
 					}
 
-					for _, h := range routeHostnamesForGateway(&route, &gw, parentRef) {
+					accepted, err := acceptedRouteHostnames(ctx, r.APIReader, &route, &gw, parentRef)
+					if err != nil {
+						return nil, err
+					}
+					for _, h := range accepted {
 						hostnames[string(h)] = config
 					}
 				}
@@ -810,10 +819,7 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 	hostnameConfigs = normalized
 	zoneProxied := zoneProxiedOverrides(dns)
 
-	ownershipPrefix := dns.Spec.Ownership.TXTRecord.Prefix
-	if ownershipPrefix == "" {
-		ownershipPrefix = dnsDefaultOwnershipPrefix
-	}
+	ownershipPrefix := dnsOwnershipPrefix(dns)
 
 	ownerID := dns.Status.OwnerID
 	if ownerID == "" {
@@ -888,7 +894,7 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 		}
 
 		// Sync record using policy
-		record, modified, err := dnsService.SyncOwnedRecord(ctx, zoneID, desired, ownerID, fmt.Sprintf("CloudflareDNS/%s/%s", dns.Namespace, dns.Name), ownershipPrefix, policy, r.shouldCreateTXTRecords(dns), dns.Annotations[adoptExistingAnnotation] == "true")
+		record, modified, err := dnsService.WithOperation(dnsWriteOperation(dns, zoneID, hostname, recordType)).SyncOwnedRecord(ctx, zoneID, desired, ownerID, fmt.Sprintf("CloudflareDNS/%s/%s", dns.Namespace, dns.Name), ownershipPrefix, policy, r.shouldCreateTXTRecords(dns), dns.Annotations[adoptExistingAnnotation] == "true")
 		if errors.Is(err, cloudflare.ErrDNSRecordSkipped) {
 			recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{Hostname: hostname, Type: recordType, Status: "Skipped", Error: err.Error(), RecordID: record.ID, ZoneID: zoneID})
 			continue
@@ -922,6 +928,7 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			r.Recorder.Eventf(dns, nil, corev1.EventTypeNormal, "RecordSynced", "Sync", "DNS record synced: %s", hostname)
 		}
 
+		completeDNSWrite(dns, zoneID, hostname, recordType)
 		recordStatuses = append(recordStatuses, cfgatev1alpha1.DNSRecordSyncStatus{
 			Hostname: hostname,
 			Type:     record.Type,
@@ -1023,7 +1030,7 @@ func (r *CloudflareDNSReconciler) deleteManagedStatusRecord(ctx context.Context,
 			"hostname", statusRecord.Hostname,
 			"recordID", statusRecord.RecordID,
 		)
-		return false, nil
+		return false, fmt.Errorf("DNS recovery conflict for %s: ownership TXT belongs to another resource", statusRecord.Hostname)
 	}
 
 	if existingRecord != nil && statusRecord.RecordID != "" && existingRecord.ID != statusRecord.RecordID {
@@ -1032,7 +1039,7 @@ func (r *CloudflareDNSReconciler) deleteManagedStatusRecord(ctx context.Context,
 			"expectedRecordID", statusRecord.RecordID,
 			"currentRecordID", existingRecord.ID,
 		)
-		return false, nil
+		return false, fmt.Errorf("DNS recovery conflict for %s: recorded ID %s differs from current ID %s", statusRecord.Hostname, statusRecord.RecordID, existingRecord.ID)
 	}
 	if existingRecord != nil && statusRecord.RecordID == "" {
 		// A create can succeed remotely without returning its ID. Recover only
@@ -1065,10 +1072,7 @@ func (r *CloudflareDNSReconciler) verifyOwnership(ctx context.Context, dns *cfga
 		return false, nil // Ownership tracking disabled
 	}
 
-	ownershipPrefix := dns.Spec.Ownership.TXTRecord.Prefix
-	if ownershipPrefix == "" {
-		ownershipPrefix = dnsDefaultOwnershipPrefix
-	}
+	ownershipPrefix := dnsOwnershipPrefix(dns)
 
 	ownerID := dns.Status.OwnerID
 	if ownerID == "" {
@@ -1181,8 +1185,12 @@ func (r *CloudflareDNSReconciler) removeDNSFinalizer(ctx context.Context, dns *c
 func (r *CloudflareDNSReconciler) updateStatus(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS) error {
 	// Re-fetch to avoid conflicts
 	var current cfgatev1alpha1.CloudflareDNS
-	if err := r.Get(ctx, types.NamespacedName{Name: dns.Name, Namespace: dns.Namespace}, &current); err != nil {
+	if err := accessReader(r.APIReader, r.Client).Get(ctx, types.NamespacedName{Name: dns.Name, Namespace: dns.Namespace}, &current); err != nil {
 		return fmt.Errorf("failed to re-fetch DNS: %w", err)
+	}
+
+	if current.UID != dns.UID || current.Generation != dns.Generation {
+		return fmt.Errorf("DNS identity or generation changed during reconciliation")
 	}
 
 	// Check if status actually changed (excluding LastSyncTime which always changes)
@@ -1214,23 +1222,17 @@ func dnsStatusEqual(a, b *cfgatev1alpha1.CloudflareDNSStatus) bool {
 	}
 
 	// Compare record counts
+	if a.OwnershipPrefix != b.OwnershipPrefix || !reflect.DeepEqual(a.PendingWrites, b.PendingWrites) {
+		return false
+	}
 	if a.OwnerID != b.OwnerID || a.SyncedRecords != b.SyncedRecords ||
 		a.PendingRecords != b.PendingRecords ||
 		a.FailedRecords != b.FailedRecords {
 		return false
 	}
 
-	// Compare conditions (ignoring LastTransitionTime)
-	if len(a.Conditions) != len(b.Conditions) {
+	if !conditionsEqual(a.Conditions, b.Conditions) {
 		return false
-	}
-	for i := range a.Conditions {
-		if a.Conditions[i].Type != b.Conditions[i].Type ||
-			a.Conditions[i].Status != b.Conditions[i].Status ||
-			a.Conditions[i].Reason != b.Conditions[i].Reason ||
-			a.Conditions[i].Message != b.Conditions[i].Message {
-			return false
-		}
 	}
 
 	// Compare records
@@ -1396,9 +1398,10 @@ func (r *CloudflareDNSReconciler) cleanupRecordsWithFallback(ctx context.Context
 		return fmt.Errorf("persistent DNS ownership identity is missing; reconcile identity before cleanup or use orphan deletion")
 	}
 
-	ownershipPrefix := dns.Spec.Ownership.TXTRecord.Prefix
-	if ownershipPrefix == "" {
-		ownershipPrefix = dnsDefaultOwnershipPrefix
+	ownershipPrefix := dnsOwnershipPrefix(dns)
+
+	if err := recoverDNSWrites(ctx, dns, dnsService); err != nil {
+		return err
 	}
 
 	if len(dns.Spec.Zones) == 0 && len(dns.Status.Records) == 0 {

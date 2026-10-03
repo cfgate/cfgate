@@ -54,8 +54,8 @@ func TestDeleteManagedStatusRecord(t *testing.T) {
 			Type:     "CNAME",
 			RecordID: "record-1",
 		}, "default/dns", "_cfgate")
-		if err != nil {
-			t.Fatalf("deleteManagedStatusRecord() error = %v", err)
+		if err == nil {
+			t.Fatal("foreign claim must block finalization")
 		}
 		if deletedRecord {
 			t.Fatal("deleteManagedStatusRecord() = true, want false when TXT owner differs")
@@ -96,8 +96,8 @@ func TestDeleteManagedStatusRecord(t *testing.T) {
 			Type:     "CNAME",
 			RecordID: "record-1",
 		}, "default/dns", "_cfgate")
-		if err != nil {
-			t.Fatalf("deleteManagedStatusRecord() error = %v", err)
+		if err == nil {
+			t.Fatal("identity mismatch must block finalization")
 		}
 		if deletedRecord {
 			t.Fatal("deleteManagedStatusRecord() = true, want false when record ID changed")

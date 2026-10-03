@@ -80,3 +80,10 @@ Use `go mod tidy` and `go mod verify`, then run the repository checks described 
 cfgate uses. The SDK-unknown `h2cOrigin` field, bounded pagination and origin duration
 wire formats have dedicated regressions; changes to the Cloudflare integration
 also require live E2E.
+
+The post-alpha.7 DNS controller requires the matching CRD for `status.pendingWrites`
+and `status.ownershipPrefix`. Route-derived DNS now enforces Gateway/listener
+admission in addition to discovery selectors. TXT prefixes are immutable; see
+[DNS recovery and ownership](cloudflare-dns.md#interrupted-writes-and-ownership-changes)
+for cleanup and migration behavior. Healthy Access token expiration extensions retain
+forwarding; credential replacement and authorization edits keep withdrawal checks.

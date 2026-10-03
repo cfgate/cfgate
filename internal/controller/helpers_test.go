@@ -8,6 +8,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
@@ -224,9 +225,19 @@ func TestCloudflareDNSCollectHostnames(t *testing.T) {
 			},
 		}
 
-		r := &CloudflareDNSReconciler{
-			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route).Build(),
+		gateway.Spec.GatewayClassName = "cfgate"
+		if len(gateway.Spec.Listeners) == 0 {
+			gateway.Spec.Listeners = []gatewayv1.Listener{{Name: "http", Port: 80, Protocol: gatewayv1.HTTPProtocolType}}
 		}
+		class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "cfgate"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: GatewayControllerName}}
+		grant := &gatewayv1beta1.ReferenceGrant{ObjectMeta: metav1.ObjectMeta{Name: "gateway-tunnel", Namespace: tunnel.Namespace}, Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{{Group: gatewayv1.GroupName, Kind: "Gateway", Namespace: gatewayv1beta1.Namespace(gateway.Namespace)}},
+			To:   []gatewayv1beta1.ReferenceGrantTo{{Group: "cfgate.io", Kind: "CloudflareTunnel"}},
+		}}
+		if err := gatewayv1beta1.Install(scheme); err != nil {
+			t.Fatal(err)
+		}
+		r := &CloudflareDNSReconciler{APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route, class, grant).Build()}
 
 		hostnames, err := r.collectHostnames(context.Background(), dns, tunnel)
 		if err != nil {
@@ -311,9 +322,20 @@ func TestCloudflareDNSCollectHostnames(t *testing.T) {
 			Status:     cfgatev1alpha1.CloudflareTunnelStatus{TunnelDomain: "edge.cfargotunnel.com"},
 		}
 
-		r := &CloudflareDNSReconciler{
-			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route).Build(),
+		gateway.Spec.GatewayClassName = "cfgate"
+		if len(gateway.Spec.Listeners) == 0 {
+			gateway.Spec.Listeners = []gatewayv1.Listener{{Name: "http", Port: 80, Protocol: gatewayv1.HTTPProtocolType}}
 		}
+		class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "cfgate"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: GatewayControllerName}}
+		grant := &gatewayv1beta1.ReferenceGrant{ObjectMeta: metav1.ObjectMeta{Name: "gateway-tunnel", Namespace: tunnel.Namespace}, Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{{Group: gatewayv1.GroupName, Kind: "Gateway", Namespace: gatewayv1beta1.Namespace(gateway.Namespace)}},
+			To:   []gatewayv1beta1.ReferenceGrantTo{{Group: "cfgate.io", Kind: "CloudflareTunnel"}},
+		}}
+		if err := gatewayv1beta1.Install(scheme); err != nil {
+			t.Fatal(err)
+		}
+		r := &CloudflareDNSReconciler{APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route, class, grant).Build()}
+
 		hostnames, err := r.collectHostnamesFromRoutes(context.Background(), dns, tunnel)
 		if err != nil {
 			t.Fatalf("collectHostnamesFromRoutes() error = %v", err)
@@ -364,9 +386,20 @@ func TestCloudflareDNSCollectHostnames(t *testing.T) {
 			Status:     cfgatev1alpha1.CloudflareTunnelStatus{TunnelDomain: "edge.cfargotunnel.com"},
 		}
 
-		r := &CloudflareDNSReconciler{
-			APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route).Build(),
+		gateway.Spec.GatewayClassName = "cfgate"
+		if len(gateway.Spec.Listeners) == 0 {
+			gateway.Spec.Listeners = []gatewayv1.Listener{{Name: "http", Port: 80, Protocol: gatewayv1.HTTPProtocolType}}
 		}
+		class := &gatewayv1.GatewayClass{ObjectMeta: metav1.ObjectMeta{Name: "cfgate"}, Spec: gatewayv1.GatewayClassSpec{ControllerName: GatewayControllerName}}
+		grant := &gatewayv1beta1.ReferenceGrant{ObjectMeta: metav1.ObjectMeta{Name: "gateway-tunnel", Namespace: tunnel.Namespace}, Spec: gatewayv1beta1.ReferenceGrantSpec{
+			From: []gatewayv1beta1.ReferenceGrantFrom{{Group: gatewayv1.GroupName, Kind: "Gateway", Namespace: gatewayv1beta1.Namespace(gateway.Namespace)}},
+			To:   []gatewayv1beta1.ReferenceGrantTo{{Group: "cfgate.io", Kind: "CloudflareTunnel"}},
+		}}
+		if err := gatewayv1beta1.Install(scheme); err != nil {
+			t.Fatal(err)
+		}
+		r := &CloudflareDNSReconciler{APIReader: fake.NewClientBuilder().WithScheme(scheme).WithObjects(gateway, route, class, grant).Build()}
+
 		hostnames, err := r.collectHostnamesFromRoutes(context.Background(), dns, tunnel)
 		if err != nil {
 			t.Fatalf("collectHostnamesFromRoutes() error = %v", err)

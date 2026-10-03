@@ -451,31 +451,9 @@ func NewOwnershipVerifiedCondition(verified bool, reason, message string, genera
 
 // NewDNSReadyCondition creates the overall Ready condition for CloudflareDNS.
 // Ready = CredentialsValid AND ZonesResolved AND RecordsSynced
-func NewDNSReadyCondition(conditions []metav1.Condition, generation int64) metav1.Condition {
-	ready := ConditionTrue(conditions, ConditionTypeCredentialsValid) &&
-		ConditionTrue(conditions, ConditionTypeZonesResolved) &&
-		ConditionTrue(conditions, ConditionTypeRecordsSynced)
-
-	if ready {
-		return NewCondition(ConditionTypeReady, metav1.ConditionTrue,
-			ReasonReconcileSuccess, "DNS sync is ready.", generation)
-	}
-
-	// Find first failing condition for message
-	for _, t := range []string{
-		ConditionTypeCredentialsValid,
-		ConditionTypeZonesResolved,
-		ConditionTypeRecordsSynced,
-	} {
-		c := FindCondition(conditions, t)
-		if c != nil && c.Status != metav1.ConditionTrue {
-			return NewCondition(ConditionTypeReady, metav1.ConditionFalse,
-				c.Reason, c.Message, generation)
-		}
-	}
-
-	return NewCondition(ConditionTypeReady, metav1.ConditionUnknown,
-		ReasonReconciling, "Reconciling DNS sync.", generation)
+func NewDNSReadyCondition(conditions []metav1.Condition, generation int64, additional ...string) metav1.Condition {
+	required := append([]string{ConditionTypeCredentialsValid, ConditionTypeZonesResolved, ConditionTypeRecordsSynced}, additional...)
+	return aggregateReadyCondition(conditions, required, generation, "DNS sync is ready.", "Reconciling DNS sync.")
 }
 
 // --- CloudflareAccessPolicy Condition Constructors ---
@@ -524,12 +502,12 @@ func NewAccessPolicyReadyCondition(conditions []metav1.Condition, hasServiceToke
 	if hasServiceTokens {
 		required = append(required, ConditionTypeServiceTokensReady)
 	}
-	return accessReadyCondition(conditions, required, generation, "Access policy is ready.", "Reconciling access policy.")
+	return aggregateReadyCondition(conditions, required, generation, "Access policy is ready.", "Reconciling access policy.")
 }
 
 // NewAccessApplicationReadyCondition requires observations of the current spec.
 func NewAccessApplicationReadyCondition(conditions []metav1.Condition, generation int64) metav1.Condition {
-	return accessReadyCondition(conditions, []string{
+	return aggregateReadyCondition(conditions, []string{
 		ConditionTypeCredentialsValid, ConditionTypeTargetsResolved, ConditionTypeReferenceGrantValid,
 		ConditionTypePoliciesResolved, ConditionTypeApplicationSynced, ConditionTypePoliciesLinked,
 	}, generation, "Access application is ready.", "Reconciling access application.")
@@ -538,7 +516,7 @@ func NewAccessApplicationReadyCondition(conditions []metav1.Condition, generatio
 // An ownership checkpoint can happen before reconciliation evaluates the new
 // spec. Historical successes must not certify that newer generation. A current
 // failure still takes precedence over missing or stale observations.
-func accessReadyCondition(conditions []metav1.Condition, required []string, generation int64, readyMessage, pendingMessage string) metav1.Condition {
+func aggregateReadyCondition(conditions []metav1.Condition, required []string, generation int64, readyMessage, pendingMessage string) metav1.Condition {
 	complete := true
 	for _, kind := range required {
 		c := FindCondition(conditions, kind)
