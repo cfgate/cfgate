@@ -699,6 +699,11 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 
 	for _, gw := range relevantGateways {
 		for _, route := range routes.Items {
+			// Discovery shares publication eligibility, while backend readiness
+			// remains independent: an admitted route can intentionally serve 503.
+			if err := validateHTTPRouteFeatures(&route); err != nil {
+				continue
+			}
 			if allowedNamespaces != nil && !allowedNamespaces[route.Namespace] {
 				continue
 			}
