@@ -51,7 +51,7 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 		deleteTestNamespace(namespace)
 	})
 
-	It("reloads origin CA trust after Secret rotation", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
+	It("preserves explicit TLS verification overrides and reloads rotated CA trust", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
 		skipIfNoZone()
 		certA, keyA := e2eTLSCertificate()
 		certB, keyB := e2eTLSCertificate()
@@ -65,6 +65,7 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 				return err
 			}
 			tunnel.Spec.OriginDefaults.CAPoolSecretRef = &cfgatev1alpha1.CAPoolSecretRef{Name: ca.Name}
+			tunnel.Spec.OriginDefaults.NoTLSVerify = true
 			return k8sClient.Update(ctx, tunnel)
 		}, ShortTimeout, DefaultInterval).Should(Succeed())
 		tunnel = waitForTunnelReady(ctx, k8sClient, tunnel.Name, tunnel.Namespace, LongTimeout)
@@ -76,7 +77,8 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 		hostname := testID("ca-host") + "." + testEnv.CloudflareZoneName
 		route := createHTTPRoute(ctx, k8sClient, "tls-route", namespace.Name, gateway.Name, []string{hostname}, service.Name, 8080)
 		updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(a map[string]string) {
-			a["cfgate.io/origin-protocol"] = "https"
+			a["cfgate.io/origin-protocol"] = "HTTPS"
+			a["cfgate.io/origin-ssl-verify"] = "YES"
 			a["cfgate.io/origin-server-name"] = "origin.test"
 			a["cfgate.io/dns-sync"] = "ca-reload"
 		})
@@ -109,6 +111,12 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 			g.Expect(current.Status.AvailableReplicas).To(Equal(*current.Spec.Replicas))
 		}, LongTimeout, DefaultInterval).Should(Succeed())
 		expectMaintenanceResponse(ctx, hostname, "", "", http.StatusBadGateway)
+		By("Honoring an explicit insecure override, then restoring verification")
+		updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(a map[string]string) { a["cfgate.io/origin-ssl-verify"] = "NO" })
+		expectMaintenanceResponse(ctx, hostname, service.Name, "", http.StatusOK)
+		updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(a map[string]string) { a["cfgate.io/origin-ssl-verify"] = "TRUE" })
+		expectMaintenanceResponse(ctx, hostname, "", "", http.StatusBadGateway)
+
 		By("Accepting B and continuing to reject A without manually restarting connectors")
 		updateSecret(tlsSecret, map[string][]byte{"tls.crt": certB, "tls.key": keyB})
 		expectMaintenanceResponse(ctx, hostname, service.Name, "", http.StatusOK)

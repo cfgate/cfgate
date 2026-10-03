@@ -558,7 +558,7 @@ func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfg
 			Target: resolveExplicitHostnameTarget(dns, tunnel, explicit),
 			TTL:    explicit.TTL, Proxied: explicit.Proxied, RecordType: recordType,
 		}
-		if previous, exists := explicitHostnames[name]; exists && !reflect.DeepEqual(previous, config) {
+		if previous, exists := explicitHostnames[name]; exists && !reflect.DeepEqual(effectiveDNSHostnameConfig(dns, name, previous), effectiveDNSHostnameConfig(dns, name, config)) {
 			return nil, fmt.Errorf("conflicting explicit configuration for hostname %s", name)
 		}
 		explicitHostnames[name] = config
@@ -740,7 +740,7 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 					}
 					for _, h := range accepted {
 						name := cloudflare.NormalizeDNSName(string(h))
-						if previous, exists := hostnames[name]; exists && !reflect.DeepEqual(previous, config) {
+						if previous, exists := hostnames[name]; exists && !reflect.DeepEqual(effectiveDNSHostnameConfig(dns, name, previous), effectiveDNSHostnameConfig(dns, name, config)) {
 							return nil, fmt.Errorf("conflicting route configuration for hostname %s", name)
 						}
 						hostnames[name] = config
@@ -814,6 +814,37 @@ func zoneProxiedOverrides(dns *cfgatev1alpha1.CloudflareDNS) map[string]*bool {
 	return overrides
 }
 
+// effectiveDNSHostnameConfig resolves inheritance before comparing or publishing
+// source settings. Raw inputs remain available so later default changes apply.
+func effectiveDNSHostnameConfig(dns *cfgatev1alpha1.CloudflareDNS, hostname string, config HostnameConfig) HostnameConfig {
+	ttl := dns.Spec.Defaults.TTL
+	if ttl == 0 {
+		ttl = 1
+	}
+	proxied := dns.Spec.Defaults.Proxied
+	zoneName, _, err := cloudflare.SelectDNSZone(hostname, configuredDNSZones(dns))
+	if err == nil {
+		if override := zoneProxiedOverrides(dns)[zoneName]; override != nil {
+			proxied = *override
+		}
+	}
+	if config.TTL != 0 {
+		ttl = config.TTL
+	}
+	if config.Proxied != nil {
+		proxied = *config.Proxied
+	}
+	if proxied {
+		ttl = 1
+	}
+	config.TTL = ttl
+	config.Proxied = &proxied
+	if config.RecordType == "" {
+		config.RecordType = "CNAME"
+	}
+	return config
+}
+
 // syncRecords syncs DNS records to Cloudflare.
 // Compares desired state with actual state and applies changes respecting policy.
 // The hostnameConfigs map provides the effective per-hostname target, TTL,
@@ -824,7 +855,6 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 	if err != nil {
 		return err
 	}
-	zoneProxied := zoneProxiedOverrides(dns)
 
 	ownershipPrefix := dnsOwnershipPrefix(dns)
 
@@ -868,28 +898,12 @@ func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1
 			continue
 		}
 
-		// Get TTL and proxied settings from defaults
-		ttl := dns.Spec.Defaults.TTL
-		if ttl == 0 {
-			ttl = 1 // auto
-		}
-		proxied := dns.Spec.Defaults.Proxied
-		if zoneProxiedValue := zoneProxied[zoneName]; zoneProxiedValue != nil {
-			proxied = *zoneProxiedValue
-		}
+		effective := effectiveDNSHostnameConfig(dns, hostname, hostnameConfig)
 		recordTarget := target
-		if hostnameConfig.Target != "" {
-			recordTarget = hostnameConfig.Target
+		if effective.Target != "" {
+			recordTarget = effective.Target
 		}
-		if hostnameConfig.TTL != 0 {
-			ttl = hostnameConfig.TTL
-		}
-		if hostnameConfig.Proxied != nil {
-			proxied = *hostnameConfig.Proxied
-		}
-
-		comment := "managed by cfgate"
-		desired := cloudflare.BuildDNSRecord(hostname, recordTarget, recordType, proxied, int(ttl), comment)
+		desired := cloudflare.BuildDNSRecord(hostname, recordTarget, recordType, *effective.Proxied, int(effective.TTL), "managed by cfgate")
 
 		// Warn on deep subdomains unless suppressed by annotation
 		if cloudflare.ValidateHostnameDepth(hostname, zoneName) {

@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestParseDurationSeconds(t *testing.T) {
@@ -447,9 +449,9 @@ func TestOriginRequestConverters(t *testing.T) {
 		HTTPHostHeader:         "origin.example.com",
 		OriginServerName:       "server.example.com",
 		CAPool:                 "pool-1",
-		NoTLSVerify:            true,
+		NoTLSVerify:            ptr.To(true),
 		DisableChunkedEncoding: true,
-		HTTP2Origin:            true,
+		HTTP2Origin:            ptr.To(true),
 	}
 	ingress := ingressOriginRequestToAPI(config)
 	if ingress.ConnectTimeout.Value != 45 || !ingress.NoHappyEyeballs.Value || ingress.KeepAliveConnections.Value != 7 ||

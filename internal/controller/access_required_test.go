@@ -9,7 +9,6 @@ import (
 	"fmt"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
@@ -17,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestAccessRequiredMissingApplicationDeniesMatchingRoute(t *testing.T) {
@@ -161,7 +162,7 @@ func TestAccessRequiredRemoteVerification(t *testing.T) {
 			if tt.allowed != strings.HasPrefix(service, "http://") {
 				t.Fatalf("allowed=%v actualservice=%s", tt.allowed, service)
 			}
-			if tt.name == "generic h2c preserved" && (f.remoteConfig.Ingress[0].OriginRequest == nil || !f.remoteConfig.Ingress[0].OriginRequest.H2cOrigin) {
+			if tt.name == "generic h2c preserved" && (f.remoteConfig.Ingress[0].OriginRequest == nil || !ptr.Deref(f.remoteConfig.Ingress[0].OriginRequest.H2cOrigin, false)) {
 				t.Fatal("h2c origin transport lost")
 			}
 			if !tt.allowed && service != "http_status:503" {

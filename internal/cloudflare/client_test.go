@@ -14,6 +14,8 @@ import (
 	cf "github.com/cloudflare/cloudflare-go/v7"
 	"github.com/cloudflare/cloudflare-go/v7/option"
 	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
+
+	"k8s.io/utils/ptr"
 )
 
 type tunnelConfigCaptureTransport struct {
@@ -56,9 +58,9 @@ func TestUpdateTunnelConfigurationPreservesH2cWireFields(t *testing.T) {
 				t.Fatal(err)
 			}
 			config := TunnelConfiguration{
-				OriginRequest: &OriginRequestConfig{H2cOrigin: tt.global},
+				OriginRequest: &OriginRequestConfig{H2cOrigin: ptr.To(tt.global)},
 				Ingress: []IngressRule{
-					{Hostname: "h2c.example.com", Service: "http://backend:8080", OriginRequest: &OriginRequestConfig{H2cOrigin: tt.rule}},
+					{Hostname: "h2c.example.com", Service: "http://backend:8080", OriginRequest: &OriginRequestConfig{H2cOrigin: ptr.To(tt.rule)}},
 					{Service: "http_status:404"},
 				},
 			}

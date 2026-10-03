@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestReadTunnelConfigurationPreservesH2c(t *testing.T) {
@@ -24,7 +26,7 @@ func TestReadTunnelConfigurationPreservesH2c(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.OriginRequest == nil || !config.OriginRequest.H2cOrigin || len(config.Ingress) != 1 || !config.Ingress[0].OriginRequest.H2cOrigin {
+	if config.OriginRequest == nil || !ptr.Deref(config.OriginRequest.H2cOrigin, false) || len(config.Ingress) != 1 || !ptr.Deref(config.Ingress[0].OriginRequest.H2cOrigin, false) {
 		t.Fatalf("h2c response lost: %+v", config)
 	}
 }

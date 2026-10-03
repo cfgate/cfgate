@@ -178,14 +178,11 @@ func GetAnnotationBool(obj client.Object, key string, defaultValue bool) bool {
 		return defaultValue
 	}
 
-	switch strings.ToLower(value) {
-	case "true", "1", "yes":
-		return true
-	case "false", "0", "no":
-		return false
-	default:
+	parsed, err := ParseBoolean(value)
+	if err != nil {
 		return defaultValue
 	}
+	return parsed
 }
 
 // GetAnnotationInt parses an integer annotation value.
@@ -333,12 +330,9 @@ type ValidationResult struct {
 func ValidateRouteAnnotations(obj client.Object, requireHostname bool) ValidationResult {
 	result := ValidationResult{Valid: true}
 
-	// Validate origin protocol
-	if protocol := GetAnnotation(obj, AnnotationOriginProtocol); protocol != "" {
-		if err := ValidateOriginProtocol(protocol); err != nil {
-			result.Valid = false
-			result.Errors = append(result.Errors, err.Error())
-		}
+	for _, err := range validateOriginAnnotations(obj.GetAnnotations()) {
+		result.Valid = false
+		result.Errors = append(result.Errors, err.Error())
 	}
 
 	// Validate TTL
@@ -347,14 +341,6 @@ func ValidateRouteAnnotations(obj client.Object, requireHostname bool) Validatio
 			result.Valid = false
 			result.Errors = append(result.Errors, err.Error())
 		}
-	}
-
-	// Validate mutual exclusivity of origin transport annotations
-	if isTruthyAnnotation(GetAnnotation(obj, AnnotationOriginH2c)) &&
-		isTruthyAnnotation(GetAnnotation(obj, AnnotationOriginHTTP2)) {
-		result.Valid = false
-		result.Errors = append(result.Errors, fmt.Sprintf(
-			"%s and %s are mutually exclusive", AnnotationOriginH2c, AnnotationOriginHTTP2))
 	}
 
 	// Validate hostname
@@ -375,6 +361,47 @@ func ValidateRouteAnnotations(obj client.Object, requireHostname bool) Validatio
 	}
 
 	return result
+}
+
+// ParseBoolean accepts the Boolean spellings documented for annotations.
+func ParseBoolean(value string) (bool, error) {
+	switch strings.ToLower(value) {
+	case "true", "1", "yes":
+		return true, nil
+	case "false", "0", "no":
+		return false, nil
+	default:
+		return false, fmt.Errorf("invalid Boolean %q: use true or false", value)
+	}
+}
+
+// ValidateOriginAnnotations rejects transport settings that cannot be rendered.
+func ValidateOriginAnnotations(values map[string]string) error {
+	return errors.Join(validateOriginAnnotations(values)...)
+}
+
+func validateOriginAnnotations(values map[string]string) []error {
+	var errs []error
+	if err := ValidateOriginProtocol(values[AnnotationOriginProtocol]); err != nil {
+		errs = append(errs, err)
+	}
+	for _, key := range []string{AnnotationOriginSSLVerify, AnnotationOriginHTTP2, AnnotationOriginH2c} {
+		if value, present := values[key]; present {
+			if _, err := ParseBoolean(value); err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", key, err))
+			}
+		}
+	}
+	if value, present := values[AnnotationOriginConnectTimeout]; present {
+		duration, err := time.ParseDuration(value)
+		if err != nil || duration < time.Second || duration%time.Second != 0 {
+			errs = append(errs, fmt.Errorf("%s must be a positive whole number of seconds", AnnotationOriginConnectTimeout))
+		}
+	}
+	if isTruthyAnnotation(values[AnnotationOriginHTTP2]) && isTruthyAnnotation(values[AnnotationOriginH2c]) {
+		errs = append(errs, fmt.Errorf("%s and %s are mutually exclusive", AnnotationOriginH2c, AnnotationOriginHTTP2))
+	}
+	return errs
 }
 
 // --- Origin Configuration ---
@@ -410,7 +437,7 @@ type OriginConfig struct {
 // Uses sensible defaults when annotations are not present.
 func ParseOriginConfig(obj client.Object, defaultProtocol string) OriginConfig {
 	config := OriginConfig{
-		Protocol:       GetAnnotation(obj, AnnotationOriginProtocol),
+		Protocol:       strings.ToLower(GetAnnotation(obj, AnnotationOriginProtocol)),
 		SSLVerify:      GetAnnotationBool(obj, AnnotationOriginSSLVerify, true),
 		ConnectTimeout: GetAnnotationDuration(obj, AnnotationOriginConnectTimeout, 30*time.Second),
 		HTTPHostHeader: GetAnnotation(obj, AnnotationOriginHTTPHostHeader),
@@ -430,11 +457,8 @@ func ParseOriginConfig(obj client.Object, defaultProtocol string) OriginConfig {
 
 // isTruthyAnnotation reports whether a string annotation value represents true.
 func isTruthyAnnotation(val string) bool {
-	switch strings.ToLower(val) {
-	case "true", "1", "yes":
-		return true
-	}
-	return false
+	parsed, _ := ParseBoolean(val)
+	return parsed
 }
 
 // --- DNS Configuration ---
@@ -442,7 +466,7 @@ func isTruthyAnnotation(val string) bool {
 // DNSConfig represents the parsed DNS configuration from route annotations.
 type DNSConfig struct {
 	// TTL is the DNS record TTL in seconds.
-	// Value 1 means Cloudflare auto TTL.
+	// Zero preserves omission; value 1 explicitly selects Cloudflare auto TTL.
 	TTL int
 
 	// Proxied enables Cloudflare proxy (orange cloud).
@@ -452,7 +476,7 @@ type DNSConfig struct {
 // ParseDNSConfig extracts DNS configuration from route annotations.
 func ParseDNSConfig(obj client.Object) DNSConfig {
 	return DNSConfig{
-		TTL:     GetAnnotationInt(obj, AnnotationTTL, 1),
+		TTL:     GetAnnotationInt(obj, AnnotationTTL, 0),
 		Proxied: GetAnnotationBool(obj, AnnotationCloudflareProxied, true),
 	}
 }

@@ -18,6 +18,8 @@ import (
 	"github.com/cloudflare/cloudflare-go/v7/packages/pagination"
 	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 	"github.com/cloudflare/cloudflare-go/v7/zones"
+
+	"k8s.io/utils/ptr"
 )
 
 const (
@@ -278,12 +280,12 @@ func (c *clientImpl) UpdateTunnelConfiguration(ctx context.Context, accountID, t
 	if config.WarpRouting != nil {
 		opts = append(opts, option.WithJSONSet("config.warp-routing.enabled", config.WarpRouting.Enabled))
 	}
-	if config.OriginRequest != nil && config.OriginRequest.H2cOrigin {
-		opts = append(opts, option.WithJSONSet("config.originRequest.h2cOrigin", true))
+	if config.OriginRequest != nil && config.OriginRequest.H2cOrigin != nil {
+		opts = append(opts, option.WithJSONSet("config.originRequest.h2cOrigin", *config.OriginRequest.H2cOrigin))
 	}
 	for i, rule := range config.Ingress {
-		if rule.OriginRequest != nil && rule.OriginRequest.H2cOrigin {
-			opts = append(opts, option.WithJSONSet(fmt.Sprintf("config.ingress.%d.originRequest.h2cOrigin", i), true))
+		if rule.OriginRequest != nil && rule.OriginRequest.H2cOrigin != nil {
+			opts = append(opts, option.WithJSONSet(fmt.Sprintf("config.ingress.%d.originRequest.h2cOrigin", i), *rule.OriginRequest.H2cOrigin))
 		}
 	}
 
@@ -623,11 +625,21 @@ func (c *clientImpl) GetAccountByName(ctx context.Context, name string) (*Accoun
 // H2cOrigin. CRD validation prevents this, but the client layer should not
 // depend on admission control alone.
 func validateOriginRequests(config TunnelConfiguration) error {
-	if config.OriginRequest != nil && config.OriginRequest.HTTP2Origin && config.OriginRequest.H2cOrigin {
+	globalHTTP2, globalH2c := false, false
+	if config.OriginRequest != nil {
+		globalHTTP2 = ptr.Deref(config.OriginRequest.HTTP2Origin, false)
+		globalH2c = ptr.Deref(config.OriginRequest.H2cOrigin, false)
+	}
+	if globalHTTP2 && globalH2c {
 		return errors.New("http2Origin and h2cOrigin are mutually exclusive in global origin defaults")
 	}
 	for i, rule := range config.Ingress {
-		if rule.OriginRequest != nil && rule.OriginRequest.HTTP2Origin && rule.OriginRequest.H2cOrigin {
+		http2, h2c := globalHTTP2, globalH2c
+		if rule.OriginRequest != nil {
+			http2 = ptr.Deref(rule.OriginRequest.HTTP2Origin, http2)
+			h2c = ptr.Deref(rule.OriginRequest.H2cOrigin, h2c)
+		}
+		if http2 && h2c {
 			return fmt.Errorf("http2Origin and h2cOrigin are mutually exclusive in ingress rule %d (%s)", i, rule.Hostname)
 		}
 	}

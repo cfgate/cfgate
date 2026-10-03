@@ -255,6 +255,9 @@ func listenerAllowsRouteNamespace(
 // validateHTTPRouteFeatures defines the subset the tunnel renderer can preserve.
 // Status and rendering both reject restrictions that would otherwise be dropped.
 func validateHTTPRouteFeatures(route *gwapiv1.HTTPRoute) error {
+	if err := annotations.ValidateOriginAnnotations(route.Annotations); err != nil {
+		return err
+	}
 	for i, rule := range route.Spec.Rules {
 		if len(rule.Filters) > 0 || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
 			return fmt.Errorf("rule %d: filters, timeouts, retries and session persistence are not supported by cfgate tunnel ingress", i)

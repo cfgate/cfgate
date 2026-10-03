@@ -3,6 +3,8 @@ package controller
 import (
 	"cfgate.io/cfgate/internal/cloudflare"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestTunnelDurationComparisonUsesDesiredWireSemantics(t *testing.T) {
@@ -14,15 +16,15 @@ func TestTunnelDurationComparisonUsesDesiredWireSemantics(t *testing.T) {
 		{"0s", "30s", false}, {"0s", "0s", false}, {"0s", "500ms", false}, {"1s", "2s", false}, {"", "30s", false},
 	} {
 		t.Run(test.remote+"/"+test.desired, func(t *testing.T) {
-			remote := cloudflare.TunnelConfiguration{OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.remote, H2cOrigin: true}, Ingress: []cloudflare.IngressRule{{Service: "http://origin", OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.remote, H2cOrigin: true}}, {Service: "http_status:404"}}}
-			desired := cloudflare.TunnelConfiguration{OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.desired, H2cOrigin: true}, Ingress: []cloudflare.IngressRule{{Service: "http://origin", OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.desired, H2cOrigin: true}}, {Service: "http_status:404"}}}
+			remote := cloudflare.TunnelConfiguration{OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.remote, H2cOrigin: ptr.To(true)}, Ingress: []cloudflare.IngressRule{{Service: "http://origin", OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.remote, H2cOrigin: ptr.To(true)}}, {Service: "http_status:404"}}}
+			desired := cloudflare.TunnelConfiguration{OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.desired, H2cOrigin: ptr.To(true)}, Ingress: []cloudflare.IngressRule{{Service: "http://origin", OriginRequest: &cloudflare.OriginRequestConfig{ConnectTimeout: test.desired, H2cOrigin: ptr.To(true)}}, {Service: "http_status:404"}}}
 			if got := equivalentTunnelConfiguration(remote, desired); got != test.same {
 				t.Fatalf("same=%t want%t", got, test.same)
 			}
 			if remote.OriginRequest.ConnectTimeout != test.remote || desired.OriginRequest.ConnectTimeout != test.desired || remote.Ingress[0].OriginRequest.ConnectTimeout != test.remote || desired.Ingress[0].OriginRequest.ConnectTimeout != test.desired {
 				t.Fatal("comparison mutated caller configuration")
 			}
-			desired.OriginRequest.H2cOrigin = false
+			desired.OriginRequest.H2cOrigin = ptr.To(false)
 			if equivalentTunnelConfiguration(remote, desired) {
 				t.Fatal("h2c change normalized away")
 			}

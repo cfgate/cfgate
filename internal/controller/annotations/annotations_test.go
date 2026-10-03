@@ -520,7 +520,7 @@ func TestParseDNSConfig(t *testing.T) {
 		{
 			name:        "all defaults",
 			annotations: map[string]string{},
-			wantTTL:     1, // auto
+			wantTTL:     0, // inherit
 			wantProxied: true,
 		},
 		{
@@ -537,7 +537,7 @@ func TestParseDNSConfig(t *testing.T) {
 			annotations: map[string]string{
 				AnnotationCloudflareProxied: "false",
 			},
-			wantTTL:     1,
+			wantTTL:     0,
 			wantProxied: false,
 		},
 		{
@@ -1064,13 +1064,13 @@ func TestParseDNSConfigFallbacks(t *testing.T) {
 		{
 			name:        "invalid TTL string falls back to default",
 			annotations: map[string]string{AnnotationTTL: "invalid"},
-			wantTTL:     1,
+			wantTTL:     0,
 			wantProxied: true,
 		},
 		{
 			name:        "invalid proxied value falls back to default",
 			annotations: map[string]string{AnnotationCloudflareProxied: "maybe"},
-			wantTTL:     1,
+			wantTTL:     0,
 			wantProxied: true,
 		},
 		{
