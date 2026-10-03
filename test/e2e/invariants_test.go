@@ -412,8 +412,14 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 				"CF_ACCESS_CLIENT_SECRET must be non-empty")
 
 			By("INV-ST3: Service token must exist in Cloudflare API")
-			cfToken, err := getServiceTokenFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, ap.Status.ServiceTokenIDs[expectedTokenName])
-			Expect(err).NotTo(HaveOccurred())
+			// Retry failed observations within the test budget. A successful
+			// response with a missing or wrong token still fails immediately.
+			var cfToken *CloudflareServiceTokenInfo
+			Eventually(ctx, func() error {
+				var err error
+				cfToken, err = getServiceTokenFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, ap.Status.ServiceTokenIDs[expectedTokenName])
+				return err
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 			Expect(cfToken).NotTo(BeNil(), "Service token must exist in Cloudflare when Ready=True")
 			Expect(cfToken.ID).To(Equal(ap.Status.ServiceTokenIDs[expectedTokenName]),
 				"Cloudflare token ID must match status.serviceTokenIDs")
