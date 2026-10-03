@@ -20,6 +20,7 @@ import (
 func dnsLifecycleStore(t *testing.T, store map[string]map[string]cloudflare.DNSRecord) *cloudflare.MockClient {
 	t.Helper()
 	mock := cloudflare.NewMockClient()
+	sequence := 0
 	mock.ListDNSRecordsByNameTypeFunc = func(_ context.Context, zone, name, kind string) ([]cloudflare.DNSRecord, error) {
 		var records []cloudflare.DNSRecord
 		for _, record := range store[zone] {
@@ -40,7 +41,8 @@ func dnsLifecycleStore(t *testing.T, store map[string]map[string]cloudflare.DNSR
 		if store[zone] == nil {
 			store[zone] = map[string]cloudflare.DNSRecord{}
 		}
-		record.ID = zone + "/" + record.Name + "/" + record.Type
+		sequence++
+		record.ID = fmt.Sprintf("%s/%s/%s/%d", zone, record.Name, record.Type, sequence)
 		if _, exists := store[zone][record.ID]; exists {
 			t.Fatalf("duplicate create: %s", record.ID)
 		}

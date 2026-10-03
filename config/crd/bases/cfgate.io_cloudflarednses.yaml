@@ -255,7 +255,8 @@ spec:
                         type: boolean
                       prefix:
                         default: _cfgate
-                        description: Prefix is the prefix for TXT record names.
+                        description: Prefix is the immutable prefix for TXT record
+                          names.
                         maxLength: 63
                         type: string
                     type: object
@@ -424,6 +425,11 @@ spec:
               rule: '!(has(self.tunnelRef) && has(self.externalTarget))'
             - message: cloudflare credentials required when using externalTarget
               rule: has(self.tunnelRef) || has(self.cloudflare)
+            - message: TXT ownership prefix is immutable
+              rule: '(has(self.ownership) && has(self.ownership.txtRecord) && has(self.ownership.txtRecord.prefix)
+                ? self.ownership.txtRecord.prefix : ''_cfgate'') == (has(oldSelf.ownership)
+                && has(oldSelf.ownership.txtRecord) && has(oldSelf.ownership.txtRecord.prefix)
+                ? oldSelf.ownership.txtRecord.prefix : ''_cfgate'')'
           status:
             description: |-
               CloudflareDNSStatus defines the observed state of a CloudflareDNS resource.
@@ -510,10 +516,52 @@ spec:
                 description: OwnerID persists the installation namespace UID and resource
                   UID for cleanup.
                 type: string
+              ownershipPrefix:
+                description: OwnershipPrefix pins the claim namespace used for publication
+                  and cleanup.
+                type: string
               pendingRecords:
                 description: PendingRecords is the number of records pending sync.
                 format: int32
                 type: integer
+              pendingWrites:
+                description: PendingWrites retains destinations until their results
+                  are durably recorded.
+                items:
+                  description: |-
+                    DNSPendingWrite records a destination before an external write. It survives
+                    failed status writes and later edits to the desired zones or hostnames.
+                  properties:
+                    hostname:
+                      description: Hostname and Type identify the intended record.
+                      type: string
+                    operationId:
+                      description: OperationID distinguishes a creation from another
+                        record incarnation.
+                      pattern: ^[A-Za-z0-9_-]{10}$
+                      type: string
+                    previousOwned:
+                      description: PreviousOwned distinguishes an unowned baseline
+                        from a foreign replacement.
+                      type: boolean
+                    previousRecordId:
+                      description: PreviousRecordID identifies an existing owned record
+                        before an update.
+                      type: string
+                    type:
+                      type: string
+                    zoneId:
+                      description: ZoneID is the resolved destination, independent
+                        of current spec.zones.
+                      type: string
+                  required:
+                  - hostname
+                  - operationId
+                  - type
+                  - zoneId
+                  type: object
+                maxItems: 1000
+                type: array
               records:
                 description: Records contains the status of individual DNS records.
                 items:

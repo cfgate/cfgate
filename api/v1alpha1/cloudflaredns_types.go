@@ -233,7 +233,7 @@ type DNSTXTRecordOwnership struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 
-	// Prefix is the prefix for TXT record names.
+	// Prefix is the immutable prefix for TXT record names.
 	// +kubebuilder:default="_cfgate"
 	// +kubebuilder:validation:MaxLength=63
 	Prefix string `json:"prefix,omitempty"`
@@ -318,6 +318,7 @@ type DNSCleanupPolicy struct {
 // +kubebuilder:validation:XValidation:rule="has(self.tunnelRef) || has(self.externalTarget)",message="either tunnelRef or externalTarget must be specified"
 // +kubebuilder:validation:XValidation:rule="!(has(self.tunnelRef) && has(self.externalTarget))",message="tunnelRef and externalTarget are mutually exclusive"
 // +kubebuilder:validation:XValidation:rule="has(self.tunnelRef) || has(self.cloudflare)",message="cloudflare credentials required when using externalTarget"
+// +kubebuilder:validation:XValidation:rule="(has(self.ownership) && has(self.ownership.txtRecord) && has(self.ownership.txtRecord.prefix) ? self.ownership.txtRecord.prefix : '_cfgate') == (has(oldSelf.ownership) && has(oldSelf.ownership.txtRecord) && has(oldSelf.ownership.txtRecord.prefix) ? oldSelf.ownership.txtRecord.prefix : '_cfgate')",message="TXT ownership prefix is immutable"
 type CloudflareDNSSpec struct {
 	// TunnelRef references a CloudflareTunnel for CNAME target resolution.
 	// +optional
@@ -402,12 +403,39 @@ type DNSRecordSyncStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
+// DNSPendingWrite records a destination before an external write. It survives
+// failed status writes and later edits to the desired zones or hostnames.
+type DNSPendingWrite struct {
+	// ZoneID is the resolved destination, independent of current spec.zones.
+	ZoneID string `json:"zoneId"`
+	// Hostname and Type identify the intended record.
+	Hostname string `json:"hostname"`
+	Type     string `json:"type"`
+	// OperationID distinguishes a creation from another record incarnation.
+	// +kubebuilder:validation:Pattern="^[A-Za-z0-9_-]{10}$"
+	OperationID string `json:"operationId"`
+	// PreviousRecordID identifies an existing owned record before an update.
+	// +optional
+	PreviousRecordID string `json:"previousRecordId,omitempty"`
+	// PreviousOwned distinguishes an unowned baseline from a foreign replacement.
+	// +optional
+	PreviousOwned bool `json:"previousOwned,omitempty"`
+}
+
 // CloudflareDNSStatus defines the observed state of a CloudflareDNS resource.
 //
 // CloudflareDNSStatus captures the synchronization state of all DNS records, including
 // counts of synced, pending, and failed records. The ResolvedTarget field shows the
 // actual CNAME target being used (either from tunnel or external target).
 type CloudflareDNSStatus struct {
+	// OwnershipPrefix pins the claim namespace used for publication and cleanup.
+	// +optional
+	OwnershipPrefix string `json:"ownershipPrefix,omitempty"`
+	// PendingWrites retains destinations until their results are durably recorded.
+	// +optional
+	// +kubebuilder:validation:MaxItems=1000
+	PendingWrites []DNSPendingWrite `json:"pendingWrites,omitempty"`
+
 	// OwnerID persists the installation namespace UID and resource UID for cleanup.
 	// +optional
 	OwnerID string `json:"ownerId,omitempty"`

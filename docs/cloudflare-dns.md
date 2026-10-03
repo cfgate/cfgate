@@ -42,7 +42,7 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.defaults.ttl` | `int32` | `1` | No | Default DNS record TTL. `1` = auto. Explicit range: 60-86400. |
 | `spec.ownership.ownerId` | `string` | *none* | No | Deprecated legacy hint; cannot override `status.ownerId` or authorize adoption. Retained in the schema for compatibility. |
 | `spec.ownership.txtRecord.enabled` | `*bool` | `true` (nil defaults to true) | No | Enables TXT record-based ownership tracking. |
-| `spec.ownership.txtRecord.prefix` | `string` | `_cfgate` | No | Prefix for TXT record names. Max 63 chars. |
+| `spec.ownership.txtRecord.prefix` | `string` | `_cfgate` | No | Immutable prefix for TXT record names. Max 63 chars. |
 | `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes an exact owner marker. Schema removal is deferred to a future cleanup. |
 | `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes `cfgate/owner=<owner-id>`. Schema removal is deferred to a future cleanup. |
 | `spec.cleanupPolicy.deleteOnRouteRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the source route is deleted. |
@@ -129,6 +129,8 @@ spec:
 ```
 
 ### `spec.source.gatewayRoutes`
+
+Automatic DNS publication requires a cfgate-managed Gateway, permission for its tunnel reference, an admitted parent/listener attachment, and an intersecting hostname. Namespace and annotation selectors further restrict discovery; they do not grant publication authority. Backend availability is separate: an admitted route may retain DNS while its backend returns an error. Explicit hostnames remain administrator-managed.
 
 Configures automatic hostname discovery from Gateway API HTTPRoute resources. Route discovery is enabled by the presence of this block. If `source.gatewayRoutes` is absent, the resource is explicit-only and does not watch routes. If the block is present and `enabled` is omitted, it defaults to `true`.
 
@@ -459,3 +461,29 @@ When `spec.source.gatewayRoutes.namespaceSelector` is set, only routes from matc
 `matchLabels` uses AND semantics: all specified labels must be present on the namespace. `matchNames` matches namespaces by name. If both filters are specified, the result is a union (a namespace matching either filter is included).
 
 An empty selector (`namespaceSelector: {}`) matches all namespaces, following the Kubernetes convention used by NetworkPolicy and other resources.
+
+### Interrupted writes and ownership changes
+
+Before writing DNS, cfgate records the resolved destination and a write identifier in
+`status.pendingWrites`. New data records carry that identifier alongside their owner
+marker. If Cloudflare accepts a write but Kubernetes cannot save its result, the next
+reconciliation recovers the record from this intent. Later zone or hostname edits do
+not erase the pending destination.
+
+A different record ID is recovered only when the saved intent and ownership evidence
+identify it. An unexplained replacement or foreign ownership claim blocks cleanup
+and keeps the finalizer. Inspect the reported conflict before deciding whether to
+restore the owned record or use the documented orphan deletion policy. Do not remove
+pending status to bypass recovery.
+
+`spec.ownership.txtRecord.prefix` is immutable. To change it, delete the DNS resource,
+wait for its configured cleanup to finish, then recreate it with the new prefix.
+Disabling `txtRecord.enabled` stops creating companion claims; existing claims remain
+protected and are removed during normal hostname or resource cleanup. Re-enabling it
+uses the same prefix. The controller also retains the established prefix in status,
+so a schema mismatch cannot silently redirect cleanup.
+
+For resources created before this change, the first reconciliation records their
+current prefix. cfgate cannot reconstruct prefixes changed before that checkpoint.
+Inspect any older ownership claims during such a migration. Install the matching CRD
+before updating the controller so Kubernetes preserves the recovery fields.

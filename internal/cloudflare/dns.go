@@ -108,9 +108,10 @@ func (c *DNSRecordCache) Set(zoneID, name, recordType string, record *DNSRecord)
 // and policy-based lifecycle management. It wraps the Client interface with
 // cfgate-specific logic for idempotent record sync and external-dns compatible ownership.
 type DNSService struct {
-	client Client
-	log    logr.Logger
-	cache  *DNSRecordCache
+	operationID string
+	client      Client
+	log         logr.Logger
+	cache       *DNSRecordCache
 }
 
 // NewDNSService creates a new DNSService with the given client and logger.
@@ -120,6 +121,32 @@ func NewDNSService(client Client, log logr.Logger) *DNSService {
 		client: client,
 		log:    log.WithName("dns-service"),
 	}
+}
+
+// WithOperation records a durable creation intent in the new record's comment.
+// Existing record markers are preserved. The caller persists the intent first.
+func (s *DNSService) WithOperation(id string) *DNSService {
+	copy := *s
+	copy.operationID = id
+	return &copy
+}
+
+// DNSRecordOperation returns the compact creation identifier, if well formed.
+func DNSRecordOperation(record *DNSRecord) string {
+	if record == nil || record.Type == "TXT" {
+		return ""
+	}
+	_, id, found := strings.Cut(record.Comment, ",op=")
+	if !found || len(id) != 10 {
+		return ""
+	}
+	for _, c := range id {
+		valid := c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+		if !valid {
+			return ""
+		}
+	}
+	return id
 }
 
 // WithCache returns a copy of the DNSService that uses the given record cache.
@@ -522,7 +549,12 @@ func IsOwnedByCfgate(record *DNSRecord, ownerID string) bool {
 	if record == nil || ownerID == "" {
 		return false
 	}
-	if record.Type != "TXT" && record.Comment == OwnershipComment(ownerID) {
+	operation := DNSRecordOperation(record)
+	comment := record.Comment
+	if operation != "" {
+		comment = strings.TrimSuffix(comment, ",op="+operation)
+	}
+	if record.Type != "TXT" && comment == OwnershipComment(ownerID) {
 		return true
 	}
 	content := record.Comment
@@ -671,6 +703,16 @@ func (s *DNSService) SyncOwnedRecord(ctx context.Context, zoneID string, desired
 		return fresh.updateRecord(ctx, zoneID, current.ID, desired)
 	}
 	desired.Comment = OwnershipComment(ownerID)
+	operation := s.operationID
+	if current != nil {
+		operation = DNSRecordOperation(current)
+	}
+	if operation != "" {
+		desired.Comment += ",op=" + operation
+		if DNSRecordOperation(&desired) != operation || len(desired.Comment) > 100 {
+			return nil, false, fmt.Errorf("invalid DNS creation operation marker")
+		}
+	}
 	if current != nil && IsOwnedByCfgate(current, ownerID) && !recordsMatch(current, &desired) && !(&PolicyChecker{policy: policy}).AllowsUpdate() {
 		return current, false, ErrDNSRecordSkipped
 	}
