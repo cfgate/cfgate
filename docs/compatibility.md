@@ -68,6 +68,23 @@ Obsolete zone/type records are removed before replacements when cleanup is
 enabled. Failed cleanup remains visible and retries; it may delay publication.
 See [DNS configuration](cloudflare-dns.md) for retention policy behavior.
 
+The post-alpha.7 DNS controller requires the matching CRD for `status.pendingWrites`
+and `status.ownershipPrefix`. Route-derived DNS now enforces Gateway/listener
+admission in addition to discovery selectors. TXT prefixes are immutable; see
+[DNS recovery and ownership](cloudflare-dns.md#interrupted-writes-and-ownership-changes)
+for cleanup and migration behavior. Healthy Access token expiration extensions retain
+forwarding; credential replacement and authorization edits keep withdrawal checks.
+
+### Rollback with unfinished operations
+
+Do not downgrade the controller or CRDs while DNS `status.pendingWrites` or Secret
+`cfgate.io/service-token-rotation-pending` markers remain. An older controller cannot
+interpret those obligations, and an older schema can prune DNS recovery fields.
+Keep the current controller and matching schemas running until writes and cleanup
+finish, then back up the objects and credentials before assessing a downgrade.
+Removing status, finalizers, or pending markers is not a rollback procedure. There
+is no automatic translation of unfinished operations for alpha.7 or older versions.
+
 ## Dependency maintenance
 
 Keep Kubernetes libraries and controller-runtime on compatible release families,
@@ -80,10 +97,3 @@ Use `go mod tidy` and `go mod verify`, then run the repository checks described 
 cfgate uses. The SDK-unknown `h2cOrigin` field, bounded pagination and origin duration
 wire formats have dedicated regressions; changes to the Cloudflare integration
 also require live E2E.
-
-The post-alpha.7 DNS controller requires the matching CRD for `status.pendingWrites`
-and `status.ownershipPrefix`. Route-derived DNS now enforces Gateway/listener
-admission in addition to discovery selectors. TXT prefixes are immutable; see
-[DNS recovery and ownership](cloudflare-dns.md#interrupted-writes-and-ownership-changes)
-for cleanup and migration behavior. Healthy Access token expiration extensions retain
-forwarding; credential replacement and authorization edits keep withdrawal checks.

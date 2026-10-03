@@ -290,8 +290,8 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		r.setCondition(&dns, status.ConditionTypeRecordsSynced, metav1.ConditionTrue, status.ReasonRecordsSynced, "DNS records synced successfully")
 	}
 
-	// 8. Verify ownership records
-	ownershipVerified, err := r.verifyOwnership(ctx, &dns, zones, hostnameKeys(hostnames), dnsService)
+	// 8. Verify with fresh reads: the planning cache may predate claim creation.
+	ownershipVerified, err := r.verifyOwnership(ctx, &dns, zones, hostnameKeys(hostnames), dnsService.WithCache(nil))
 	if err != nil {
 		logger.V(1).Info("ownership verification issue", "error", err.Error())
 		r.setCondition(&dns, status.ConditionTypeOwnershipVerified, metav1.ConditionFalse, status.ReasonOwnershipFailed, err.Error())
@@ -331,13 +331,13 @@ func (r *CloudflareDNSReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // Watched resources:
 //   - CloudflareDNS (primary, with GenerationChangedPredicate)
 //   - CloudflareTunnel (via spec.tunnelRef, with GenerationChangedPredicate)
-//   - HTTPRoute (for hostname collection, with CfgateAnnotationOrGenerationPredicate)
+//   - HTTPRoute (for hostname collection, including arbitrary annotation filters)
 //   - Gateway (for tunnel reference, with CfgateAnnotationOrGenerationPredicate)
 //
 // Uses GenerationChangedPredicate for CRD-only resources to prevent status-only
-// reconciliation loops. Uses CfgateAnnotationOrGenerationPredicate on Gateway/HTTPRoute
-// watchers where cfgate.io/* annotation changes (which don't increment generation on
-// CRDs with status subresource) are meaningful triggers for DNS sync.
+// reconciliation loops. Route discovery supports arbitrary annotation filters, so
+// HTTPRoute watches include all annotation changes. Gateway watches remain scoped
+// to cfgate annotations. Neither path treats status-only updates as desired changes.
 func (r *CloudflareDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controller").WithName("dns")
 	log.Info("registering controller with manager")
@@ -364,7 +364,7 @@ func (r *CloudflareDNSReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&gateway.HTTPRoute{},
 			handler.EnqueueRequestsFromMapFunc(r.findAffectedDNSByRoute),
-			builder.WithPredicates(CfgateAnnotationOrGenerationPredicate),
+			builder.WithPredicates(DNSRouteChangePredicate),
 		).
 		Watches(
 			&gateway.Gateway{},
@@ -546,18 +546,25 @@ func (r *CloudflareDNSReconciler) collectHostnames(ctx context.Context, dns *cfg
 		}
 		for h, config := range routeHostnames {
 			config.RecordType = recordType
-			hostnames[h] = config
+			hostnames[cloudflare.NormalizeDNSName(h)] = config
 		}
 	}
 
-	// Overlay explicit hostnames last so user-authored config wins on collisions.
+	// Normalize within each source before applying explicit-over-discovered precedence.
+	explicitHostnames := make(map[string]HostnameConfig)
 	for _, explicit := range dns.Spec.Source.Explicit {
-		hostnames[explicit.Hostname] = HostnameConfig{
-			Target:     resolveExplicitHostnameTarget(dns, tunnel, explicit),
-			TTL:        explicit.TTL,
-			Proxied:    explicit.Proxied,
-			RecordType: recordType,
+		name := cloudflare.NormalizeDNSName(explicit.Hostname)
+		config := HostnameConfig{
+			Target: resolveExplicitHostnameTarget(dns, tunnel, explicit),
+			TTL:    explicit.TTL, Proxied: explicit.Proxied, RecordType: recordType,
 		}
+		if previous, exists := explicitHostnames[name]; exists && !reflect.DeepEqual(previous, config) {
+			return nil, fmt.Errorf("conflicting explicit configuration for hostname %s", name)
+		}
+		explicitHostnames[name] = config
+	}
+	for name, config := range explicitHostnames {
+		hostnames[name] = config
 	}
 
 	return hostnames, nil
@@ -732,7 +739,11 @@ func (r *CloudflareDNSReconciler) collectHostnamesFromRoutes(ctx context.Context
 						return nil, err
 					}
 					for _, h := range accepted {
-						hostnames[string(h)] = config
+						name := cloudflare.NormalizeDNSName(string(h))
+						if previous, exists := hostnames[name]; exists && !reflect.DeepEqual(previous, config) {
+							return nil, fmt.Errorf("conflicting route configuration for hostname %s", name)
+						}
+						hostnames[name] = config
 					}
 				}
 			}
@@ -809,15 +820,10 @@ func zoneProxiedOverrides(dns *cfgatev1alpha1.CloudflareDNS) map[string]*bool {
 // proxied, and record type after source merging.
 func (r *CloudflareDNSReconciler) syncRecords(ctx context.Context, dns *cfgatev1alpha1.CloudflareDNS, target string, hostnameConfigs map[string]HostnameConfig, zones map[string]string, dnsService *cloudflare.DNSService) error {
 	logger := log.FromContext(ctx).WithName("controller").WithName("dns")
-	normalized := make(map[string]HostnameConfig, len(hostnameConfigs))
-	for hostname, config := range hostnameConfigs {
-		hostname = cloudflare.NormalizeDNSName(hostname)
-		if previous, exists := normalized[hostname]; exists && !reflect.DeepEqual(previous, config) {
-			return fmt.Errorf("conflicting configuration for hostname %s", hostname)
-		}
-		normalized[hostname] = config
+	hostnameConfigs, err := canonicalDNSHostnames(hostnameConfigs)
+	if err != nil {
+		return err
 	}
-	hostnameConfigs = normalized
 	zoneProxied := zoneProxiedOverrides(dns)
 
 	ownershipPrefix := dnsOwnershipPrefix(dns)

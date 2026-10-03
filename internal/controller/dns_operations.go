@@ -5,11 +5,54 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"reflect"
 	"slices"
 
 	cfg "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
 )
+
+// Canonicalize before merging, counting, or journaling. A hostname selects one
+// most-specific configured zone, and each source supplies one record type.
+func canonicalDNSHostnames(hosts map[string]HostnameConfig) (map[string]HostnameConfig, error) {
+	normalized := make(map[string]HostnameConfig, len(hosts))
+	for hostname, config := range hosts {
+		hostname = cloudflare.NormalizeDNSName(hostname)
+		if config.RecordType == "" {
+			config.RecordType = "CNAME"
+		}
+		if previous, exists := normalized[hostname]; exists && !reflect.DeepEqual(previous, config) {
+			return nil, fmt.Errorf("conflicting configuration for hostname %s", hostname)
+		}
+		normalized[hostname] = config
+	}
+	return normalized, nil
+}
+
+type dnsRecordIdentity struct{ zone, hostname, kind string }
+
+// Older versions could journal several spellings of one destination. Only
+// coalesce intents with the same pre-write baseline; keep all operation IDs as
+// recovery evidence instead of choosing one arbitrarily.
+func groupDNSWriteIntents(pending []cfg.DNSPendingWrite) ([][]cfg.DNSPendingWrite, error) {
+	var groups [][]cfg.DNSPendingWrite
+	indexes := map[dnsRecordIdentity]int{}
+	for _, intent := range pending {
+		intent.Hostname = cloudflare.NormalizeDNSName(intent.Hostname)
+		key := dnsRecordIdentity{intent.ZoneID, intent.Hostname, intent.Type}
+		if i, exists := indexes[key]; exists {
+			first := groups[i][0]
+			if first.PreviousRecordID != intent.PreviousRecordID || first.PreviousOwned != intent.PreviousOwned {
+				return nil, fmt.Errorf("DNS recovery conflict for %s: duplicate intents have different baselines", intent.Hostname)
+			}
+			groups[i] = append(groups[i], intent)
+		} else {
+			indexes[key] = len(groups)
+			groups = append(groups, []cfg.DNSPendingWrite{intent})
+		}
+	}
+	return groups, nil
+}
 
 func dnsOwnershipPrefix(dns *cfg.CloudflareDNS) string {
 	if dns.Status.OwnershipPrefix != "" {
@@ -24,7 +67,12 @@ func dnsOwnershipPrefix(dns *cfg.CloudflareDNS) string {
 // recoverDNSWrites resolves only recorded operations. A matching owner alone
 // does not authorize replacing a previously recorded remote incarnation.
 func recoverDNSWrites(ctx context.Context, dns *cfg.CloudflareDNS, service *cloudflare.DNSService) error {
-	for _, pending := range dns.Status.PendingWrites {
+	groups, err := groupDNSWriteIntents(dns.Status.PendingWrites)
+	if err != nil {
+		return err
+	}
+	for _, intents := range groups {
+		pending := intents[0]
 		record, err := service.FindRecordByName(ctx, pending.ZoneID, pending.Hostname, pending.Type)
 		if err != nil {
 			return err
@@ -42,7 +90,9 @@ func recoverDNSWrites(ctx context.Context, dns *cfg.CloudflareDNS, service *clou
 		if record != nil {
 			baseline := pending.PreviousRecordID != "" && record.ID == pending.PreviousRecordID
 			owned := cloudflare.IsOwnedByCfgate(record, dns.Status.OwnerID)
-			recognized := baseline && (!pending.PreviousOwned || owned) || owned && cloudflare.DNSRecordOperation(record) == pending.OperationID
+			operation := cloudflare.DNSRecordOperation(record)
+			knownOperation := operation != "" && slices.ContainsFunc(intents, func(intent cfg.DNSPendingWrite) bool { return intent.OperationID == operation })
+			recognized := baseline && (!pending.PreviousOwned || owned) || owned && knownOperation
 			if !recognized {
 				return fmt.Errorf("DNS recovery conflict for %s (%s, zone %s): record %s does not match the persisted write intent", pending.Hostname, pending.Type, pending.ZoneID, record.ID)
 			}
@@ -72,6 +122,10 @@ func recoverDNSWrites(ctx context.Context, dns *cfg.CloudflareDNS, service *clou
 // prepareDNSWrites checkpoints destinations before either claims or data can be
 // created. Recovery and its replacement inventory are persisted in the same write.
 func (r *CloudflareDNSReconciler) prepareDNSWrites(ctx context.Context, dns *cfg.CloudflareDNS, hosts map[string]HostnameConfig, zones map[string]string, service *cloudflare.DNSService) error {
+	hosts, err := canonicalDNSHostnames(hosts)
+	if err != nil {
+		return err
+	}
 	prefix := dns.Spec.Ownership.TXTRecord.Prefix
 	if prefix == "" {
 		prefix = dnsDefaultOwnershipPrefix

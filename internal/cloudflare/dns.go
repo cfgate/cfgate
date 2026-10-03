@@ -150,13 +150,12 @@ func DNSRecordOperation(record *DNSRecord) string {
 }
 
 // WithCache returns a copy of the DNSService that uses the given record cache.
-// The cache is scoped to a single reconcile cycle to avoid stale data across reconciles.
+// The cache is a planning snapshot, not read-your-writes state. Pass nil for fresh
+// post-mutation verification; operation identity is preserved in either case.
 func (s *DNSService) WithCache(cache *DNSRecordCache) *DNSService {
-	return &DNSService{
-		client: s.client,
-		log:    s.log,
-		cache:  cache,
-	}
+	copy := *s
+	copy.cache = cache
+	return &copy
 }
 
 // SyncRecord ensures a DNS record exists with the desired configuration.
@@ -678,6 +677,18 @@ func (s *DNSService) SyncOwnedRecord(ctx context.Context, zoneID string, desired
 		}
 	}
 	desired.Comment = OwnershipComment(ownerID)
+	// A fresh, fully matching data/claim pair needs no mutation. Avoid repeating
+	// the claim and data reads used to guard actual writes below. Incompatible
+	// record and foreign-owner checks above still run on every pass.
+	if existing != nil && IsOwnedByCfgate(existing, ownerID) && strings.HasPrefix(existing.Comment, "cfgate/owner=") {
+		unchanged := desired
+		unchanged.Comment = existing.Comment // Keep the durable creation marker.
+		claim := BuildOwnershipTXTRecord(desired.Name, ownerID, resource, prefix)
+		claimMatches := !createTXT || txt != nil && txt.Content == claim.Content && txt.Comment == claim.Comment
+		if recordsMatch(existing, &unchanged) && claimMatches {
+			return existing, false, nil
+		}
+	}
 	if createTXT {
 		if err := fresh.CreateOwnershipRecord(ctx, zoneID, OwnershipParams{Hostname: desired.Name, OwnerID: ownerID, Resource: resource, Prefix: prefix}); err != nil {
 			return nil, false, err

@@ -50,6 +50,13 @@ var CfgateAnnotationOrGenerationPredicate = predicate.Or(
 	},
 )
 
+// DNSRouteChangePredicate includes administrator-selected annotation filter keys.
+// These keys need not use cfgate.io; status-only changes remain filtered out.
+var DNSRouteChangePredicate = predicate.Or(
+	predicate.GenerationChangedPredicate{},
+	predicate.AnnotationChangedPredicate{},
+)
+
 // GenerationOrDeletionPredicate passes events when:
 //  1. metadata.generation changed (spec change), OR
 //  2. DeletionTimestamp was just set (object marked for deletion)

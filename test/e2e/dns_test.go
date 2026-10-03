@@ -804,6 +804,10 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 					},
 				},
 			}
+			dnsResource.Spec.Source.Explicit[0].Hostname = strings.ToUpper(explicitHostname)
+			duplicate := dnsResource.Spec.Source.Explicit[0]
+			duplicate.Hostname = explicitHostname + "."
+			dnsResource.Spec.Source.Explicit = append(dnsResource.Spec.Source.Explicit, duplicate)
 			Expect(k8sClient.Create(ctx, dnsResource)).To(Succeed())
 			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
 
@@ -1227,12 +1231,12 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 
 			route := createHTTPRoute(ctx, k8sClient, routeName, namespace.Name, gwName, []string{hostname}, svcName, 8080)
 
-			By("Creating CloudflareDNS with annotationFilter requiring cfgate.io/dns-sync=enabled")
+			By("Creating CloudflareDNS with annotationFilter requiring platform.example.com/publish-dns=enabled")
 			dnsResource := createCloudflareDNSWithGatewayRoutes(ctx, k8sClient,
 				testID("dns-annot"), namespace.Name,
 				sharedTunnel.Name,
 				[]string{testEnv.CloudflareZoneName},
-				"cfgate.io/dns-sync=enabled",
+				"platform.example.com/publish-dns=enabled",
 			)
 
 			By("Verifying no DNS records created initially (annotation doesn't match)")
@@ -1246,7 +1250,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			}, ShortTimeout, DefaultInterval).Should(BeTrue(),
 				"DNS record should NOT be created when annotation filter doesn't match")
 
-			By("Patching HTTPRoute to add cfgate.io/dns-sync=enabled annotation")
+			By("Patching HTTPRoute to add platform.example.com/publish-dns=enabled annotation")
 			// Use Eventually to retry on conflict (controller may update status concurrently)
 			Eventually(func() error {
 				var currentRoute gatewayv1.HTTPRoute
@@ -1256,7 +1260,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 				if currentRoute.Annotations == nil {
 					currentRoute.Annotations = make(map[string]string)
 				}
-				currentRoute.Annotations["cfgate.io/dns-sync"] = "enabled"
+				currentRoute.Annotations["platform.example.com/publish-dns"] = "enabled"
 				return k8sClient.Update(ctx, &currentRoute)
 			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 
@@ -1266,6 +1270,17 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 				return err == nil && record != nil
 			}, DefaultTimeout, DefaultInterval).Should(BeTrue(),
 				"DNS record should be created after annotation is added")
+
+			By("Removing only the custom filter annotation and waiting less than the periodic interval")
+			waitForDNSReady(ctx, k8sClient, dnsResource.Name, dnsResource.Namespace, DefaultTimeout)
+			updateHTTPRouteAnnotations(ctx, k8sClient, route.Name, route.Namespace, func(annotations map[string]string) {
+				delete(annotations, "platform.example.com/publish-dns")
+			})
+			Eventually(func(g Gomega) {
+				record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(record).To(BeNil())
+			}, 90*time.Second, DefaultInterval).Should(Succeed())
 
 			// Cleanup.
 			Expect(k8sClient.Delete(ctx, dnsResource)).To(Succeed())
