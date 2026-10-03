@@ -75,31 +75,6 @@ func TestRecordsMatch(t *testing.T) {
 	}
 }
 
-func TestExtractZoneFromHostname(t *testing.T) {
-	tests := []struct {
-		name     string
-		hostname string
-		want     string
-	}{
-		{"simple subdomain", "app.example.com", "example.com"},
-		{"complex TLD co.uk", "app.example.co.uk", "example.co.uk"},
-		{"complex TLD com.au", "app.example.com.au", "example.com.au"},
-		{"deep subdomain", "a.b.c.d.example.com", "example.com"},
-		{"bare domain", "example.com", "example.com"},
-		{"single label", "localhost", "localhost"},
-		{"empty string", "", ""},
-		{"two-part hostname", "example.org", "example.org"},
-		{"three-level ccTLD", "sub.example.jp", "example.jp"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := ExtractZoneFromHostname(tt.hostname); got != tt.want {
-				t.Errorf("ExtractZoneFromHostname(%q) = %q, want %q", tt.hostname, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestValidateTTL(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -790,6 +765,31 @@ func TestPolicyChecker(t *testing.T) {
 			}
 			if got := checker.AllowsDelete(); got != tt.wantDelete {
 				t.Errorf("AllowsDelete() = %v, want %v", got, tt.wantDelete)
+			}
+		})
+	}
+}
+
+func TestSelectDNSZone(t *testing.T) {
+	for _, tt := range []struct {
+		name, hostname, zone, id string
+		zones                    map[string]string
+		wantErr                  bool
+	}{
+		{"parent and child", "api.team.example.com", "team.example.com", "child", map[string]string{"example.com": "parent", "team.example.com": "child"}, false},
+		{"child only", "api.team.example.com", "team.example.com", "child", map[string]string{"team.example.com": "child"}, false},
+		{"apex", "team.example.com", "team.example.com", "child", map[string]string{"team.example.com": "child"}, false},
+		{"public suffix", "api.example.co.uk", "example.co.uk", "uk", map[string]string{"example.co.uk": "uk"}, false},
+		{"normalized", "API.Team.Example.COM.", "team.example.com", "child", map[string]string{"TEAM.example.COM.": "child", "example.com": "parent"}, false},
+		{"label boundary", "badexample.com", "", "", map[string]string{"example.com": "parent"}, true},
+		{"unknown zone", "other.net", "", "", map[string]string{"example.com": "parent"}, true},
+		{"conflicting identities", "api.example.com", "", "", map[string]string{"EXAMPLE.COM.": "one", "example.com": "two"}, true},
+		{"empty zone", "api.example.com", "", "", map[string]string{"": "empty"}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			zone, id, err := SelectDNSZone(tt.hostname, tt.zones)
+			if (err != nil) != tt.wantErr || zone != tt.zone || id != tt.id {
+				t.Fatalf("SelectDNSZone() = (%q, %q, %v), want (%q, %q), error=%t", zone, id, err, tt.zone, tt.id, tt.wantErr)
 			}
 		})
 	}

@@ -40,7 +40,7 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.source.explicit[].ttl` | `int32` | `1` | No | DNS record TTL in seconds. `1` = auto (Cloudflare-managed, typically 300s). Explicit range: 60-86400. |
 | `spec.defaults.proxied` | `bool` | `true` | No | Default Cloudflare proxy setting for all records. |
 | `spec.defaults.ttl` | `int32` | `1` | No | Default DNS record TTL. `1` = auto. Explicit range: 60-86400. |
-| `spec.ownership.ownerId` | `string` | — | No | Deprecated legacy hint; cannot override `status.ownerId` or authorize adoption. Retained in the schema for compatibility. |
+| `spec.ownership.ownerId` | `string` | *none* | No | Deprecated legacy hint; cannot override `status.ownerId` or authorize adoption. Retained in the schema for compatibility. |
 | `spec.ownership.txtRecord.enabled` | `*bool` | `true` (nil defaults to true) | No | Enables TXT record-based ownership tracking. |
 | `spec.ownership.txtRecord.prefix` | `string` | `_cfgate` | No | Prefix for TXT record names. Max 63 chars. |
 | `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes an exact owner marker. Schema removal is deferred to a future cleanup. |
@@ -95,7 +95,9 @@ spec:
 
 ### `spec.zones`
 
-Defines the Cloudflare DNS zones where records will be managed. At least one zone is required (max 10). The controller extracts the zone from each hostname using the [public suffix list](https://publicsuffix.org/), matches it against configured zones, and syncs records to the correct zone. Your API token's zone-level permissions determine which zones are accessible.
+Defines the Cloudflare DNS zones where records are managed. Configure 1 to 10 zones. Each hostname uses the most specific configured zone, matching complete DNS labels and ignoring case and a trailing dot. For example, `api.team.example.com` uses `team.example.com` when both that zone and `example.com` are configured. An apex hostname matches its own zone; `badexample.com` does not match `example.com`.
+
+Configure the zones that Cloudflare actually manages, including any separately delegated child zones. cfgate does not infer zone boundaries from registrable domains. Your API token must permit access to the selected zone. See [Cloudflare subdomain setup](https://developers.cloudflare.com/dns/zone-setups/subdomain-setup/) for provider requirements.
 
 **`id` (optional):** When provided, the controller uses this zone ID directly and skips the API zone lookup. This avoids the extra API call and is useful when the token does not have zone-list permissions or when you want to pin a specific zone ID.
 
@@ -220,9 +222,17 @@ Controls what happens to DNS records when they are no longer needed. All fields 
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `deleteOnRouteRemoval` | `true` | Delete the DNS record when the source Gateway API route is deleted. |
+| `deleteOnRouteRemoval` | `true` | Delete obsolete records when their hostname, type, or selected zone leaves the desired configuration. Applies to discovered and explicit hostnames. |
 | `deleteOnResourceRemoval` | `true` | Delete all managed DNS records when the CloudflareDNS resource itself is deleted (finalizer-driven). |
 | `onlyManaged` | `true` | Compatibility field; false does not bypass exact ownership verification. |
+
+With `policy: sync` and route-removal cleanup enabled, cfgate deletes the old record and ownership claim before publishing a replacement in another zone or with another type. This can briefly interrupt DNS availability. Failed cleanup retains the recorded identity in `status.records`, reports a failure, and retries before further publication. A failed record update also retains the previous ID for cleanup.
+
+Deletion uses the recorded `zoneId`, even if that zone is no longer configured. Legacy status without a zone ID falls back to the most specific configured zone and still checks the recorded ID and ownership. If no zone matches, cleanup stops with an error; restore the original zone configuration or explicitly choose orphan deletion after reviewing the remote records.
+
+Disabling route-removal cleanup, or using a policy that prevents deletion, retains obsolete record identities for later cleanup. The status inventory is limited to 1,000 entries; cfgate rejects additions that would exceed this limit before creating remote records. Resource deletion still follows `deleteOnResourceRemoval` and the configured policy.
+
+Use both cleanup settings to remove obsolete records and clean up on resource deletion:
 
 ```yaml
 spec:
@@ -257,7 +267,7 @@ spec:
 | `status.pendingRecords` | `int32` | Number of DNS records awaiting synchronization. |
 | `status.ownerId` | `string` | Persisted installation namespace UID/resource UID; used for cleanup. |
 | `status.failedRecords` | `int32` | Number of DNS records that failed to sync. |
-| `status.records[]` | `[]DNSRecordSyncStatus` | Per-record sync status (see below). Max 1000 entries. |
+| `status.records[]` | `[]DNSRecordSyncStatus` | Record inventory, including retained records and failed cleanup obligations. Max 1000 entries. |
 | `status.records[].hostname` | `string` | DNS hostname of the record. |
 | `status.records[].type` | `string` | Record type (CNAME, A, AAAA). |
 | `status.records[].target` | `string` | Record target/content value. |
@@ -266,7 +276,7 @@ spec:
 | `status.records[].status` | `string` | Sync status: `Synced`, `Pending`, `Skipped`, or `Failed`. |
 | `status.records[].recordId` | `string` | Cloudflare DNS record ID. |
 | `status.records[].zoneId` | `string` | Cloudflare zone ID where the record was created. |
-| `status.records[].error` | `string` | Error message when status is `Failed`. |
+| `status.records[].error` | `string` | Synchronization or cleanup error when status is `Failed`. |
 | `status.resolvedTarget` | `string` | Resolved CNAME target (tunnel domain or external target value). |
 | `status.observedGeneration` | `int64` | Last `.metadata.generation` observed by the controller. |
 | `status.lastSyncTime` | `metav1.Time` | Last time DNS records were synced to Cloudflare. |
