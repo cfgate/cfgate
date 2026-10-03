@@ -262,6 +262,10 @@ func validateHTTPRouteFeatures(route *gwapiv1.HTTPRoute) error {
 	if err := annotations.ValidateOriginAnnotations(route.Annotations); err != nil {
 		return err
 	}
+	return validateHTTPRouteMatches(route)
+}
+
+func validateHTTPRouteMatches(route *gwapiv1.HTTPRoute) error {
 	for i, rule := range route.Spec.Rules {
 		if len(rule.Filters) > 0 || rule.Timeouts != nil || rule.Retry != nil || rule.SessionPersistence != nil {
 			return fmt.Errorf("rule %d: filters, timeouts, retries and session persistence are not supported by cfgate tunnel ingress", i)

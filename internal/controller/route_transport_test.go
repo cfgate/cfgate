@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"k8s.io/utils/ptr"
 	"regexp"
 	g "sigs.k8s.io/gateway-api/apis/v1"
@@ -112,19 +113,31 @@ func TestInvalidEffectiveTransportKeepsSiblingAndWithdrawal(t *testing.T) {
 }
 
 func TestInvalidTransportPreservesAccessDenialPrecedence(t *testing.T) {
-	tunnel, class, gw, route, svc := emissionFixtures()
-	route.Annotations = map[string]string{"cfgate.io/origin-protocol": "https", "cfgate.io/origin-h2c": "true", "cfgate.io/access-required": "missing"}
-	route.CreationTimestamp = metav1.NewTime(time.Now())
-	public := route.DeepCopy()
-	public.Name = "public"
-	public.Annotations = nil
-	public.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
-	kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(tunnel, class, gw, route, public, svc).Build()
-	rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rules) != 2 || rules[0].Service != "http_status:503" {
-		t.Fatalf("public forwarding precedes protected denial: %+v", rules)
+	for _, annotations := range []map[string]string{
+		{"cfgate.io/origin-protocol": "https", "cfgate.io/origin-h2c": "true"},
+		{"cfgate.io/origin-ca-pool": "/unmounted/ca.pem"},
+		{"cfgate.io/origin-ca-pool": "/etc/cfgate/origin-ca-pool/ca.pem"},
+		{"cfgate.io/origin-protocol": "invalid"},
+		{"cfgate.io/origin-h2c": "sometimes"},
+		{"cfgate.io/origin-connect-timeout": "500ms"},
+	} {
+		t.Run(fmt.Sprint(annotations), func(t *testing.T) {
+			tunnel, class, gw, route, svc := emissionFixtures()
+			route.Annotations = annotations
+			route.Annotations["cfgate.io/access-required"] = "missing"
+			route.CreationTimestamp = metav1.NewTime(time.Now())
+			public := route.DeepCopy()
+			public.Name = "public"
+			public.Annotations = nil
+			public.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+			kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(tunnel, class, gw, route, public, svc).Build()
+			rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rules) != 2 || rules[0].Service != "http_status:503" {
+				t.Fatalf("public forwarding precedes protected denial: %+v", rules)
+			}
+		})
 	}
 }

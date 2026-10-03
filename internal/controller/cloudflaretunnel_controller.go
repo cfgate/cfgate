@@ -884,7 +884,7 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 		if len(hostnames) == 0 {
 			continue
 		}
-		if err := validateHTTPRouteFeatures(&route); err != nil {
+		if err := validateHTTPRouteMatches(&route); err != nil {
 			continue
 		}
 		// An attached route with invalid backends still owns its matches. Preserve
@@ -916,12 +916,21 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 				}
 			}
 		}
+		transportErr := validateRouteTransport(&route, tunnel)
+		if transportErr != nil {
+			// Preserve admitted matches without asking the builder to interpret
+			// invalid annotations or publish any of their backend destinations.
+			resolvedRoute.Annotations = nil
+			for i := range resolvedRoute.Spec.Rules {
+				resolvedRoute.Spec.Rules[i].BackendRefs = nil
+			}
+		}
 		routeRules, err := r.buildOrderedRulesFromHTTPRoute(resolvedRoute, hostnames, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil)
 		if err != nil {
 			r.Recorder.Eventf(tunnel, nil, corev1.EventTypeWarning, "HTTPRouteError", "CollectRules", "skipping HTTPRoute %s/%s: %s", route.Namespace, route.Name, err.Error())
 			continue
 		}
-		if err := validateRouteTransport(&route, tunnel); err != nil {
+		if transportErr != nil {
 			_, accessRequired, _ := accessRequiredReference(&route)
 			for i := range routeRules {
 				routeRules[i].accessDenied = accessRequired
@@ -929,7 +938,7 @@ func (r *CloudflareTunnelReconciler) collectIngressRules(ctx context.Context, tu
 				routeRules[i].OriginRequest = nil
 			}
 			if r.Recorder != nil {
-				r.Recorder.Eventf(&route, nil, corev1.EventTypeWarning, "InvalidOriginTransport", "Publish", "%s", err.Error())
+				r.Recorder.Eventf(&route, nil, corev1.EventTypeWarning, "InvalidOriginTransport", "Publish", "%s", transportErr.Error())
 			}
 		} else if err := r.requiredAccessAllows(ctx, accessState, tunnel, resolvedRoute, hostnames); err != nil {
 			for i := range routeRules {
