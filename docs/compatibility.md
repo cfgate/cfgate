@@ -4,11 +4,11 @@ cfgate, its CRDs, the connector, Gateway API and Helm chart are separate version
 components. Install matching cfgate CRDs before upgrading the controller so the
 API server retains ownership and recovery status.
 
-## Alpha.10 component pins
+## Alpha.11 component pins
 
 | Component | Version |
 |---|---|
-| cfgate | 0.2.0-alpha.10 |
+| cfgate | 0.2.0-alpha.11 |
 | Go | 1.27.1 |
 | Cloudflare SDK | 7.11.0 |
 | Kubernetes Go libraries | 0.37.1 |
@@ -136,9 +136,9 @@ cfgate uses. The SDK-unknown `h2cOrigin` field, bounded pagination and origin du
 wire formats have dedicated regressions; changes to the Cloudflare integration
 also require live E2E.
 
-## Post-alpha.10 development
+## Upgrade from v0.2.0-alpha.10 to v0.2.0-alpha.11
 
-The next controller update checks inherited origin settings per route before
+The alpha.11 controller checks inherited origin settings per route before
 publishing a tunnel configuration. Correct HTTPS+h2c or simultaneous HTTP/2+h2c
 settings; an explicit `false` can disable an inherited transport. Invalid
 combinations retain matching HTTP 503 responses instead of blocking valid

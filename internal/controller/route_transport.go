@@ -13,6 +13,9 @@ import (
 )
 
 func validateRouteTransport(route *gateway.HTTPRoute, tunnel *cfg.CloudflareTunnel) error {
+	if err := annotations.ValidateOriginAnnotations(route.Annotations); err != nil {
+		return err
+	}
 	if err := validateRouteOriginCAPool(route, tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil); err != nil {
 		return err
 	}

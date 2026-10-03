@@ -23,8 +23,8 @@ func TestRendererPreservesOriginTransportAnnotations(t *testing.T) {
 				}
 				invalid := protocol == "grpc" || boolean == "invalid" || boolean == ""
 				if invalid {
-					if len(rules) != 0 {
-						t.Fatalf("invalid transport emitted: %+v", rules)
+					if len(rules) != 1 || rules[0].Service != "http_status:503" || rules[0].OriginRequest != nil {
+						t.Fatalf("invalid transport did not retain a denial: %+v", rules)
 					}
 					return
 				}
