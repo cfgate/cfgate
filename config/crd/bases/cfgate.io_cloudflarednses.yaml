@@ -90,7 +90,8 @@ spec:
                     type: boolean
                   deleteOnRouteRemoval:
                     description: |-
-                      DeleteOnRouteRemoval deletes records when the source route is deleted.
+                      DeleteOnRouteRemoval deletes obsolete hostname, type, or selected-zone records.
+                      This applies to discovered routes and explicit hostnames.
                       nil defaults to true.
                     type: boolean
                   onlyManaged:

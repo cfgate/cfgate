@@ -53,6 +53,21 @@ scans and promotes the same attested images. Publish its chart afterward using t
 published operator digest and matching schemas. Changelogs and release notes are
 generated from Git history; do not duplicate validation logs in user documentation.
 
+## Development changes after alpha.7
+
+Install the matching CRDs before using service-token `rotationOverlap`. Managed
+tokens now renew their configured lifetime before expiration; renewal does not
+replace the secret. Token names and destination Secrets must be unique within
+each policy, and durations must be positive. The default overlap remains zero.
+See [service token lifecycle](cloudflare-access-policy.md#service-token-lifecycle)
+for recovery and consumer reload requirements.
+
+DNS records now use the most specific configured zone. Deployments with both
+parent and delegated child zones should check the selected zone before rollout.
+Obsolete zone/type records are removed before replacements when cleanup is
+enabled. Failed cleanup remains visible and retries; it may delay publication.
+See [DNS configuration](cloudflare-dns.md) for retention policy behavior.
+
 ## Dependency maintenance
 
 Keep Kubernetes libraries and controller-runtime on compatible release families,

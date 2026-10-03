@@ -292,7 +292,8 @@ type DNSOwnershipConfig struct {
 // or when the CloudflareDNS resource itself is deleted. All fields use pointer booleans
 // to distinguish between "not set" (nil, defaults to true) and "explicitly false".
 type DNSCleanupPolicy struct {
-	// DeleteOnRouteRemoval deletes records when the source route is deleted.
+	// DeleteOnRouteRemoval deletes obsolete hostname, type, or selected-zone records.
+	// This applies to discovered routes and explicit hostnames.
 	// nil defaults to true.
 	// +optional
 	DeleteOnRouteRemoval *bool `json:"deleteOnRouteRemoval,omitempty"`
