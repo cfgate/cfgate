@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -357,6 +358,10 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 		cfg.ProbeAddr = fmt.Sprintf(":%d", port)
 	}
 
+	if endpointAddressesOverlap(cfg.MetricsAddr, cfg.ProbeAddr) {
+		return managerConfig{}, cliExitError{code: exitCodeUsage, err: fmt.Errorf("metrics and health bind addresses overlap: %q and %q", cfg.MetricsAddr, cfg.ProbeAddr)}
+	}
+
 	if !installationFlag {
 		cfg.InstallationNamespace = getenv("POD_NAMESPACE")
 	}
@@ -377,6 +382,35 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 	}
 
 	return cfg, nil
+}
+
+// Detect conflicts without resolving hostnames or opening sockets. Other bind
+// failures remain the listener's responsibility. Port zero requests an ephemeral port.
+func endpointAddressesOverlap(a, b string) bool {
+	if a == "0" || b == "0" {
+		return false
+	}
+	ah, ap, ae := net.SplitHostPort(a)
+	bh, bp, be := net.SplitHostPort(b)
+	if ae != nil || be != nil {
+		return false
+	}
+	an, ae := strconv.ParseUint(ap, 10, 16)
+	bn, be := strconv.ParseUint(bp, 10, 16)
+	if ae != nil || be != nil || an == 0 || an != bn {
+		return false
+	}
+	normalize := func(host string) string {
+		if addr, err := netip.ParseAddr(host); err == nil {
+			if addr.IsUnspecified() {
+				return ""
+			}
+			return addr.Unmap().String()
+		}
+		return strings.ToLower(strings.TrimSuffix(host, "."))
+	}
+	ah, bh = normalize(ah), normalize(bh)
+	return ah == "" || bh == "" || ah == bh
 }
 
 func parsePortEnv(getenv func(string) string, key string, fallback int) (int, error) {
