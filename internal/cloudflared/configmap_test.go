@@ -6,6 +6,8 @@ import (
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"k8s.io/utils/ptr"
 )
 
 // newTestTunnel creates a CloudflareTunnel with the given name and optional modifiers.
@@ -138,14 +140,14 @@ func TestNewTunnelConfig(t *testing.T) {
 				if config.OriginRequest == nil {
 					t.Fatal("OriginRequest should not be nil")
 				}
-				if config.OriginRequest.H2cOrigin != tt.wantH2c {
-					t.Errorf("H2cOrigin = %v, want %v", config.OriginRequest.H2cOrigin, tt.wantH2c)
+				if ptr.Deref(config.OriginRequest.H2cOrigin, false) != tt.wantH2c {
+					t.Errorf("H2cOrigin = %v, want %v", ptr.Deref(config.OriginRequest.H2cOrigin, false), tt.wantH2c)
 				}
-				if config.OriginRequest.HTTP2Origin != tt.wantHTTP2 {
-					t.Errorf("HTTP2Origin = %v, want %v", config.OriginRequest.HTTP2Origin, tt.wantHTTP2)
+				if ptr.Deref(config.OriginRequest.HTTP2Origin, false) != tt.wantHTTP2 {
+					t.Errorf("HTTP2Origin = %v, want %v", ptr.Deref(config.OriginRequest.HTTP2Origin, false), tt.wantHTTP2)
 				}
-				if config.OriginRequest.NoTLSVerify != tt.wantNoTLSVerify {
-					t.Errorf("NoTLSVerify = %v, want %v", config.OriginRequest.NoTLSVerify, tt.wantNoTLSVerify)
+				if ptr.Deref(config.OriginRequest.NoTLSVerify, false) != tt.wantNoTLSVerify {
+					t.Errorf("NoTLSVerify = %v, want %v", ptr.Deref(config.OriginRequest.NoTLSVerify, false), tt.wantNoTLSVerify)
 				}
 				if tt.wantTimeout != "" && config.OriginRequest.ConnectTimeout != tt.wantTimeout {
 					t.Errorf("ConnectTimeout = %q, want %q", config.OriginRequest.ConnectTimeout, tt.wantTimeout)
@@ -258,11 +260,11 @@ func TestBuildOriginConfig(t *testing.T) {
 				t.Fatal("expected non-nil config")
 				return
 			}
-			if config.H2cOrigin != tt.wantH2c {
-				t.Errorf("H2cOrigin = %v, want %v", config.H2cOrigin, tt.wantH2c)
+			if ptr.Deref(config.H2cOrigin, false) != tt.wantH2c {
+				t.Errorf("H2cOrigin = %v, want %v", ptr.Deref(config.H2cOrigin, false), tt.wantH2c)
 			}
-			if config.HTTP2Origin != tt.wantHTTP2 {
-				t.Errorf("HTTP2Origin = %v, want %v", config.HTTP2Origin, tt.wantHTTP2)
+			if ptr.Deref(config.HTTP2Origin, false) != tt.wantHTTP2 {
+				t.Errorf("HTTP2Origin = %v, want %v", ptr.Deref(config.HTTP2Origin, false), tt.wantHTTP2)
 			}
 		})
 	}
@@ -368,8 +370,8 @@ func TestValidate(t *testing.T) {
 					{Service: "http_status:404"},
 				},
 				OriginRequest: &OriginRequestConfig{
-					H2cOrigin:   true,
-					HTTP2Origin: true,
+					H2cOrigin:   ptr.To(true),
+					HTTP2Origin: ptr.To(true),
 				},
 			},
 			wantErr: true,
@@ -397,7 +399,7 @@ func TestMarshal(t *testing.T) {
 				{Service: "http_status:404"},
 			},
 			OriginRequest: &OriginRequestConfig{
-				H2cOrigin: true,
+				H2cOrigin: ptr.To(true),
 			},
 		}
 
@@ -516,8 +518,8 @@ func TestNewTunnelConfigProtocol(t *testing.T) {
 				if config.OriginRequest == nil {
 					t.Fatal("OriginRequest should not be nil")
 				}
-				if config.OriginRequest.H2cOrigin != tt.wantH2c {
-					t.Errorf("H2cOrigin = %v, want %v", config.OriginRequest.H2cOrigin, tt.wantH2c)
+				if ptr.Deref(config.OriginRequest.H2cOrigin, false) != tt.wantH2c {
+					t.Errorf("H2cOrigin = %v, want %v", ptr.Deref(config.OriginRequest.H2cOrigin, false), tt.wantH2c)
 				}
 				if tt.wantTimeout != "" && config.OriginRequest.ConnectTimeout != tt.wantTimeout {
 					t.Errorf("ConnectTimeout = %q, want %q", config.OriginRequest.ConnectTimeout, tt.wantTimeout)
@@ -796,10 +798,10 @@ func TestParseConfig(t *testing.T) {
 				if config.OriginRequest.ConnectTimeout != "10s" {
 					t.Errorf("ConnectTimeout = %q, want %q", config.OriginRequest.ConnectTimeout, "10s")
 				}
-				if !config.OriginRequest.NoTLSVerify {
+				if !ptr.Deref(config.OriginRequest.NoTLSVerify, false) {
 					t.Error("NoTLSVerify should be true")
 				}
-				if !config.OriginRequest.H2cOrigin {
+				if !ptr.Deref(config.OriginRequest.H2cOrigin, false) {
 					t.Error("H2cOrigin should be true")
 				}
 				if config.WarpRouting == nil {
@@ -897,7 +899,7 @@ func TestValidateExtended(t *testing.T) {
 					{Service: "http_status:404"},
 				},
 				OriginRequest: &OriginRequestConfig{
-					H2cOrigin: true,
+					H2cOrigin: ptr.To(true),
 				},
 			},
 			wantErr: false,
@@ -910,7 +912,7 @@ func TestValidateExtended(t *testing.T) {
 					{Service: "http_status:404"},
 				},
 				OriginRequest: &OriginRequestConfig{
-					HTTP2Origin: true,
+					HTTP2Origin: ptr.To(true),
 				},
 			},
 			wantErr: false,
@@ -948,7 +950,7 @@ func TestMarshalExtended(t *testing.T) {
 			},
 			OriginRequest: &OriginRequestConfig{
 				ConnectTimeout: "10s",
-				H2cOrigin:      true,
+				H2cOrigin:      ptr.To(true),
 			},
 		}
 
@@ -1038,13 +1040,13 @@ func TestMarshalExtended(t *testing.T) {
 				HTTPHostHeader:         "custom.host",
 				OriginServerName:       "origin.local",
 				CAPool:                 "/path/to/ca",
-				NoTLSVerify:            true,
+				NoTLSVerify:            ptr.To(true),
 				DisableChunkedEncoding: true,
 				BastionMode:            true,
 				ProxyAddress:           "127.0.0.1",
 				ProxyPort:              8080,
 				ProxyType:              "socks5",
-				HTTP2Origin:            true,
+				HTTP2Origin:            ptr.To(true),
 			},
 		}
 
@@ -1099,12 +1101,12 @@ func TestBuildOriginConfigAnnotations(t *testing.T) {
 			wantNoTLSVerify: true,
 		},
 		{
-			name:     "origin-ssl-verify true has no effect",
+			name:     "origin-ssl-verify true overrides inheritance",
 			defaults: nil,
 			annotations: map[string]string{
 				"cfgate.io/origin-ssl-verify": "true",
 			},
-			wantNil: true,
+			wantNil: false,
 		},
 		{
 			name:     "origin-http-host-header annotation",
@@ -1131,20 +1133,20 @@ func TestBuildOriginConfigAnnotations(t *testing.T) {
 			wantCAPool: "/path/to/ca",
 		},
 		{
-			name:     "h2c false has no effect",
+			name:     "h2c false overrides inheritance",
 			defaults: nil,
 			annotations: map[string]string{
 				"cfgate.io/origin-h2c": "false",
 			},
-			wantNil: true,
+			wantNil: false,
 		},
 		{
-			name:     "http2 false has no effect",
+			name:     "http2 false overrides inheritance",
 			defaults: nil,
 			annotations: map[string]string{
 				"cfgate.io/origin-http2": "false",
 			},
-			wantNil: true,
+			wantNil: false,
 		},
 		{
 			name: "annotation overrides default connect timeout",
@@ -1215,8 +1217,8 @@ func TestBuildOriginConfigAnnotations(t *testing.T) {
 			if tt.wantConnectTimeout != "" && config.ConnectTimeout != tt.wantConnectTimeout {
 				t.Errorf("ConnectTimeout = %q, want %q", config.ConnectTimeout, tt.wantConnectTimeout)
 			}
-			if config.NoTLSVerify != tt.wantNoTLSVerify {
-				t.Errorf("NoTLSVerify = %v, want %v", config.NoTLSVerify, tt.wantNoTLSVerify)
+			if ptr.Deref(config.NoTLSVerify, false) != tt.wantNoTLSVerify {
+				t.Errorf("NoTLSVerify = %v, want %v", ptr.Deref(config.NoTLSVerify, false), tt.wantNoTLSVerify)
 			}
 			if tt.wantHTTPHostHeader != "" && config.HTTPHostHeader != tt.wantHTTPHostHeader {
 				t.Errorf("HTTPHostHeader = %q, want %q", config.HTTPHostHeader, tt.wantHTTPHostHeader)
@@ -1227,11 +1229,11 @@ func TestBuildOriginConfigAnnotations(t *testing.T) {
 			if tt.wantCAPool != "" && config.CAPool != tt.wantCAPool {
 				t.Errorf("CAPool = %q, want %q", config.CAPool, tt.wantCAPool)
 			}
-			if config.H2cOrigin != tt.wantH2c {
-				t.Errorf("H2cOrigin = %v, want %v", config.H2cOrigin, tt.wantH2c)
+			if ptr.Deref(config.H2cOrigin, false) != tt.wantH2c {
+				t.Errorf("H2cOrigin = %v, want %v", ptr.Deref(config.H2cOrigin, false), tt.wantH2c)
 			}
-			if config.HTTP2Origin != tt.wantHTTP2 {
-				t.Errorf("HTTP2Origin = %v, want %v", config.HTTP2Origin, tt.wantHTTP2)
+			if ptr.Deref(config.HTTP2Origin, false) != tt.wantHTTP2 {
+				t.Errorf("HTTP2Origin = %v, want %v", ptr.Deref(config.HTTP2Origin, false), tt.wantHTTP2)
 			}
 		})
 	}

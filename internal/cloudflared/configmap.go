@@ -8,6 +8,9 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
+	"cfgate.io/cfgate/internal/controller/annotations"
+
+	"k8s.io/utils/ptr"
 )
 
 // TunnelConfig represents the cloudflared configuration file structure.
@@ -67,14 +70,14 @@ type OriginRequestConfig struct {
 	HTTPHostHeader         string `yaml:"httpHostHeader,omitempty"`
 	OriginServerName       string `yaml:"originServerName,omitempty"`
 	CAPool                 string `yaml:"caPool,omitempty"`
-	NoTLSVerify            bool   `yaml:"noTLSVerify,omitempty"`
+	NoTLSVerify            *bool  `yaml:"noTLSVerify,omitempty"`
 	DisableChunkedEncoding bool   `yaml:"disableChunkedEncoding,omitempty"`
 	BastionMode            bool   `yaml:"bastionMode,omitempty"`
 	ProxyAddress           string `yaml:"proxyAddress,omitempty"`
 	ProxyPort              int    `yaml:"proxyPort,omitempty"`
 	ProxyType              string `yaml:"proxyType,omitempty"`
-	HTTP2Origin            bool   `yaml:"http2Origin,omitempty"`
-	H2cOrigin              bool   `yaml:"h2cOrigin,omitempty"`
+	HTTP2Origin            *bool  `yaml:"http2Origin,omitempty"`
+	H2cOrigin              *bool  `yaml:"h2cOrigin,omitempty"`
 }
 
 // WarpRoutingConfig contains WARP routing settings.
@@ -99,20 +102,12 @@ func NewTunnelConfig(tunnel *cfgatev1alpha1.CloudflareTunnel, tunnelID string) *
 	}
 
 	// Set default origin settings
-	if tunnel.Spec.OriginDefaults.ConnectTimeout != "" ||
-		tunnel.Spec.OriginDefaults.NoTLSVerify ||
-		tunnel.Spec.OriginDefaults.HTTP2Origin ||
-		tunnel.Spec.OriginDefaults.H2cOrigin ||
-		tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
-		config.OriginRequest = &OriginRequestConfig{
-			ConnectTimeout: tunnel.Spec.OriginDefaults.ConnectTimeout,
-			NoTLSVerify:    tunnel.Spec.OriginDefaults.NoTLSVerify,
-			HTTP2Origin:    tunnel.Spec.OriginDefaults.HTTP2Origin,
-			H2cOrigin:      tunnel.Spec.OriginDefaults.H2cOrigin,
+	config.OriginRequest = BuildOriginConfig(&tunnel.Spec.OriginDefaults, nil)
+	if tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
+		if config.OriginRequest == nil {
+			config.OriginRequest = &OriginRequestConfig{}
 		}
-		if tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
-			config.OriginRequest.CAPool = OriginCAPoolPath()
-		}
+		config.OriginRequest.CAPool = OriginCAPoolPath()
 	}
 
 	// Add catch-all rule (required for valid config)
@@ -171,7 +166,7 @@ func (c *TunnelConfig) Validate() error {
 		return errors.New("tunnel ID is required")
 	}
 
-	if c.OriginRequest != nil && c.OriginRequest.HTTP2Origin && c.OriginRequest.H2cOrigin {
+	if c.OriginRequest != nil && ptr.Deref(c.OriginRequest.HTTP2Origin, false) && ptr.Deref(c.OriginRequest.H2cOrigin, false) {
 		return errors.New("http2Origin and h2cOrigin are mutually exclusive")
 	}
 
@@ -211,50 +206,62 @@ func ParseConfig(data []byte) (*TunnelConfig, error) {
 }
 
 // BuildOriginConfig builds an OriginRequestConfig from tunnel defaults and annotations.
-func BuildOriginConfig(defaults *cfgatev1alpha1.OriginDefaults, annotations map[string]string) *OriginRequestConfig {
+func BuildOriginConfig(defaults *cfgatev1alpha1.OriginDefaults, values map[string]string) *OriginRequestConfig {
 	config := &OriginRequestConfig{}
 
 	// Apply defaults
 	if defaults != nil {
 		config.ConnectTimeout = defaults.ConnectTimeout
-		config.NoTLSVerify = defaults.NoTLSVerify
-		config.HTTP2Origin = defaults.HTTP2Origin
-		config.H2cOrigin = defaults.H2cOrigin
+		if defaults.NoTLSVerify {
+			config.NoTLSVerify = ptr.To(true)
+		}
+		if defaults.HTTP2Origin {
+			config.HTTP2Origin = ptr.To(true)
+		}
+		if defaults.H2cOrigin {
+			config.H2cOrigin = ptr.To(true)
+		}
 	}
 
 	// Apply annotation overrides
-	if annotations != nil {
-		if v, ok := annotations["cfgate.io/origin-connect-timeout"]; ok {
+	if values != nil {
+		if v, ok := values["cfgate.io/origin-connect-timeout"]; ok {
 			config.ConnectTimeout = v
 		}
-		if v, ok := annotations["cfgate.io/origin-ssl-verify"]; ok && v == "false" {
-			config.NoTLSVerify = true
+		if v, ok := values["cfgate.io/origin-ssl-verify"]; ok {
+			if parsed, err := annotations.ParseBoolean(v); err == nil {
+				config.NoTLSVerify = ptr.To(!parsed)
+			}
 		}
-		if v, ok := annotations["cfgate.io/origin-http-host-header"]; ok {
+		if v, ok := values["cfgate.io/origin-http-host-header"]; ok {
 			config.HTTPHostHeader = v
 		}
-		if v, ok := annotations["cfgate.io/origin-server-name"]; ok {
+		if v, ok := values["cfgate.io/origin-server-name"]; ok {
 			config.OriginServerName = v
 		}
-		if v, ok := annotations["cfgate.io/origin-ca-pool"]; ok {
+		if v, ok := values["cfgate.io/origin-ca-pool"]; ok {
 			config.CAPool = v
 		}
-		if v, ok := annotations["cfgate.io/origin-http2"]; ok && v == "true" {
-			config.HTTP2Origin = true
+		if v, ok := values["cfgate.io/origin-http2"]; ok {
+			if parsed, err := annotations.ParseBoolean(v); err == nil {
+				config.HTTP2Origin = ptr.To(parsed)
+			}
 		}
-		if v, ok := annotations["cfgate.io/origin-h2c"]; ok && v == "true" {
-			config.H2cOrigin = true
+		if v, ok := values["cfgate.io/origin-h2c"]; ok {
+			if parsed, err := annotations.ParseBoolean(v); err == nil {
+				config.H2cOrigin = ptr.To(parsed)
+			}
 		}
 	}
 
 	// Return nil if no settings configured
 	if config.ConnectTimeout == "" &&
-		!config.NoTLSVerify &&
+		config.NoTLSVerify == nil &&
 		config.HTTPHostHeader == "" &&
 		config.OriginServerName == "" &&
 		config.CAPool == "" &&
-		!config.HTTP2Origin &&
-		!config.H2cOrigin {
+		config.HTTP2Origin == nil &&
+		config.H2cOrigin == nil {
 		return nil
 	}
 

@@ -21,6 +21,8 @@ import (
 	cfgatev1alpha1 "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
 	"cfgate.io/cfgate/internal/controller/annotations"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
@@ -132,9 +134,9 @@ func TestSyncConfigurationPreservesStatusWhenPatchingConfigHash(t *testing.T) {
 		if origin.HTTPHostHeader != "origin.example.com" ||
 			origin.OriginServerName != "tls.example.com" ||
 			origin.CAPool != "/etc/cfgate/origin-ca-pool/ca.pem" ||
-			!origin.NoTLSVerify ||
-			origin.HTTP2Origin ||
-			!origin.H2cOrigin ||
+			!ptr.Deref(origin.NoTLSVerify, false) ||
+			ptr.Deref(origin.HTTP2Origin, false) ||
+			!ptr.Deref(origin.H2cOrigin, false) ||
 			origin.ConnectTimeout != "12s" {
 			t.Fatalf("ingress OriginRequest = %#v, want propagated route annotations", origin)
 		}

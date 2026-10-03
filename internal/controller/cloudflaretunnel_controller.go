@@ -679,20 +679,12 @@ func (r *CloudflareTunnelReconciler) syncConfiguration(ctx context.Context, tunn
 
 	// Build configuration with defaults
 	var defaults *cloudflare.OriginRequestConfig
-	if tunnel.Spec.OriginDefaults.ConnectTimeout != "" ||
-		tunnel.Spec.OriginDefaults.NoTLSVerify ||
-		tunnel.Spec.OriginDefaults.HTTP2Origin ||
-		tunnel.Spec.OriginDefaults.H2cOrigin ||
-		tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
-		defaults = &cloudflare.OriginRequestConfig{
-			ConnectTimeout: tunnel.Spec.OriginDefaults.ConnectTimeout,
-			NoTLSVerify:    tunnel.Spec.OriginDefaults.NoTLSVerify,
-			HTTP2Origin:    tunnel.Spec.OriginDefaults.HTTP2Origin,
-			H2cOrigin:      tunnel.Spec.OriginDefaults.H2cOrigin,
+	defaults = cloudflaredOriginRequestToCloudflare(cloudflared.BuildOriginConfig(&tunnel.Spec.OriginDefaults, nil))
+	if tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
+		if defaults == nil {
+			defaults = &cloudflare.OriginRequestConfig{}
 		}
-		if tunnel.Spec.OriginDefaults.CAPoolSecretRef != nil {
-			defaults.CAPool = cloudflared.OriginCAPoolPath()
-		}
+		defaults.CAPool = cloudflared.OriginCAPoolPath()
 	}
 
 	config := cloudflare.BuildConfiguration(rules, defaults)
@@ -984,10 +976,7 @@ func (r *CloudflareTunnelReconciler) buildOrderedRulesFromHTTPRoute(route *gatew
 					if backend.Namespace != nil && *backend.Namespace != "" {
 						namespace = string(*backend.Namespace)
 					}
-					protocol := annotations.GetAnnotation(route, annotations.AnnotationOriginProtocol)
-					if protocol != "https" {
-						protocol = "http"
-					}
+					protocol := annotations.ParseOriginConfig(route, "http").Protocol
 					domain := r.ClusterDomain
 					if domain == "" {
 						domain = "cluster.local"

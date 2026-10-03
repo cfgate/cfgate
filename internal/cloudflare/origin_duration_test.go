@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestReadTunnelConfigurationDurationWireForms(t *testing.T) {
@@ -57,7 +59,7 @@ func TestReadTunnelConfigurationDurationWireForms(t *testing.T) {
 					t.Fatal("ingress match order changed")
 				}
 				for _, origin := range []*OriginRequestConfig{config.OriginRequest, config.Ingress[0].OriginRequest} {
-					if origin == nil || !origin.H2cOrigin || origin.HTTPHostHeader != "origin.example" || !origin.NoTLSVerify {
+					if origin == nil || !ptr.Deref(origin.H2cOrigin, false) || origin.HTTPHostHeader != "origin.example" || !ptr.Deref(origin.NoTLSVerify, false) {
 						t.Fatal("origin fields lost")
 					}
 					values := map[string]string{"connectTimeout": origin.ConnectTimeout, "tlsTimeout": origin.TLSTimeout, "tcpKeepAlive": origin.TCPKeepAlive, "keepAliveTimeout": origin.KeepAliveTimeout}

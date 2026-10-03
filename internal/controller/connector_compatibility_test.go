@@ -7,6 +7,8 @@ import (
 	"cfgate.io/cfgate/internal/cloudflared"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
+
+	"k8s.io/utils/ptr"
 )
 
 func TestKnownStockCloudflaredImages(t *testing.T) {
@@ -55,7 +57,7 @@ func TestStockConnectorWithdrawsH2CAndRestoresFork(t *testing.T) {
 					if rule.Service != "http_status:503" || rule.OriginRequest != nil {
 						t.Fatalf("stock image retained h2c forwarding: %+v", rule)
 					}
-				} else if rule.Service == "http_status:503" || rule.OriginRequest == nil || !rule.OriginRequest.H2cOrigin {
+				} else if rule.Service == "http_status:503" || rule.OriginRequest == nil || !ptr.Deref(rule.OriginRequest.H2cOrigin, false) {
 					t.Fatalf("fork/custom h2c not restored: %+v", rule)
 				}
 			} else if rule.Hostname == "public.example.com" && rule.Service == "http_status:503" {
@@ -82,7 +84,7 @@ func TestStockConnectorBlocksGlobalH2CForwardingFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.sync(t)
-	if f.remoteConfig.OriginRequest != nil && f.remoteConfig.OriginRequest.H2cOrigin {
+	if f.remoteConfig.OriginRequest != nil && ptr.Deref(f.remoteConfig.OriginRequest.H2cOrigin, false) {
 		t.Fatal("unsupported global h2c survived stock image selection")
 	}
 	for _, rule := range f.remoteConfig.Ingress {
@@ -102,4 +104,28 @@ func TestStockConnectorBlocksGlobalH2CForwardingFallback(t *testing.T) {
 	if f.remoteConfig.Ingress[len(f.remoteConfig.Ingress)-1].Service != "http://fallback.example:8080" {
 		t.Fatal("ordinary HTTP fallback not restored")
 	}
+}
+
+func TestStockConnectorHonorsExplicitH2CDisable(t *testing.T) {
+	f := newAccessFixture(t)
+	delete(f.route.Annotations, "cfgate.io/access-required")
+	f.route.Annotations["cfgate.io/origin-h2c"] = "false"
+	if err := f.r.Update(context.Background(), f.route); err != nil {
+		t.Fatal(err)
+	}
+	f.tunnel.Spec.OriginDefaults.H2cOrigin = true
+	f.tunnel.Spec.Cloudflared.Image = "cloudflare/cloudflared:2026.9.3"
+	if err := f.r.Update(context.Background(), f.tunnel); err != nil {
+		t.Fatal(err)
+	}
+	f.sync(t)
+	for _, rule := range f.remoteConfig.Ingress {
+		if rule.Hostname == "app.example.com" {
+			if rule.Service == "http_status:503" {
+				t.Fatal("explicit h2c disable was ignored")
+			}
+			return
+		}
+	}
+	t.Fatal("route absent")
 }

@@ -5,6 +5,8 @@ import (
 
 	cfg "cfgate.io/cfgate/api/v1alpha1"
 	"cfgate.io/cfgate/internal/cloudflare"
+
+	"k8s.io/utils/ptr"
 )
 
 // knownStockCloudflared recognizes only the upstream Docker repository. Other
@@ -28,16 +30,19 @@ func applyConnectorCompatibility(tunnel *cfg.CloudflareTunnel, configuration *cl
 	if !knownStockCloudflared(tunnel.Spec.Cloudflared.Image) {
 		return 0
 	}
-	globalH2C := configuration.OriginRequest != nil && configuration.OriginRequest.H2cOrigin
+	globalH2C := configuration.OriginRequest != nil && ptr.Deref(configuration.OriginRequest.H2cOrigin, false)
 	if configuration.OriginRequest != nil {
-		configuration.OriginRequest.H2cOrigin = false
+		configuration.OriginRequest.H2cOrigin = nil
 	}
 	blocked := 0
 	for i := range configuration.Ingress {
 		rule := &configuration.Ingress[i]
-		h2c := globalH2C || (rule.OriginRequest != nil && rule.OriginRequest.H2cOrigin)
+		h2c := globalH2C
 		if rule.OriginRequest != nil {
-			rule.OriginRequest.H2cOrigin = false
+			h2c = ptr.Deref(rule.OriginRequest.H2cOrigin, globalH2C)
+		}
+		if rule.OriginRequest != nil {
+			rule.OriginRequest.H2cOrigin = nil
 		}
 		if h2c && (strings.HasPrefix(rule.Service, "http://") || strings.HasPrefix(rule.Service, "https://") || strings.HasPrefix(rule.Service, "unix:") || strings.HasPrefix(rule.Service, "unix+tls:")) {
 			rule.Service = "http_status:503"
