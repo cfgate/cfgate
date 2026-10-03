@@ -264,6 +264,19 @@ Typical timeouts:
 - Access operations: 3-5 minutes
 - Validation-only specs: no timeout needed (no API calls)
 
+#### Renewal continuity
+
+The service-token continuity test establishes two consecutive authenticated origin
+responses before starting its renewal measurement. Baseline setup retries within
+the normal five-minute readiness budget and reports the last request error if it
+cannot establish traffic. It does not perform renewal during that setup.
+
+Once sampling starts, every failed request remains a failure, including failures
+before, during and after the injected renewal. Sample waits surface request errors
+immediately instead of hiding them behind a sample-count timeout. The test checks
+actual response status and origin content; policy readiness alone is insufficient.
+Offline regressions for these probes run with `mise run test:offline`.
+
 #### Conflict Retry (Eventually + Get/Update)
 
 When updating a resource that the controller may also be reconciling, wrap the Get/Update in `Eventually` to retry on 409 Conflict:
