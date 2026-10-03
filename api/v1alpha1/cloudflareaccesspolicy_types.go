@@ -565,6 +565,13 @@ type ApprovalGroup struct {
 // the service token in Cloudflare and stores the credentials (client ID and secret) in
 // the referenced Kubernetes Secret. The secret is only visible at creation time.
 type ServiceTokenConfig struct {
+	// RotationOverlap keeps the previous secret valid during credential distribution.
+	// Zero expires the previous secret immediately. Consumers must reload credentials.
+	// +kubebuilder:validation:Pattern=`^(0|[1-9][0-9]{0,2})h$`
+	// +kubebuilder:validation:XValidation:rule="duration(self) <= duration('720h')",message="rotationOverlap must not exceed 720h"
+	// +kubebuilder:default="0h"
+	RotationOverlap string `json:"rotationOverlap,omitempty"`
+
 	// Name is the token display name.
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=255
@@ -572,7 +579,7 @@ type ServiceTokenConfig struct {
 
 	// Duration is the token validity period using Go duration format.
 	// Only hours (h) supported by Cloudflare API. Use "8760h" for 1 year.
-	// +kubebuilder:validation:Pattern=`^[0-9]+h$`
+	// +kubebuilder:validation:Pattern=`^[1-9][0-9]*h$`
 	// +kubebuilder:default="8760h"
 	Duration string `json:"duration,omitempty"`
 
@@ -656,6 +663,8 @@ type CloudflareAccessPolicySpec struct {
 	// ServiceTokens for machine-to-machine authentication.
 	// +optional
 	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:XValidation:rule="self.all(t, self.filter(x, x.name == t.name).size() == 1)",message="service token names must be unique"
+	// +kubebuilder:validation:XValidation:rule="self.all(t, self.filter(x, x.secretRef.name == t.secretRef.name).size() == 1)",message="service token destination Secrets must be unique"
 	ServiceTokens []ServiceTokenConfig `json:"serviceTokens,omitempty"`
 }
 

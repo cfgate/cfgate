@@ -625,7 +625,7 @@ func expectMaintenanceH2C(ctx context.Context, hostname, marker string) {
 	expectMaintenanceResponse(ctx, hostname, marker, "HTTP/2.0", http.StatusOK)
 }
 
-func expectMaintenanceResponse(ctx context.Context, hostname, marker, protocol string, statusCode int) {
+func expectMaintenanceResponse(ctx context.Context, hostname, marker, protocol string, statusCode int, headers ...http.Header) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	if address := os.Getenv("E2E_PUBLIC_DNS_RESOLVER"); address != "" {
 		_, _, err := net.SplitHostPort(address)
@@ -639,11 +639,14 @@ func expectMaintenanceResponse(ctx context.Context, hostname, marker, protocol s
 		}}
 		transport.DialContext = dialer.DialContext
 	}
-	httpClient := &http.Client{Timeout: 15 * time.Second, Transport: transport}
+	httpClient := &http.Client{Timeout: 15 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer httpClient.CloseIdleConnections()
 	Eventually(ctx, func(g Gomega) {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+hostname+"/?run="+testRunID+"&nonce="+fmt.Sprint(time.Now().UnixNano()), nil)
 		g.Expect(err).NotTo(HaveOccurred())
+		if len(headers) > 0 {
+			request.Header = headers[0].Clone()
+		}
 		response, err := httpClient.Do(request)
 		g.Expect(err).NotTo(HaveOccurred())
 		defer func() { _ = response.Body.Close() }()

@@ -216,16 +216,16 @@ func (c *ownedAccessClient) CreateServiceToken(ctx context.Context, a string, p 
 	}
 	return obj, c.claim(ctx, a, "token", obj.ID, true)
 }
-func (c *ownedAccessClient) RotateServiceToken(ctx context.Context, a, id string) (*cloudflare.ServiceTokenWithSecret, error) {
+func (c *ownedAccessClient) RotateServiceToken(ctx context.Context, a, id string, params cloudflare.ServiceTokenRotateParams) (*cloudflare.ServiceTokenWithSecret, error) {
 	if err := c.verify(ctx, a, "token", id); err != nil {
 		return nil, err
 	}
-	obj, err := c.Client.RotateServiceToken(ctx, a, id)
+	obj, err := c.Client.RotateServiceToken(ctx, a, id, params)
 	if err != nil {
 		return nil, err
 	}
-	if obj == nil {
-		return nil, fmt.Errorf("empty token rotation response")
+	if obj == nil || obj.ID != id {
+		return nil, fmt.Errorf("mismatched token rotation response")
 	}
 	return obj, c.claim(ctx, a, "token", obj.ID, true)
 }

@@ -87,11 +87,57 @@ Conditions:
 
 Deletion removes the reusable policy only when Cloudflare reports `appCount == 0`. If the policy is still linked to any application, finalization blocks and retries. Cleanup uses cached `accountId` and `credentialSecretRef` when available, but the referenced credentials Secret must still exist. Restore the Secret or set `cfgate.io/deletion-policy=orphan` before deletion to leave Cloudflare resources in place and remove the Kubernetes finalizer.
 
-## Service Token Secrets
+## Service token lifecycle
 
-When `spec.serviceTokens` changes, tokens removed from the spec are revoked in Cloudflare and removed from `status.serviceTokenIds`.
+Each managed token needs a unique name and destination Secret within its policy.
+`duration` is a positive number of hours and defaults to `8760h`. cfgate renews
+expiration in the last 10% of that duration, capped at 24 hours before expiry.
+Changing the duration also renews expiration. An unchanged token outside that
+window is left alone. Disabled tokens report an error; cfgate does not enable them.
+Removing a token from `spec.serviceTokens` revokes it in Cloudflare.
 
-The controller owns service token Secrets it creates. It updates only Secrets controlled by the same policy UID; unmanaged or foreign Secrets are rejected before creating or rotating a token. If an existing unexpired Cloudflare service token has a missing, incomplete, or client-ID-mismatched Kubernetes Secret, the controller rotates the token and writes a fresh Secret. Cloudflare does not return the client secret after creation or rotation, so a Secret with the expected client ID and a non-empty client secret is treated as current.
+Renewal preserves the client secret. It uses Cloudflare's duration update API;
+the separate refresh endpoint always adds a year and would not preserve a custom
+duration. See [Cloudflare's service token lifecycle](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
+
+### Secret distribution
+
+cfgate rotates a token when its Secret is missing, incomplete, has a different
+client ID, or records an unfinished rotation. The destination must be controlled
+by the same policy UID. An immutable Secret that needs new credentials is rejected
+before remote mutation.
+
+Before creating or rotating credentials, cfgate writes
+`cfgate.io/service-token-rotation-pending: "true"` on the destination Secret.
+It clears that marker in the same write that stores the credentials. If the
+remote operation succeeds but the Secret write fails, the marker survives a
+restart and causes another rotation. Resolve write errors before retrying; do
+not remove the marker to suppress recovery.
+
+`rotationOverlap` defaults to `0h`, which invalidates the previous secret
+immediately. Set it to a whole number of hours up to `720h` to allow consumers
+time to reload the stored credentials. Only the previous secret receives the
+overlap; repeated recovery rotations can invalidate older credentials.
+[Cloudflare defines the overlap behavior](https://developers.cloudflare.com/api/resources/zero_trust/subresources/access/subresources/service_tokens/methods/rotate/).
+
+A stored Secret does not prove that a consumer has loaded it. cfgate does not
+restart consumer workloads. Cloudflare preserves the client ID during rotation
+and does not return the secret on reads, so cfgate cannot reliably detect an
+out-of-band rotation from client ID equality. After an external rotation,
+remove the stored `CF_ACCESS_CLIENT_SECRET` key to request recovery, then reload
+consumers after cfgate writes the replacement.
+
+### Service authentication
+
+Use `decision: non_identity` for service-token authentication and send both
+`CF-Access-Client-Id` and `CF-Access-Client-Secret` on each request. Cloudflare's
+strict service-token mode requires Service Auth policies, returns 401/403 for
+failed authentication, and does not issue a reusable authorization cookie.
+Cloudflare documents that new organizations created on or after October 5, 2026
+use strict mode permanently. Existing organizations may enable it separately;
+cfgate does not change that account-wide setting. An Allow policy is not a
+portable replacement for Service Auth. See the
+[provider's authentication contract](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
 
 ## Example With Service Token
 
@@ -113,6 +159,7 @@ spec:
   serviceTokens:
     - name: ci-token
       duration: 8760h
+      rotationOverlap: 1h
       secretRef:
         name: ci-access-token
 ```
@@ -122,10 +169,6 @@ spec:
 `spec.cloudflareRef.secretKeys.apiToken` selects the Secret data key containing the Cloudflare API token. It defaults to `CLOUDFLARE_API_TOKEN`. A missing or empty selected key is an error; cfgate does not fall back to another token stored in the same Secret. Clients cached for different keys remain separate.
 
 Credential cleanup preserves `status.credentialSecretKeys` alongside the resolved Secret reference and account. Cross-namespace credential references require a Secret ReferenceGrant from `CloudflareAccessPolicy`; see [authorization and ownership](authorization-and-ownership.md).
-
-If storing a rotated token fails, cfgate retains the remote token for recovery
-rather than deleting it. Reconciliation retries storage through rotation when
-needed; resolve Secret ownership and write errors before retrying.
 
 New remote policies and managed tokens include an installation/CR ownership
 suffix in their names. Continue using the declared `serviceTokens[].name` in

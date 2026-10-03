@@ -566,7 +566,7 @@ func TestSelectedPolicyTokenMutationsWaitForWithdrawal(t *testing.T) {
 			changed := false
 			mock := f.r.CFClient.(*cloudflare.MockClient)
 			mock.DeleteServiceTokenFunc = func(context.Context, string, string) error { changed = true; return nil }
-			mock.RotateServiceTokenFunc = func(context.Context, string, string) (*cloudflare.ServiceTokenWithSecret, error) {
+			mock.RotateServiceTokenFunc = func(context.Context, string, string, cloudflare.ServiceTokenRotateParams) (*cloudflare.ServiceTokenWithSecret, error) {
 				changed = true
 				return &cloudflare.ServiceTokenWithSecret{}, nil
 			}
@@ -580,7 +580,7 @@ func TestSelectedPolicyTokenMutationsWaitForWithdrawal(t *testing.T) {
 				if operation == "delete" {
 					return guarded.DeleteServiceToken(ctx, "account", "token")
 				}
-				_, err = guarded.RotateServiceToken(ctx, "account", "token")
+				_, err = guarded.RotateServiceToken(ctx, "account", "token", cloudflare.ServiceTokenRotateParams{})
 				return err
 			}
 			if err := attempt(); err == nil || changed {

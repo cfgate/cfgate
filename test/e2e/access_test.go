@@ -1,7 +1,11 @@
 package e2e_test
 
 import (
+	"bytes"
 	"fmt"
+	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"net/http"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -154,22 +158,25 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 		waitForAccessPolicyDeleted(ctx, k8sClient, policyName, namespace, LongTimeout)
 	})
 
-	It("creates service token policy and attaches it to an application", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
+	It("renews and distributes service tokens without losing authentication", SpecTimeout(12*time.Minute), func(ctx SpecContext) {
+		skipIfNoZone()
 		gatewayClassName := testID("access-gc-token")
 		createGatewayClass(ctx, k8sClient, gatewayClassName)
 		createGateway(ctx, k8sClient, "public", namespace, gatewayClassName, "edge")
-		createTestService(ctx, k8sClient, "app", namespace, 80)
+		origin := createTestService(ctx, k8sClient, "app", namespace, 8080)
+		deployMaintenanceOrigin(ctx, origin)
 		hostname := fmt.Sprintf("%s.%s", testID("token"), testEnv.CloudflareZoneName)
-		createHTTPRoute(ctx, k8sClient, "token-route", namespace, "public", []string{hostname}, "app", 80)
+		createHTTPRoute(ctx, k8sClient, "token-route", namespace, "public", []string{hostname}, "app", 8080)
 
 		policyName := testID("token-policy")
 		tokenName := policyName + "-token"
 		createReusableAccessPolicy(ctx, k8sClient, policyName, namespace, "non_identity",
 			[]cfgatev1alpha1.AccessRule{{ServiceToken: &cfgatev1alpha1.AccessServiceTokenRule{Name: tokenName}}},
 			[]cfgatev1alpha1.ServiceTokenConfig{{
-				Name:      tokenName,
-				Duration:  "8760h",
-				SecretRef: cfgatev1alpha1.ServiceTokenSecretRef{Name: "token-secret"},
+				Name:            tokenName,
+				Duration:        "8760h",
+				RotationOverlap: "1h",
+				SecretRef:       cfgatev1alpha1.ServiceTokenSecretRef{Name: "token-secret"},
 			}},
 		)
 		policy := waitForAccessPolicyReady(ctx, k8sClient, policyName, namespace, LongTimeout)
@@ -185,6 +192,58 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 			cfgatev1alpha1.AccessPolicyReference{Name: policyName},
 		)
 		waitForAccessApplicationReady(ctx, k8sClient, "token-app", namespace, LongTimeout)
+		By("Renewing with the requested duration without replacing credentials")
+		oldID := append([]byte(nil), secret.Data["CF_ACCESS_CLIENT_ID"]...)
+		oldSecret := append([]byte(nil), secret.Data["CF_ACCESS_CLIENT_SECRET"]...)
+		Expect(oldID).NotTo(BeEmpty())
+		Expect(oldSecret).NotTo(BeEmpty())
+		Eventually(ctx, func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+				return err
+			}
+			policy.Spec.ServiceTokens[0].Duration = "48h"
+			return k8sClient.Update(ctx, policy)
+		}, ShortTimeout, DefaultInterval).Should(Succeed())
+		Eventually(ctx, func(g Gomega) {
+			token, err := cfClient.ZeroTrust.Access.ServiceTokens.Get(ctx, policy.Status.ServiceTokenIDs[tokenName], zero_trust.AccessServiceTokenGetParams{AccountID: cloudflare.F(testEnv.CloudflareAccountID)})
+			g.Expect(err).NotTo(HaveOccurred())
+			duration, err := time.ParseDuration(token.Duration)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(duration).To(Equal(48 * time.Hour))
+			g.Expect(token.ExpiresAt.After(time.Now().Add(47 * time.Hour))).To(BeTrue())
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&secret), &secret)).To(Succeed())
+			g.Expect(bytes.Equal(secret.Data["CF_ACCESS_CLIENT_SECRET"], oldSecret)).To(BeTrue(), "renewal must preserve the secret")
+		}, LongTimeout, DefaultInterval).Should(Succeed())
+
+		updateHTTPRouteAnnotations(ctx, k8sClient, "token-route", namespace, func(a map[string]string) { a["cfgate.io/dns-sync"] = "token-auth" })
+		dns := createCloudflareDNSWithGatewayRoutes(ctx, k8sClient, "token-dns", namespace, "edge", []string{testEnv.CloudflareZoneName}, "cfgate.io/dns-sync=token-auth")
+		Eventually(ctx, func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dns), dns)).To(Succeed())
+			g.Expect(meta.IsStatusConditionTrue(dns.Status.Conditions, "Ready")).To(BeTrue())
+		}, LongTimeout, DefaultInterval).Should(Succeed())
+		headers := http.Header{"Cf-Access-Client-Id": []string{string(oldID)}, "Cf-Access-Client-Secret": []string{string(oldSecret)}}
+		expectMaintenanceResponse(ctx, hostname, origin.Name, "", http.StatusOK, headers)
+		By("Rotating after a missing local credential and allowing bounded overlap")
+		Eventually(ctx, func() error {
+			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(&secret), &secret); err != nil {
+				return err
+			}
+			delete(secret.Data, "CF_ACCESS_CLIENT_SECRET")
+			return k8sClient.Update(ctx, &secret)
+		}, ShortTimeout, DefaultInterval).Should(Succeed())
+		Eventually(ctx, func(g Gomega) {
+			g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(&secret), &secret)).To(Succeed())
+			g.Expect(secret.Data["CF_ACCESS_CLIENT_ID"]).To(Equal(oldID))
+			g.Expect(secret.Data["CF_ACCESS_CLIENT_SECRET"]).NotTo(BeEmpty())
+			g.Expect(bytes.Equal(secret.Data["CF_ACCESS_CLIENT_SECRET"], oldSecret)).To(BeFalse())
+			g.Expect(secret.Annotations["cfgate.io/service-token-rotation-pending"]).To(BeEmpty())
+		}, LongTimeout, DefaultInterval).Should(Succeed())
+		expectMaintenanceResponse(ctx, hostname, origin.Name, "", http.StatusOK, headers)
+		headers.Set("Cf-Access-Client-Secret", string(secret.Data["CF_ACCESS_CLIENT_SECRET"]))
+		// Each request sends the service-token headers; no authorization cookie is reused.
+		expectMaintenanceResponse(ctx, hostname, origin.Name, "", http.StatusOK, headers)
+		expectMaintenanceResponse(ctx, hostname, origin.Name, "", http.StatusOK, headers)
+
 	})
 })
 

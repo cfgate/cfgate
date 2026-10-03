@@ -44,7 +44,7 @@ func TestAccessMutationRequiresOwnership(t *testing.T) {
 				mutations++
 				return nil, nil
 			}
-			mock.RotateServiceTokenFunc = func(context.Context, string, string) (*cloudflare.ServiceTokenWithSecret, error) {
+			mock.RotateServiceTokenFunc = func(context.Context, string, string, cloudflare.ServiceTokenRotateParams) (*cloudflare.ServiceTokenWithSecret, error) {
 				mutations++
 				return nil, nil
 			}
@@ -60,7 +60,7 @@ func TestAccessMutationRequiresOwnership(t *testing.T) {
 				_, updateErr = owned.UpdateAccessPolicy(ctx, "account", "remote", cloudflare.PolicyParams{})
 				deleteErr = owned.DeleteAccessPolicy(ctx, "account", "remote")
 			case "token":
-				_, updateErr = owned.RotateServiceToken(ctx, "account", "remote")
+				_, updateErr = owned.RotateServiceToken(ctx, "account", "remote", cloudflare.ServiceTokenRotateParams{})
 				deleteErr = owned.DeleteServiceToken(ctx, "account", "remote")
 			}
 			if updateErr == nil || deleteErr == nil || mutations != 0 {
