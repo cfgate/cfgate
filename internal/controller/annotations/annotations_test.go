@@ -1101,3 +1101,20 @@ func TestParseDNSConfigFallbacks(t *testing.T) {
 		})
 	}
 }
+
+func TestOriginTimeoutValidation(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		valid bool
+	}{
+		{"1s", true}, {"10s", true}, {"1m", true}, {"1000ms", true},
+		{"", false}, {"500ms", false}, {"1500ms", false}, {"0s", false}, {"-1s", false}, {"invalid", false},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			err := ValidateOriginAnnotations(map[string]string{AnnotationOriginConnectTimeout: test.value})
+			if (err == nil) != test.valid {
+				t.Fatalf("valid=%v err=%v", test.valid, err)
+			}
+		})
+	}
+}

@@ -12,10 +12,16 @@ import (
 )
 
 func TestDNSDiscoveryRequiresAdmittedParent(t *testing.T) {
-	for _, scenario := range []string{"allowed", "namespace", "hostname", "class", "section", "port", "backend-unavailable"} {
+	for _, scenario := range []string{"allowed", "namespace", "hostname", "class", "section", "port", "backend-unavailable", "invalid-protocol", "invalid-boolean", "invalid-timeout"} {
 		t.Run(scenario, func(t *testing.T) {
 			tunnel, class, gw, route, _ := emissionFixtures()
 			switch scenario {
+			case "invalid-protocol":
+				route.Annotations = map[string]string{"cfgate.io/origin-protocol": "grpc"}
+			case "invalid-boolean":
+				route.Annotations = map[string]string{"cfgate.io/origin-ssl-verify": "sometimes"}
+			case "invalid-timeout":
+				route.Annotations = map[string]string{"cfgate.io/origin-connect-timeout": "500ms"}
 			case "namespace":
 				route.Namespace = "tenant"
 			case "hostname":
