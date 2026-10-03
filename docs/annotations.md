@@ -188,6 +188,17 @@ Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the or
 
 Explicit `false` disables inherited h2c. When switching from a tunnel-wide HTTP/2 default, also set `cfgate.io/origin-http2: "false"`; both transports cannot be enabled together. Requires the [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared) fork image (the default). Upstream cloudflared silently ignores this field. See [Image](cloudflare-tunnel.md#image).
 
+The effective combination is checked against the referenced tunnel for each parent.
+HTTPS with h2c and simultaneous HTTP/2 plus h2c are invalid. Such routes report
+`Accepted=False` and retain matching HTTP 503 responses, allowing valid sibling
+routes and backend revocations to publish. Invalid forwarding fallbacks also
+become HTTP 503 responses. A stored Cloudflare configuration and a ready connector
+Pod do not alone prove that an origin request succeeds.
+
+HTTPRoute backends require a TCP Service port. UDP-only and SCTP-only ports report
+`ResolvedRefs=False` with reason `UnsupportedProtocol` and retain matching HTTP
+500 responses. An omitted Service protocol uses Kubernetes' TCP default.
+
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
