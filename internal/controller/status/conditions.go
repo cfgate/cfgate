@@ -520,70 +520,40 @@ func NewServiceTokensReadyCondition(ready bool, reason, message string, generati
 // Ready = CredentialsValid AND PolicySynced
 // ServiceTokensReady is optional (only required if serviceTokens configured)
 func NewAccessPolicyReadyCondition(conditions []metav1.Condition, hasServiceTokens bool, generation int64) metav1.Condition {
-	ready := ConditionTrue(conditions, ConditionTypeCredentialsValid) &&
-		ConditionTrue(conditions, ConditionTypePolicySynced)
-
-	// ServiceTokensReady required only if service tokens configured
+	required := []string{ConditionTypeCredentialsValid, ConditionTypePolicySynced}
 	if hasServiceTokens {
-		ready = ready && ConditionTrue(conditions, ConditionTypeServiceTokensReady)
+		required = append(required, ConditionTypeServiceTokensReady)
 	}
-
-	if ready {
-		return NewCondition(ConditionTypeReady, metav1.ConditionTrue,
-			ReasonReconcileSuccess, "Access policy is ready.", generation)
-	}
-
-	// Find first failing condition for message
-	checkOrder := []string{
-		ConditionTypeCredentialsValid,
-		ConditionTypePolicySynced,
-	}
-	if hasServiceTokens {
-		checkOrder = append(checkOrder, ConditionTypeServiceTokensReady)
-	}
-
-	for _, t := range checkOrder {
-		c := FindCondition(conditions, t)
-		if c != nil && c.Status != metav1.ConditionTrue {
-			return NewCondition(ConditionTypeReady, metav1.ConditionFalse,
-				c.Reason, c.Message, generation)
-		}
-	}
-
-	return NewCondition(ConditionTypeReady, metav1.ConditionUnknown,
-		ReasonReconciling, "Reconciling access policy.", generation)
+	return accessReadyCondition(conditions, required, generation, "Access policy is ready.", "Reconciling access policy.")
 }
 
-// NewAccessApplicationReadyCondition creates the overall Ready condition for CloudflareAccessApplication.
+// NewAccessApplicationReadyCondition requires observations of the current spec.
 func NewAccessApplicationReadyCondition(conditions []metav1.Condition, generation int64) metav1.Condition {
-	ready := ConditionTrue(conditions, ConditionTypeCredentialsValid) &&
-		ConditionTrue(conditions, ConditionTypeTargetsResolved) &&
-		ConditionTrue(conditions, ConditionTypeReferenceGrantValid) &&
-		ConditionTrue(conditions, ConditionTypePoliciesResolved) &&
-		ConditionTrue(conditions, ConditionTypeApplicationSynced) &&
-		ConditionTrue(conditions, ConditionTypePoliciesLinked)
+	return accessReadyCondition(conditions, []string{
+		ConditionTypeCredentialsValid, ConditionTypeTargetsResolved, ConditionTypeReferenceGrantValid,
+		ConditionTypePoliciesResolved, ConditionTypeApplicationSynced, ConditionTypePoliciesLinked,
+	}, generation, "Access application is ready.", "Reconciling access application.")
+}
 
-	if ready {
-		return NewCondition(ConditionTypeReady, metav1.ConditionTrue,
-			ReasonReconcileSuccess, "Access application is ready.", generation)
-	}
-
-	for _, t := range []string{
-		ConditionTypeCredentialsValid,
-		ConditionTypeTargetsResolved,
-		ConditionTypeReferenceGrantValid,
-		ConditionTypePoliciesResolved,
-		ConditionTypeApplicationSynced,
-		ConditionTypePoliciesLinked,
-	} {
-		c := FindCondition(conditions, t)
-		if c != nil && c.Status != metav1.ConditionTrue {
+// An ownership checkpoint can happen before reconciliation evaluates the new
+// spec. Historical successes must not certify that newer generation. A current
+// failure still takes precedence over missing or stale observations.
+func accessReadyCondition(conditions []metav1.Condition, required []string, generation int64, readyMessage, pendingMessage string) metav1.Condition {
+	complete := true
+	for _, kind := range required {
+		c := FindCondition(conditions, kind)
+		if c == nil || c.ObservedGeneration != generation {
+			complete = false
+			continue
+		}
+		if c.Status != metav1.ConditionTrue {
 			return NewCondition(ConditionTypeReady, metav1.ConditionFalse, c.Reason, c.Message, generation)
 		}
 	}
-
-	return NewCondition(ConditionTypeReady, metav1.ConditionUnknown,
-		ReasonReconciling, "Reconciling access application.", generation)
+	if !complete {
+		return NewCondition(ConditionTypeReady, metav1.ConditionUnknown, ReasonReconciling, pendingMessage, generation)
+	}
+	return NewCondition(ConditionTypeReady, metav1.ConditionTrue, ReasonReconcileSuccess, readyMessage, generation)
 }
 
 // NewPolicyAcceptedCondition creates an Accepted condition for policy status.

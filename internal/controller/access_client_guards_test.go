@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"cfgate.io/cfgate/internal/controller/status"
 	"context"
 	"errors"
+	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	"testing"
 
 	cfg "cfgate.io/cfgate/api/v1alpha1"
@@ -103,6 +106,90 @@ func TestConditionsCompareObservedGeneration(t *testing.T) {
 				if obj.Status.Conditions[0].ObservedGeneration != 2 {
 					t.Fatal("application generation not persisted")
 				}
+			}
+		})
+	}
+}
+
+func TestOwnershipCheckpointCannotPublishUncheckedGeneration(t *testing.T) {
+	ctx := context.Background()
+	scheme := controllerTestScheme(t)
+	policy := baseAccessPolicy("app", "policy")
+	policy.Generation = 2
+	policy.Status.Conditions = []metav1.Condition{
+		status.NewCondition(status.ConditionTypeCredentialsValid, metav1.ConditionTrue, "Valid", "ok", 1),
+		status.NewCondition(status.ConditionTypePolicySynced, metav1.ConditionTrue, "Synced", "ok", 1),
+		status.NewCondition(status.ConditionTypeReady, metav1.ConditionTrue, "Ready", "ok", 1),
+	}
+	installation := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operator", UID: "installation"}}
+	kube := fake.NewClientBuilder().WithScheme(scheme).WithObjects(policy, installation).WithStatusSubresource(policy).Build()
+	mock := cloudflare.NewMockClient()
+	failure := errors.New("inventory unavailable")
+	mock.ListAccessPoliciesFunc = func(context.Context, string) ([]cloudflare.AccessPolicy, error) { return nil, failure }
+	r := &CloudflareAccessPolicyReconciler{Client: kube, APIReader: kube, InstallationNamespace: "operator"}
+	err := r.prepareOwnedPolicy(ctx, policy, &accessPolicyCredentials{Service: cloudflare.NewAccessService(mock, logr.Discard()), AccountID: "account"})
+	if !errors.Is(err, failure) {
+		t.Fatalf("expected inventory failure, got %v", err)
+	}
+	if err := kube.Get(ctx, client.ObjectKeyFromObject(policy), policy); err != nil {
+		t.Fatal(err)
+	}
+	ready := status.FindCondition(policy.Status.Conditions, status.ConditionTypeReady)
+	if ready == nil || ready.Status != metav1.ConditionUnknown || ready.ObservedGeneration != 2 {
+		t.Fatalf("unchecked generation reported ready: %+v", ready)
+	}
+}
+
+func TestAccessTagDeletionEnforcesOwnershipAndWithdrawal(t *testing.T) {
+	ctx := context.Background()
+	mock := cloudflare.NewMockClient()
+	calls := 0
+	mock.DeleteAccessTagFunc = func(context.Context, string, string) error { calls++; return nil }
+	owned := &ownedAccessClient{Client: mock, identity: "mine"}
+	if err := owned.DeleteAccessTag(ctx, "account", "cfgate:foreign"); err == nil || calls != 0 {
+		t.Fatal("foreign tag deleted")
+	}
+	blocked := errors.New("withdrawal pending")
+	guard := &accessMutationClient{Client: owned, before: func(context.Context) error { return blocked }}
+	if err := guard.DeleteAccessTag(ctx, "account", "cfgate:mine"); !errors.Is(err, blocked) || calls != 0 {
+		t.Fatal("unwithdrawn tag deleted")
+	}
+	guard.before = func(context.Context) error { return nil }
+	if err := guard.DeleteAccessTag(ctx, "account", "cfgate:mine"); err != nil || calls != 1 {
+		t.Fatalf("owned tag deletion: %v calls=%d", err, calls)
+	}
+}
+
+func TestOwnedTokenRotationRejectsChangedIdentity(t *testing.T) {
+	for _, result := range []string{"error", "empty", "other", "remote"} {
+		t.Run(result, func(t *testing.T) {
+			ctx := context.Background()
+			mock := cloudflare.NewMockClient()
+			mock.RotateServiceTokenFunc = func(context.Context, string, string, cloudflare.ServiceTokenRotateParams) (*cloudflare.ServiceTokenWithSecret, error) {
+				if result == "error" {
+					return nil, errors.New("provider unavailable")
+				}
+				if result == "empty" {
+					return nil, nil
+				}
+				return &cloudflare.ServiceTokenWithSecret{ServiceToken: cloudflare.ServiceToken{ID: result}}, nil
+			}
+			kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).Build()
+			owner := baseAccessPolicy("app", "policy")
+			owned := &ownedAccessClient{Client: mock, kube: kube, reader: kube, installation: "operator", identity: "mine", owner: owner}
+			if err := owned.claim(ctx, "account", "token", "remote", true); err != nil {
+				t.Fatal(err)
+			}
+			_, err := owned.RotateServiceToken(ctx, "account", "remote", cloudflare.ServiceTokenRotateParams{})
+			if (err == nil) != (result == "remote") {
+				t.Fatalf("rotation result=%s error=%v", result, err)
+			}
+			var claims corev1.ConfigMapList
+			if err := kube.List(ctx, &claims); err != nil {
+				t.Fatal(err)
+			}
+			if len(claims.Items) != 1 || claims.Items[0].Data["remoteID"] != "remote" {
+				t.Fatal("rotation claimed another identity")
 			}
 		})
 	}

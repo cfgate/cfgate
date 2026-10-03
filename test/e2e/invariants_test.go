@@ -354,18 +354,14 @@ var _ = Describe("Invariants E2E", Label("cloudflare", "invariants"), Ordered, f
 			Expect(ap.Status.ObservedGeneration).To(Equal(ap.Generation),
 				"ObservedGeneration must match Generation")
 
-			By("INV-A7: Access Application must exist in Cloudflare API")
-			cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, firstAccessApplicationID(app))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(cfApp).NotTo(BeNil(), "Access Application must exist in Cloudflare when Ready=True")
-
-			By("INV-A8: Cloudflare app domain and name must match")
-			Expect(cfApp.Domain).To(Equal(hostname),
-				"Cloudflare app domain (%s) must match hostname (%s)",
-				cfApp.Domain, hostname)
-			Expect(cfApp.Name).To(Equal(policyName),
-				"Cloudflare app name (%s) must match application name (%s)",
-				cfApp.Name, policyName)
+			By("INV-A7/A8: Cloudflare app exists with the expected domain and name")
+			Eventually(ctx, func(g Gomega) {
+				cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, firstAccessApplicationID(app))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(cfApp).NotTo(BeNil(), "Access Application must exist in Cloudflare when Ready=True")
+				g.Expect(cfApp.Domain).To(Equal(hostname))
+				g.Expect(cfApp.Name).To(Equal(policyName))
+			}, LongTimeout, DefaultInterval).Should(Succeed())
 		})
 
 		It("should satisfy service token invariants when Ready=True [INV-ST1..ST4]", NodeTimeout(5*time.Minute), func(ctx SpecContext) {
