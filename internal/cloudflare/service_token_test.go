@@ -198,3 +198,137 @@ func TestServiceTokenMutationFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestCreatedTokenCredentialSurvivesVerificationFailure(t *testing.T) {
+	ctx := context.Background()
+	token := ServiceToken{ID: "token", Name: "svc", ClientID: "client", Duration: "48h"}
+	writer := &intentSecretWriter{}
+	mock := NewMockClient()
+	exists := false
+	creates, rotates := 0, 0
+	mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+		if exists {
+			return []ServiceToken{token}, nil
+		}
+		return nil, nil
+	}
+	mock.CreateServiceTokenFunc = func(context.Context, string, ServiceTokenParams) (*ServiceTokenWithSecret, error) {
+		creates++
+		exists = true
+		return &ServiceTokenWithSecret{ServiceToken: token, ClientSecret: "one-time-secret"}, nil
+	}
+	mock.GetServiceTokenFunc = func(context.Context, string, string) (*ServiceToken, error) {
+		if string(writer.data["CF_ACCESS_CLIENT_SECRET"]) != "one-time-secret" || writer.pending {
+			t.Fatal("follow-up read preceded credential persistence")
+		}
+		return nil, errors.New("read temporarily unavailable")
+	}
+	mock.RotateServiceTokenFunc = func(context.Context, string, string, ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
+		rotates++
+		t.Fatal("stored credential needlessly rotated")
+		return nil, nil
+	}
+	service := NewAccessService(mock, logr.Discard())
+	params := ServiceTokenParams{Name: "svc", Duration: "48h"}
+	if _, err := service.EnsureServiceToken(ctx, "account", params, writer); err == nil {
+		t.Fatal("expected verification failure")
+	}
+	token.ExpiresAt = time.Now().Add(48 * time.Hour)
+	if _, err := service.EnsureServiceToken(ctx, "account", params, writer); err != nil {
+		t.Fatal(err)
+	}
+	if creates != 1 || rotates != 0 || writer.calls != 1 {
+		t.Fatalf("creates/rotates/writes=%d/%d/%d", creates, rotates, writer.calls)
+	}
+}
+
+func TestServiceTokenRenewalWindow(t *testing.T) {
+	for _, tt := range []struct{ lifetime, window time.Duration }{
+		{time.Hour, 6 * time.Minute}, {48 * time.Hour, 288 * time.Minute}, {8760 * time.Hour, 24 * time.Hour},
+	} {
+		if got := ServiceTokenRenewalWindow(tt.lifetime); got != tt.window {
+			t.Fatalf("lifetime=%v window=%v want=%v", tt.lifetime, got, tt.window)
+		}
+	}
+}
+
+func TestTokenPreconditionsPreventRemoteMutation(t *testing.T) {
+	for _, scenario := range []string{"zero duration", "malformed duration", "negative overlap", "excess overlap", "missing store", "ambiguous inventory", "missing ID", "missing client ID", "unknown expiry"} {
+		t.Run(scenario, func(t *testing.T) {
+			token := ServiceToken{ID: "token", ClientID: "client", Name: "svc", Duration: "48h", ExpiresAt: time.Now().Add(48 * time.Hour)}
+			params := ServiceTokenParams{Name: "svc", Duration: "48h"}
+			var store SecretWriter = &recordingSecretWriter{}
+			switch scenario {
+			case "zero duration":
+				params.Duration = "0h"
+			case "malformed duration":
+				params.Duration = "invalid"
+			case "negative overlap":
+				params.RotationOverlap = -time.Hour
+			case "excess overlap":
+				params.RotationOverlap = 721 * time.Hour
+			case "missing store":
+				store = nil
+			case "missing ID":
+				token.ID = ""
+			case "missing client ID":
+				token.ClientID = ""
+			case "unknown expiry":
+				token.ExpiresAt = time.Time{}
+			}
+			mock := NewMockClient()
+			mutations := 0
+			mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) {
+				if scenario == "ambiguous inventory" {
+					return []ServiceToken{token, token}, nil
+				}
+				return []ServiceToken{token}, nil
+			}
+			mock.CreateServiceTokenFunc = func(context.Context, string, ServiceTokenParams) (*ServiceTokenWithSecret, error) {
+				mutations++
+				return nil, nil
+			}
+			mock.UpdateServiceTokenFunc = func(context.Context, string, string, ServiceTokenParams) (*ServiceToken, error) {
+				mutations++
+				return nil, nil
+			}
+			mock.RotateServiceTokenFunc = func(context.Context, string, string, ServiceTokenRotateParams) (*ServiceTokenWithSecret, error) {
+				mutations++
+				return nil, nil
+			}
+			if _, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(context.Background(), "account", params, store); err == nil {
+				t.Fatal("unsafe state accepted")
+			}
+			if mutations != 0 {
+				t.Fatalf("mutations=%d", mutations)
+			}
+		})
+	}
+}
+
+func TestTokenRenewalRejectsUnconfirmedResponse(t *testing.T) {
+	for _, scenario := range []string{"empty", "changed ID", "changed client ID", "no expiry", "expired"} {
+		t.Run(scenario, func(t *testing.T) {
+			token := ServiceToken{ID: "token", ClientID: "client", Name: "svc", Duration: "48h", ExpiresAt: time.Now().Add(-time.Hour)}
+			mock := NewMockClient()
+			mock.ListServiceTokensFunc = func(context.Context, string) ([]ServiceToken, error) { return []ServiceToken{token}, nil }
+			mock.UpdateServiceTokenFunc = func(context.Context, string, string, ServiceTokenParams) (*ServiceToken, error) {
+				result := token
+				switch scenario {
+				case "empty":
+					return nil, nil
+				case "changed ID":
+					result.ID = "other"
+				case "changed client ID":
+					result.ClientID = "other"
+				case "no expiry":
+					result.ExpiresAt = time.Time{}
+				}
+				return &result, nil
+			}
+			if _, err := NewAccessService(mock, logr.Discard()).EnsureServiceToken(context.Background(), "account", ServiceTokenParams{Name: "svc", Duration: "48h"}, &recordingSecretWriter{}); err == nil {
+				t.Fatal("unconfirmed renewal reported success")
+			}
+		})
+	}
+}

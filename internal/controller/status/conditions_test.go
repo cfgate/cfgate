@@ -965,6 +965,9 @@ func TestNewAccessPolicyReadyCondition(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			for i := range tt.conditions {
+				tt.conditions[i].ObservedGeneration = 1
+			}
 			got := NewAccessPolicyReadyCondition(tt.conditions, tt.hasServiceTokens, 1)
 			if got.Status != tt.wantStatus {
 				t.Errorf("Status = %q, want %q", got.Status, tt.wantStatus)
@@ -990,12 +993,19 @@ func TestNewAccessApplicationReadyCondition(t *testing.T) {
 	}
 
 	got := NewAccessApplicationReadyCondition(readyConditions, 2)
+	if got.Status != metav1.ConditionUnknown {
+		t.Fatalf("stale observations reported ready: %+v", got)
+	}
+	for i := range readyConditions {
+		readyConditions[i].ObservedGeneration = 2
+	}
+	got = NewAccessApplicationReadyCondition(readyConditions, 2)
 	if got.Status != metav1.ConditionTrue || got.Reason != ReasonReconcileSuccess {
 		t.Fatalf("ready condition = %+v, want Ready=True/ReconcileSuccess", got)
 	}
 
 	failing := append([]metav1.Condition(nil), readyConditions...)
-	failing[1] = NewCondition(ConditionTypeTargetsResolved, metav1.ConditionFalse, ReasonTargetNotFound, "missing route", 1)
+	failing[1] = NewCondition(ConditionTypeTargetsResolved, metav1.ConditionFalse, ReasonTargetNotFound, "missing route", 2)
 	got = NewAccessApplicationReadyCondition(failing, 2)
 	if got.Status != metav1.ConditionFalse || got.Reason != ReasonTargetNotFound || got.Message != "missing route" {
 		t.Fatalf("failing ready condition = %+v", got)

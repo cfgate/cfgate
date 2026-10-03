@@ -92,9 +92,12 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 		Expect(firstAccessApplicationAUD(app)).NotTo(BeEmpty())
 		Expect(app.Status.Applications[0].Domain).To(Equal(hostname))
 
-		cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, firstAccessApplicationID(app))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(cfApp.Domain).To(Equal(hostname))
+		Eventually(ctx, func(g Gomega) {
+			cfApp, err := getAccessApplicationByIDFromCloudflare(ctx, cfClient, testEnv.CloudflareAccountID, firstAccessApplicationID(app))
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(cfApp).NotTo(BeNil())
+			g.Expect(cfApp.Domain).To(Equal(hostname))
+		}, LongTimeout, DefaultInterval).Should(Succeed())
 	})
 
 	It("binds separate reusable policies to named HTTPRoute paths while root stays public", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
@@ -223,6 +226,7 @@ var _ = Describe("CloudflareAccessPolicy and CloudflareAccessApplication E2E", L
 		}, LongTimeout, DefaultInterval).Should(Succeed())
 		headers := http.Header{"Cf-Access-Client-Id": []string{string(oldID)}, "Cf-Access-Client-Secret": []string{string(oldSecret)}}
 		expectMaintenanceResponse(ctx, hostname, origin.Name, "", http.StatusOK, headers)
+		expectMaintenanceResponse(ctx, hostname, "", "", http.StatusUnauthorized)
 		By("Rotating after a missing local credential and allowing bounded overlap")
 		Eventually(ctx, func() error {
 			if err := k8sClient.Get(ctx, client.ObjectKeyFromObject(&secret), &secret); err != nil {
