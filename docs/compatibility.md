@@ -4,11 +4,11 @@ cfgate, its CRDs, the connector, Gateway API and Helm chart are separate version
 components. Install matching cfgate CRDs before upgrading the controller so the
 API server retains ownership and recovery status.
 
-## Alpha.7 component pins
+## Alpha.8 component pins
 
 | Component | Version |
 |---|---|
-| cfgate | 0.2.0-alpha.7 |
+| cfgate | 0.2.0-alpha.8 |
 | Go | 1.27.1 |
 | Cloudflare SDK | 7.11.0 |
 | Kubernetes Go libraries | 0.37.1 |
@@ -53,7 +53,7 @@ scans and promotes the same attested images. Publish its chart afterward using t
 published operator digest and matching schemas. Changelogs and release notes are
 generated from Git history; do not duplicate validation logs in user documentation.
 
-## Development changes after alpha.7
+## Upgrade from v0.2.0-alpha.7 to v0.2.0-alpha.8
 
 Install the matching CRDs before using service-token `rotationOverlap`. Managed
 tokens now renew their configured lifetime before expiration; renewal does not
@@ -68,7 +68,7 @@ Obsolete zone/type records are removed before replacements when cleanup is
 enabled. Failed cleanup remains visible and retries; it may delay publication.
 See [DNS configuration](cloudflare-dns.md) for retention policy behavior.
 
-The post-alpha.7 DNS controller requires the matching CRD for `status.pendingWrites`
+The alpha.8 DNS controller requires the matching CRD for `status.pendingWrites`
 and `status.ownershipPrefix`. Route-derived DNS now enforces Gateway/listener
 admission in addition to discovery selectors. TXT prefixes are immutable; see
 [DNS recovery and ownership](cloudflare-dns.md#interrupted-writes-and-ownership-changes)
