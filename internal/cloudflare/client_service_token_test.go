@@ -147,10 +147,10 @@ func TestExpirationOnlyRenewalWireContract(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 						t.Error(err)
 					}
-					if len(body) != 1 || body["duration"] != "1h" {
+					if len(body) != 2 || body["duration"] != "1h" || body["name"] != current.Name {
 						t.Errorf("renewal widened mutation: %+v", body)
 					}
-					if scenario != "unconfirmed expiration" {
+					if scenario != "unconfirmed expiration" && body["name"] == current.Name {
 						current.ExpiresAt = now.Add(time.Hour)
 					}
 				default:
