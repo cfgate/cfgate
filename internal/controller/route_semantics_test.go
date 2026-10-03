@@ -2,12 +2,14 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"cfgate.io/cfgate/internal/cloudflare"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -266,5 +268,31 @@ func TestPositiveSingleWeightAndRuleOrder(t *testing.T) {
 	}
 	if len(rules) != 2 || !strings.Contains(rules[0].Service, "://backend.") {
 		t.Fatalf("single positive weight or first rule not preserved: %+v", rules)
+	}
+}
+
+func TestHTTPBackendServiceTransport(t *testing.T) {
+	for _, protocols := range [][]corev1.Protocol{{""}, {corev1.ProtocolTCP}, {corev1.ProtocolUDP}, {corev1.ProtocolSCTP}, {corev1.ProtocolUDP, corev1.ProtocolTCP}} {
+		t.Run(fmt.Sprint(protocols), func(t *testing.T) {
+			tunnel, class, gw, route, svc := emissionFixtures()
+			svc.Spec.Ports = nil
+			want := false
+			for _, protocol := range protocols {
+				svc.Spec.Ports = append(svc.Spec.Ports, corev1.ServicePort{Port: 8080, Protocol: protocol})
+				want = want || protocol == "" || protocol == corev1.ProtocolTCP
+			}
+			kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(tunnel, class, gw, route, svc).Build()
+			condition, err := validateHTTPRouteBackendRefs(context.Background(), kube, route)
+			if err != nil || (condition.Status == metav1.ConditionTrue) != want {
+				t.Errorf("condition=%+v error=%v", condition, err)
+			}
+			rules, _, err := (&CloudflareTunnelReconciler{Client: kube}).collectIngressRules(context.Background(), tunnel, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rules) != 1 || (rules[0].Service == "http_status:500") == want {
+				t.Fatalf("unexpected rules %+v", rules)
+			}
+		})
 	}
 }

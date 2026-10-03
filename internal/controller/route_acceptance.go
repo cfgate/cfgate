@@ -114,16 +114,20 @@ func validateHTTPRouteBackendRefs(
 				portNumber = int32(*backend.Port)
 			}
 			{
-				found := false
+				found, tcp := false, false
 				for _, port := range svc.Spec.Ports {
 					if port.Port == portNumber {
 						found = true
-						break
+						tcp = tcp || port.Protocol == "" || port.Protocol == corev1.ProtocolTCP
 					}
 				}
 				if !found {
 					return status.NewCondition(string(gwapiv1.RouteConditionResolvedRefs), metav1.ConditionFalse, status.ReasonBackendNotFound,
 						fmt.Sprintf("Service %s/%s has no port %d", namespace, backend.Name, portNumber), route.Generation), nil
+				}
+				if !tcp {
+					return status.NewCondition(string(gwapiv1.RouteConditionResolvedRefs), metav1.ConditionFalse, string(gwapiv1.RouteReasonUnsupportedProtocol),
+						fmt.Sprintf("Service %s/%s port %d requires TCP for an HTTP origin", namespace, backend.Name, portNumber), route.Generation), nil
 				}
 			}
 		}

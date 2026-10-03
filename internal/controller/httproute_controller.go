@@ -203,6 +203,7 @@ func (r *HTTPRouteReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.findRoutesForAccessPolicy),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
+		Watches(&cfgatev1alpha1.CloudflareTunnel{}, handler.EnqueueRequestsFromMapFunc(r.findRoutesForAuthorization), builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(r.findRoutesForAuthorization), builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Watches(&gwapiv1.GatewayClass{}, handler.EnqueueRequestsFromMapFunc(r.findRoutesForAuthorization), builder.WithPredicates(predicate.GenerationChangedPredicate{}))
 	if _, err := mgr.GetRESTMapper().RESTMapping(schema.GroupKind{Group: gwapiv1.GroupName, Kind: "ReferenceGrant"}, "v1beta1"); err == nil {
@@ -510,6 +511,12 @@ func (r *HTTPRouteReconciler) validateParentRef(
 		return parentStatus
 	}
 
+	var tunnel cfgatev1alpha1.CloudflareTunnel
+	if err := r.Get(ctx, types.NamespacedName{Namespace: tunnelNS, Name: tunnelName}, &tunnel); err != nil {
+		parentStatus.Conditions[0] = status.NewCondition(string(gwapiv1.RouteConditionAccepted), metav1.ConditionFalse, status.ReasonNoTunnelRef, "Referenced tunnel is unavailable", route.Generation)
+	} else if err := validateRouteTransport(route, &tunnel); err != nil {
+		parentStatus.Conditions[0] = status.NewCondition(string(gwapiv1.RouteConditionAccepted), metav1.ConditionFalse, status.ReasonUnsupportedValue, err.Error(), route.Generation)
+	}
 	return parentStatus
 }
 

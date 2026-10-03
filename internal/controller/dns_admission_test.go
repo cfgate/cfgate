@@ -5,6 +5,8 @@ import (
 	"cfgate.io/cfgate/internal/cloudflare"
 	"context"
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gateway "sigs.k8s.io/gateway-api/apis/v1"
@@ -12,10 +14,16 @@ import (
 )
 
 func TestDNSDiscoveryRequiresAdmittedParent(t *testing.T) {
-	for _, scenario := range []string{"allowed", "namespace", "hostname", "class", "section", "port", "backend-unavailable", "invalid-protocol", "invalid-boolean", "invalid-timeout"} {
+	for _, scenario := range []string{"allowed", "namespace", "hostname", "class", "section", "port", "backend-unavailable", "invalid-protocol", "invalid-boolean", "invalid-timeout", "inherited-conflict", "https-h2c"} {
 		t.Run(scenario, func(t *testing.T) {
 			tunnel, class, gw, route, _ := emissionFixtures()
 			switch scenario {
+			case "inherited-conflict":
+				tunnel.Spec.OriginDefaults.HTTP2Origin = true
+				route.Annotations = map[string]string{"cfgate.io/origin-h2c": "true"}
+			case "https-h2c":
+				tunnel.Spec.OriginDefaults.H2cOrigin = true
+				route.Annotations = map[string]string{"cfgate.io/origin-protocol": "https"}
 			case "invalid-protocol":
 				route.Annotations = map[string]string{"cfgate.io/origin-protocol": "grpc"}
 			case "invalid-boolean":
@@ -47,6 +55,40 @@ func TestDNSDiscoveryRequiresAdmittedParent(t *testing.T) {
 			}
 			permitted := scenario == "allowed" || scenario == "backend-unavailable"
 			if (len(store["zone"]) > 0) != permitted {
+				t.Fatalf("unexpected DNS writes: %v", store)
+			}
+		})
+	}
+}
+
+func TestDNSNamespaceSelectorEmptyValueRequiresPresence(t *testing.T) {
+	for _, scenario := range []string{"missing", "nil", "empty", "wrong", "named"} {
+		t.Run(scenario, func(t *testing.T) {
+			tunnel, class, gw, route, _ := emissionFixtures()
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: route.Namespace}}
+			selector := &cfg.DNSNamespaceSelector{MatchLabels: map[string]string{"publish": ""}}
+			switch scenario {
+			case "missing":
+				ns.Labels = map[string]string{"other": ""}
+			case "empty":
+				ns.Labels = map[string]string{"publish": ""}
+			case "wrong":
+				ns.Labels = map[string]string{"publish": "no"}
+			case "named":
+				selector.MatchNames = []string{route.Namespace}
+			}
+			kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithObjects(tunnel, class, gw, route, ns).Build()
+			dns := &cfg.CloudflareDNS{Spec: cfg.CloudflareDNSSpec{Source: cfg.DNSHostnameSource{GatewayRoutes: &cfg.DNSGatewayRoutesSource{Enabled: true, NamespaceSelector: selector}}}, Status: cfg.CloudflareDNSStatus{OwnerID: "installation/resource"}}
+			r := &CloudflareDNSReconciler{Client: kube, APIReader: kube, Recorder: &fakeEventRecorder{}}
+			hosts, err := r.collectHostnamesFromRoutes(context.Background(), dns, tunnel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store := map[string]map[string]cloudflare.DNSRecord{}
+			if err := r.syncRecords(context.Background(), dns, "tunnel.example.net", hosts, map[string]string{"example.com": "zone"}, cloudflare.NewDNSService(dnsLifecycleStore(t, store), logr.Discard())); err != nil {
+				t.Fatal(err)
+			}
+			if (len(store["zone"]) > 0) != (scenario == "empty" || scenario == "named") {
 				t.Fatalf("unexpected DNS writes: %v", store)
 			}
 		})
