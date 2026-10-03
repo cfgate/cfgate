@@ -149,9 +149,12 @@ var _ = Describe("Multi-Resource E2E", Label("cloudflare"), Ordered, func() {
 			}, DefaultTimeout, DefaultInterval).Should(BeTrue(), "Access Application should be created with matching domain")
 
 			By("Verifying both resources are in sync")
-			var dnsStatus cfgatev1alpha1.CloudflareDNS
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: dns.Name, Namespace: dns.Namespace}, &dnsStatus)).To(Succeed())
-			Expect(dnsStatus.Status.SyncedRecords).To(BeNumerically(">", 0), "DNS should have synced records")
+			// Remote publication can precede the controller's status checkpoint.
+			Eventually(func(g Gomega) {
+				var dnsStatus cfgatev1alpha1.CloudflareDNS
+				g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dns), &dnsStatus)).To(Succeed())
+				g.Expect(dnsStatus.Status.SyncedRecords).To(BeNumerically(">", 0), "DNS should have synced records")
+			}, DefaultTimeout, DefaultInterval).Should(Succeed())
 
 			var policyStatus cfgatev1alpha1.CloudflareAccessPolicy
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: policy.Name, Namespace: policy.Namespace}, &policyStatus)).To(Succeed())
