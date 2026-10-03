@@ -35,6 +35,23 @@ var _ = Describe("CEL Validation E2E", func() {
 	})
 
 	Context("CloudflareDNS validation", func() {
+		It("preserves omitted and explicit hostname TTLs during admission", func() {
+			for _, ttl := range []int32{0, 1, 600} {
+				dns := &cfgatev1alpha1.CloudflareDNS{
+					ObjectMeta: metav1.ObjectMeta{Name: testID("ttl-default"), Namespace: namespace.Name},
+					Spec: cfgatev1alpha1.CloudflareDNSSpec{
+						TunnelRef: &cfgatev1alpha1.DNSTunnelRef{Name: "absent"},
+						Zones:     []cfgatev1alpha1.DNSZoneConfig{{Name: "example.com"}},
+						Defaults:  cfgatev1alpha1.DNSRecordDefaults{TTL: 3600, Proxied: true},
+						Source:    cfgatev1alpha1.DNSHostnameSource{Explicit: []cfgatev1alpha1.DNSExplicitHostname{{Hostname: "app.example.com", TTL: ttl}}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, dns, client.DryRunAll)).To(Succeed())
+				Expect(dns.Spec.Source.Explicit[0].TTL).To(Equal(ttl))
+				Expect(dns.Spec.Defaults.TTL).To(Equal(int32(3600)))
+			}
+		})
+
 		It("keeps TXT prefix immutable while permitting claim tracking changes", func() {
 			dns := &cfgatev1alpha1.CloudflareDNS{
 				ObjectMeta: metav1.ObjectMeta{Name: testID("immutable-prefix"), Namespace: namespace.Name, Annotations: map[string]string{"cfgate.io/deletion-policy": "orphan"}},

@@ -94,7 +94,11 @@ include list is not a replacement for a valid policy. Existing invalid objects
 are also rejected before remote policy or service-token changes.
 
 Proxied DNS records use Auto TTL regardless of the configured TTL. DNS-only
-records retain their configured TTL. No spec migration is needed for this change.
+records retain their configured TTL. New explicit hostname entries inherit
+`spec.defaults.ttl` when their own TTL is omitted. Older schemas stored `ttl: 1`
+for omitted values; those objects continue using Auto. To inherit a custom default,
+remove the hostname-level `ttl` from the stored resource and source manifest after
+installing the new CRD. Keep `ttl: 1` where Auto is intentional.
 
 Health and metrics listeners must have separate, non-overlapping bind addresses.
 The defaults remain unchanged. Correct colliding custom ports before upgrading;
