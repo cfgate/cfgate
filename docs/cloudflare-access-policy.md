@@ -105,7 +105,9 @@ Renewal preserves the client secret. It uses Cloudflare's duration update API;
 the separate refresh endpoint always adds a year and would not preserve a custom
 duration. An enabled, unexpired token with unchanged name and duration uses an
 expiration-only operation. It retains ownership checks and application locks,
-but does not withdraw healthy `access-required` forwarding. Expired tokens,
+but does not withdraw healthy `access-required` forwarding. The request resends
+the verified current name and duration, then checks that expiration advanced. It
+does not set secret-version, enabled-state, or overlap fields. Expired tokens,
 configuration edits, and secret rotations still require withdrawal. Failed renewal
 verification reports the policy unavailable; continuity is not guaranteed during
 provider failures or after expiration. See [Cloudflare's service token lifecycle](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).

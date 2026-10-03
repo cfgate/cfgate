@@ -1376,7 +1376,9 @@ func (c *clientImpl) ExtendServiceTokenExpiration(ctx context.Context, account, 
 		return nil, fmt.Errorf("service token no longer permits expiration-only renewal")
 	}
 
-	result, err := c.api.ZeroTrust.Access.ServiceTokens.Update(ctx, id, zero_trust.AccessServiceTokenUpdateParams{AccountID: cf.F(account), Duration: cf.F(current.Duration)})
+	// Resend the verified name: live duration-only PUTs can acknowledge the
+	// request without extending expiration, even though name is optional.
+	result, err := c.api.ZeroTrust.Access.ServiceTokens.Update(ctx, id, zero_trust.AccessServiceTokenUpdateParams{AccountID: cf.F(account), Name: cf.F(current.Name), Duration: cf.F(current.Duration)})
 	if err != nil {
 		return nil, fmt.Errorf("failed to extend service token expiration: %w", err)
 	}

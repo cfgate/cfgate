@@ -20,7 +20,7 @@ import (
 )
 
 // Only the inventory's expiration is advanced into the renewal window. The
-// adapter re-reads the real token and performs the actual duration-only update.
+// adapter re-reads the real token and performs the actual expiration update with the existing name and duration.
 // This avoids waiting for a minimum one-hour token to age during every suite.
 type renewalDueClient struct {
 	cloudflare.Client
@@ -104,11 +104,17 @@ func verifyTokenRenewalContinuity(ctx SpecContext, policy *cfgatev1alpha1.Cloudf
 	result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(policy)})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(result.RequeueAfter).To(BeNumerically(">", 0))
-	Expect(delayed.calls.Load()).To(Equal(int32(1)))
+	Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(policy), policy)).To(Succeed())
+	Expect(meta.IsStatusConditionTrue(policy.Status.Conditions, "Ready")).To(BeTrue(), "renewal failed: %+v", policy.Status.Conditions)
+	Expect(delayed.calls.Load()).To(Equal(int32(1)), "renewal was not attempted: result=%+v conditions=%+v", result, policy.Status.Conditions)
 	Eventually(ctx, func() int32 { return samples[2].Load() }, ShortTimeout, DefaultInterval).Should(BeNumerically(">=", 4))
 	cancelProbe()
 	<-done
-	Expect(failures).NotTo(Receive(), "authenticated requests must remain successful throughout renewal")
+	select {
+	case err := <-failures:
+		Expect(err).NotTo(HaveOccurred(), "authenticated requests must remain successful throughout renewal")
+	default:
+	}
 	Expect(samples[1].Load()).To(BeNumerically(">=", 2), "must sample while management API is delayed")
 	after, err := realClient.GetServiceToken(ctx, testEnv.CloudflareAccountID, delayed.tokenID)
 	Expect(err).NotTo(HaveOccurred())
