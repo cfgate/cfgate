@@ -99,6 +99,12 @@ func (r *CloudflareAccessPolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{RequeueAfter: 100 * time.Millisecond}, nil
 	}
 
+	if err := validateAccessPolicyCompatibility(&policy); err != nil {
+		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions,
+			status.NewCondition(status.ConditionTypePolicySynced, metav1.ConditionFalse,
+				status.ReasonPolicyError, status.Error2ConditionMsg(err), policy.Generation))
+		return ctrl.Result{}, r.updateStatus(ctx, &policy)
+	}
 	if err := validateServiceTokens(policy.Spec.ServiceTokens); err != nil {
 		policy.Status.Conditions = status.MergeConditions(policy.Status.Conditions, status.NewCondition(status.ConditionTypeServiceTokensReady, metav1.ConditionFalse, status.ReasonServiceTokenError, err.Error(), policy.Generation))
 		return ctrl.Result{}, r.updateStatus(ctx, &policy)
@@ -265,6 +271,12 @@ func validateAccessPolicyCompatibility(policy *cfgatev1alpha1.CloudflareAccessPo
 		for i, rule := range set.rules {
 			if countAccessRuleSelectors(rule) != 1 {
 				return fmt.Errorf("%s[%d]: exactly one selector must be specified", set.name, i)
+			}
+			if rule.Everyone != nil && !*rule.Everyone {
+				return fmt.Errorf("%s[%d]: everyone must be true; omit the rule to disable it", set.name, i)
+			}
+			if rule.AnyValidServiceToken != nil && !*rule.AnyValidServiceToken {
+				return fmt.Errorf("%s[%d]: anyValidServiceToken must be true; omit the rule to disable it", set.name, i)
 			}
 			if policy.Spec.Decision == "bypass" && accessRuleHasIdentitySelector(rule) {
 				return fmt.Errorf("%s[%d]: bypass policies cannot use identity selectors", set.name, i)

@@ -57,7 +57,11 @@ Supported rule types include:
 
 `serviceToken.name` references an entry in `spec.serviceTokens`; the controller creates the token before syncing the policy and uses the created Cloudflare ID in the policy rule.
 
-Each `include`, `exclude`, and `require` item must specify exactly one selector. The controller rejects invalid selector combinations before calling Cloudflare so status carries a local validation error.
+Each `include`, `exclude`, and `require` item must specify exactly one selector.
+`everyone` and `anyValidServiceToken` must be `true` when present; remove the whole
+rule to disable it. `false` is not an inverse match. Schema validation rejects
+these values, and the controller checks existing objects before changing policies
+or service tokens.
 
 Decision compatibility:
 
