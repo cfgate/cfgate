@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -193,7 +194,8 @@ var _ = Describe("Maintenance external effects", Label("cloudflare", "maintenanc
 			record, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, hostname, "CNAME")
 			g.Expect(err).NotTo(HaveOccurred())
 			g.Expect(record).NotTo(BeNil())
-			g.Expect(record.Comment).To(Equal("cfgate/owner=" + dns.Status.OwnerID))
+			g.Expect(record.Comment).To(MatchRegexp("^" + regexp.QuoteMeta("cfgate/owner="+dns.Status.OwnerID) + ",op=[A-Za-z0-9_-]{10}$"))
+			g.Expect(len(record.Comment)).To(BeNumerically("<=", 100))
 			g.Expect(record.Content).To(Equal(tunnel.Status.TunnelDomain))
 			g.Expect(record.Proxied).To(BeTrue())
 			ownership, err := getDNSRecordFromCloudflare(ctx, cfClient, zoneID, "_cfgate."+hostname, "TXT")

@@ -4,6 +4,7 @@ package e2e_test
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -1376,7 +1377,8 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 	Context("comment length regression guard", func() {
 		It("syncs DNS record with long resource name without exceeding Cloudflare 100-char comment limit", SpecTimeout(6*time.Minute), func(ctx SpecContext) {
 			// Full namespace/resource UID ownership uses the compact data marker
-			// "cfgate/owner=<namespace UID>/<resource UID>" (86 characters).
+			// "cfgate/owner=<namespace UID>/<resource UID>,op=<10 chars>"
+			// fits exactly within the 100-character provider limit.
 			// The legacy heritage prefix made that identity exceed Cloudflare's
 			// 100-character comment limit. Long names must not inflate the marker.
 
@@ -1400,7 +1402,7 @@ var _ = Describe("CloudflareDNS E2E", Label("cloudflare"), Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(record).NotTo(BeNil())
 			Expect(dnsResource.Status.OwnerID).NotTo(BeEmpty())
-			Expect(record.Comment).To(Equal("cfgate/owner=" + dnsResource.Status.OwnerID))
+			Expect(record.Comment).To(MatchRegexp("^" + regexp.QuoteMeta("cfgate/owner="+dnsResource.Status.OwnerID) + ",op=[A-Za-z0-9_-]{10}$"))
 			Expect(len(record.Comment)).To(BeNumerically("<=", 100))
 		})
 	})

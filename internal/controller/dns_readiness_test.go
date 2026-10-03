@@ -15,14 +15,20 @@ import (
 )
 
 func TestDNSFailedChecksClearReadiness(t *testing.T) {
-	for _, scenario := range []string{"credentials", "zones"} {
+	for _, scenario := range []string{"credentials", "zones", "identity"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx := context.Background()
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "operator", UID: "install"}}
 			dns := &cfg.CloudflareDNS{ObjectMeta: metav1.ObjectMeta{Name: "dns", Namespace: "app", UID: "resource", Generation: 1, Finalizers: []string{dnsFinalizer}}, Spec: cfg.CloudflareDNSSpec{Cloudflare: &cfg.CloudflareConfig{SecretRef: cfg.SecretRef{Name: "missing"}}, ExternalTarget: &cfg.ExternalTarget{Value: "target.example.net"}, Zones: []cfg.DNSZoneConfig{{Name: "example.com"}}}, Status: cfg.CloudflareDNSStatus{OwnerID: "install/resource", Conditions: []metav1.Condition{status.NewCondition(status.ConditionTypeReady, metav1.ConditionTrue, "Ready", "operational", 1)}}}
+			if scenario == "identity" {
+				dns.Status.OwnerID = "another/resource"
+			}
 			kube := fake.NewClientBuilder().WithScheme(controllerTestScheme(t)).WithStatusSubresource(dns).WithObjects(ns, dns).Build()
 			r := &CloudflareDNSReconciler{Client: kube, APIReader: kube, InstallationNamespace: "operator", Recorder: &fakeEventRecorder{}}
 			kind := status.ConditionTypeCredentialsValid
+			if scenario == "identity" {
+				kind = status.ConditionTypeReady
+			}
 			if scenario == "zones" {
 				mock := cloudflare.NewMockClient()
 				mock.GetZoneByNameFunc = func(context.Context, string) (*cloudflare.Zone, error) { return nil, errors.New("zone lookup failed") }
@@ -37,8 +43,9 @@ func TestDNSFailedChecksClearReadiness(t *testing.T) {
 				if err := kube.Update(ctx, dns); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(dns)}); err != nil {
-					t.Fatal(err)
+				_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(dns)})
+				if (err != nil) != (scenario == "identity") {
+					t.Fatalf("unexpected reconcile error: %v", err)
 				}
 				if err := kube.Get(ctx, client.ObjectKeyFromObject(dns), dns); err != nil {
 					t.Fatal(err)
