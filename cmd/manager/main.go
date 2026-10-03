@@ -358,7 +358,11 @@ func parseManagerConfig(args []string, getenv func(string) string, stderr io.Wri
 		cfg.ProbeAddr = fmt.Sprintf(":%d", port)
 	}
 
-	if endpointAddressesOverlap(cfg.MetricsAddr, cfg.ProbeAddr) {
+	metricsAddr := cfg.MetricsAddr
+	if metricsAddr == "" {
+		metricsAddr = metricsserver.DefaultBindAddress
+	}
+	if endpointAddressesOverlap(metricsAddr, cfg.ProbeAddr) {
 		return managerConfig{}, cliExitError{code: exitCodeUsage, err: fmt.Errorf("metrics and health bind addresses overlap: %q and %q", cfg.MetricsAddr, cfg.ProbeAddr)}
 	}
 
@@ -402,10 +406,11 @@ func endpointAddressesOverlap(a, b string) bool {
 	}
 	normalize := func(host string) string {
 		if addr, err := netip.ParseAddr(host); err == nil {
+			addr = addr.Unmap()
 			if addr.IsUnspecified() {
 				return ""
 			}
-			return addr.Unmap().String()
+			return addr.String()
 		}
 		return strings.ToLower(strings.TrimSuffix(host, "."))
 	}

@@ -637,6 +637,8 @@ func TestManagerEndpointCollisions(t *testing.T) {
 		{"mapped ipv4", "[::ffff:127.0.0.1]:8081", "127.0.0.1:8081", true},
 		{"different ports", ":8080", ":8081", false},
 		{"different hosts", "127.0.0.1:8081", "127.0.0.2:8081", false},
+		{"empty metrics uses default", "", ":8080", true},
+		{"empty health disables listener", ":8080", "", false},
 		{"metrics disabled", "0", ":8081", false},
 		{"health disabled", ":8080", "0", false},
 		{"ephemeral", ":0", ":0", false},
