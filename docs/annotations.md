@@ -9,14 +9,14 @@ Per-route configuration applied to Gateway API HTTPRoute resources.
 | Annotation | Values | Default | Description |
 |---|---|---|---|
 | `cfgate.io/origin-protocol` | `http`, `https` | `http` | Backend protocol |
-| `cfgate.io/origin-ssl-verify` | `true`, `false` | `true` | TLS certificate verification |
+| `cfgate.io/origin-ssl-verify` | `true`, `false` | inherited | TLS certificate verification |
 | `cfgate.io/origin-connect-timeout` | Duration string (`30s`, `1m`) | `30s` | Origin connection timeout |
 | `cfgate.io/origin-http-host-header` | Hostname string | *none* | Host header override sent to origin |
 | `cfgate.io/origin-server-name` | Hostname string | *none* | TLS SNI server name |
 | `cfgate.io/origin-ca-pool` | Managed file path | *none* | CA certificate pool path |
-| `cfgate.io/origin-http2` | `true`, `false` | `false` | HTTP/2 to origin |
-| `cfgate.io/origin-h2c` | `true`, `false` | `false` | HTTP/2 cleartext (h2c) to origin |
-| `cfgate.io/ttl` | `1`-`86400` | `1` (auto) | DNS record TTL in seconds |
+| `cfgate.io/origin-http2` | `true`, `false` | inherited | HTTP/2 to origin |
+| `cfgate.io/origin-h2c` | `true`, `false` | inherited | HTTP/2 cleartext (h2c) to origin |
+| `cfgate.io/ttl` | `1`-`86400` | inherited | DNS record TTL in seconds |
 | `cfgate.io/cloudflare-proxied` | `true`, `false` | `true` | Cloudflare proxy (orange cloud) |
 | `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | Deprecated: resolves a policy reference for status only |
 | `cfgate.io/hostname` | RFC 1123 hostname | *none* | Override the route hostname |
@@ -37,7 +37,7 @@ Specifies the protocol used to connect from cloudflared to the backend service.
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
-When set to `https`, cloudflared opens a TLS connection to the origin. Combine with `origin-ssl-verify: "false"` if the origin uses a self-signed certificate.
+Protocol values are case-insensitive: `HTTPS` and `https` both select TLS to the origin. Invalid values are rejected. For a private CA, configure the tunnel's CA Secret and keep certificate verification enabled. See [origin parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/) for the connector contract.
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -67,11 +67,11 @@ Controls whether cloudflared verifies the TLS certificate presented by the origi
 
 **Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
 
-**Default:** `true`
+**Default:** inherited from tunnel defaults
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
-Set to `false` when your origin uses a self-signed certificate or when using `origin-protocol: https` with services that have untrusted certs.
+Omission inherits the tunnel's `originDefaults.noTLSVerify` setting. Without an insecure tunnel default, certificates are verified. Explicit `true` enables verification even under an insecure tunnel default; explicit `false` disables it for this route. Prefer a trusted CA bundle for private certificates.
 
 ```yaml
 metadata:
@@ -88,7 +88,9 @@ Maximum time cloudflared waits to establish a connection to the origin server.
 
 **Valid values:** Go duration string (e.g., `30s`, `1m`, `1h30m`)
 
-**Default:** `30s`
+**Default:** inherited from tunnel defaults (otherwise `30s`)
+
+Use a positive whole number of seconds, such as `10s` or `1m`. Values that would be rounded or replaced by an SDK fallback are rejected.
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
@@ -162,7 +164,7 @@ Enables HTTP/2 for the connection between cloudflared and the origin server.
 
 **Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
 
-**Default:** `false`
+**Default:** inherited from tunnel defaults (otherwise `false`)
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
@@ -180,11 +182,11 @@ Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the or
 
 **Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
 
-**Default:** `false`
+**Default:** inherited from tunnel defaults (otherwise `false`)
 
 **Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
 
-Mutually exclusive with `cfgate.io/origin-http2`. Requires the [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared) fork image (the default). Upstream cloudflared silently ignores this field. See [Image](cloudflare-tunnel.md#image).
+Explicit `false` disables inherited h2c. When switching from a tunnel-wide HTTP/2 default, also set `cfgate.io/origin-http2: "false"`; both transports cannot be enabled together. Requires the [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared) fork image (the default). Upstream cloudflared silently ignores this field. See [Image](cloudflare-tunnel.md#image).
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -214,7 +216,7 @@ Sets the DNS record TTL (Time To Live) in seconds. Value `1` is special and mean
 
 **Valid values:** Integer from `1` to `86400`
 
-**Default:** `1` (auto)
+**Default:** inherits `CloudflareDNS.spec.defaults.ttl` (otherwise Auto)
 
 **Read by:** CloudflareDNS controller (via route hostname collection). See [CloudflareDNS](cloudflare-dns.md#specdefaults) for default TTL configuration.
 
@@ -404,7 +406,7 @@ kubectl annotate cloudflareaccessapplication my-app cfgate.io/deletion-policy=or
 kubectl delete cloudflareaccessapplication my-app
 ```
 
-**Warning:** Orphaned resources in Cloudflare must be manually deleted via the Cloudflare dashboard or API. cfgate will not manage them again unless you re-create the Kubernetes resource with matching names.
+Orphaned Cloudflare resources remain your responsibility. Recreating a Kubernetes object with the same name creates a new UID and does not restore ownership. Follow the [adoption and ownership-transfer procedure](authorization-and-ownership.md) before resuming management, or delete the remote resources manually after verifying that no active owner uses them.
 
 ---
 
