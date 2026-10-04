@@ -68,10 +68,14 @@ kubectl delete -f examples/multi-service/accessapplication.yaml --wait=true --ti
 kubectl delete -f examples/multi-service/accesspolicy.yaml --wait=true --timeout=300s &&
 kubectl delete -f examples/multi-service/tunnel.yaml --wait=true --timeout=300s &&
 kubectl delete -f examples/multi-service/referencegrant.yaml &&
-kubectl delete -f examples/multi-service/gateway.yaml &&
-kubectl delete -f examples/multi-service/services.yaml &&
-kubectl delete -f examples/multi-service/namespace.yaml
+kubectl delete gateway cloudflare-tunnel -n cfgate-system &&
+kubectl delete -f examples/multi-service/services.yaml
 ```
 
-Keep the credential Secret and controller until finalization completes. Remove
-shared namespaces or classes only when unused. See [decommissioning](../../docs/authorization-and-ownership.md#controller-removal-and-decommissioning).
+The shared `cfgate` GatewayClass and `demo` namespace remain. Before removing
+them, inspect all Gateways for `spec.gatewayClassName: cfgate` and check for any
+other workloads or resources in `demo`. Delete the class only if no Gateway uses
+it, and delete the namespace only if it is dedicated to this example. Those
+optional deletions are separate from the cleanup commands above.
+
+Keep the credential Secret and controller until finalization completes. See [decommissioning](../../docs/authorization-and-ownership.md#controller-removal-and-decommissioning).

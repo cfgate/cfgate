@@ -56,7 +56,7 @@ coverage interpretation, and release verification.
 
 ## Secrets Configuration
 
-E2E, preflight, and cleanup tasks load `secrets.enc.yaml` and `.env`; ordinary
+E2E, preflight, and cleanup tasks load the selected encrypted file and `.env`; ordinary
 unit and offline tasks do not load `secrets.enc.yaml`. Local secrets use
 [sops](https://github.com/getsops/sops) with
 [age](https://github.com/FiloSottile/age). Keep plaintext credentials and private
@@ -64,28 +64,46 @@ age keys out of Git and command output.
 
 ### Setting Up Secrets
 
-Use an age private key authorized to decrypt the repository's encrypted file.
-For a separate development account, create your own age key and configure the
-recipient in `.sops.yaml` before creating your encrypted file. Keep these local
-credential changes out of the contribution.
+For the shared development account, use an age key already authorized for
+`secrets.enc.yaml`. If you need access, ask a maintainer to add your **public** age
+recipient and re-encrypt the file. Do not share private keys or edit `.sops.yaml`
+to try to decrypt existing ciphertext; a new recipient does not authorize an
+already encrypted file.
 
-Create a key only if you do not already have one at this path:
+For your own Cloudflare account, keep credentials outside the checkout. Create
+an age key only if you do not already have one at this path:
 
 ```bash
-mkdir -p ~/.config/sops/age
+mkdir -p ~/.config/sops/age ~/.config/cfgate
 age-keygen -o ~/.config/sops/age/keys.txt
 ```
 
-The command prints a public recipient beginning with `age1`. Configure that
-recipient in `.sops.yaml`, then use the sops editor to enter credentials without
-saving a plaintext secrets file:
+Use your public recipient to create a new, separate encrypted file. Enter the six
+Cloudflare keys below through the editor; do not copy the repository ciphertext
+into this file:
 
 ```bash
-sops secrets.enc.yaml
+CFGATE_AGE_RECIPIENT="$(age-keygen -y ~/.config/sops/age/keys.txt)"
+sops --age "$CFGATE_AGE_RECIPIENT" "$HOME/.config/cfgate/secrets.enc.yaml"
 ```
 
-Changing the recipient configuration does not grant access to an existing
-ciphertext; you need its authorized private key to edit it.
+If that personal file already exists, edit it using its authorized key instead of
+creating another recipient. SOPS uses its editor for plaintext and saves ciphertext;
+choose an editor that does not retain plaintext swap or backup files.
+
+Select your personal file in the shell before running live tasks:
+
+```bash
+export CFGATE_E2E_SECRETS_FILE="$HOME/.config/cfgate/secrets.enc.yaml"
+mise run e2e:preflight
+```
+
+`e2e`, `e2e:preflight`, and `e2e:cleanup` load that file instead of the shared
+`secrets.enc.yaml`. `e2e:filter` and aggregate coverage delegate to `e2e` and use
+the same selection. Repeat the export in each new shell. Without it, tasks retain
+the repository file as their default. Review any `.env` overrides so they do not
+select a different account. The repository's `.sops.yaml` and encrypted file
+remain unchanged; preflight checks loading without printing credential values.
 
 ### Required Keys
 

@@ -39,7 +39,7 @@ manager Deployment name:
 
 ```bash
 kubectl apply -f https://github.com/cfgate/cfgate/releases/download/v0.2.0-alpha.11/install.yaml
-kubectl rollout status deployment/controller-manager -n cfgate-system --timeout=180s
+kubectl rollout status deployment/cfgate-controller-manager -n cfgate-system --timeout=180s
 ```
 
 ## Account and credentials
@@ -347,9 +347,12 @@ kubectl delete cloudflareaccessapplication demo -n cfgate-demo --ignore-not-foun
 kubectl delete cloudflareaccesspolicy demo -n cfgate-demo --ignore-not-found --wait=true --timeout=300s &&
 kubectl delete cloudflaretunnel demo -n cfgate-demo --wait=true --timeout=300s &&
 kubectl delete gateway demo -n cfgate-demo &&
-kubectl delete gatewayclass cfgate-quickstart &&
-kubectl delete namespace cfgate-demo
+kubectl delete -f service.yaml
 ```
+
+The sample namespace and GatewayClass remain. After verifying that no other
+resources use `cfgate-demo` and no Gateway references `cfgate-quickstart`, remove
+those two objects separately. Keep either object if it has been reused.
 
 If any deletion times out, stop and repair the reported dependency before removing
 credentials or the namespace. Verify the owned remote records, applications,

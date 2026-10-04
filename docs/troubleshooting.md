@@ -16,7 +16,7 @@ kubectl get events -n cfgate-demo --sort-by=.metadata.creationTimestamp
 kubectl logs -n cfgate-system deployment/cfgate -c manager --since=10m
 ```
 
-For the source installation manifest, use `deployment/controller-manager` in log
+For the source installation manifest, use `deployment/cfgate-controller-manager` in log
 commands. Helm names can differ with release-name or fullname overrides. Check
 `kubectl get deployment -n cfgate-system` instead of assuming a name.
 

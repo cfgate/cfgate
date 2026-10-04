@@ -57,7 +57,7 @@ API. Start Docker, install the tools with `mise install`, and configure
 
 ### Environment Variables
 
-E2E tasks load `secrets.enc.yaml` and `.env`; shell environment values also supply
+E2E tasks load `secrets.enc.yaml` (or `CFGATE_E2E_SECRETS_FILE`) and `.env`; shell environment values also supply
 runtime options. The release preflight requires all six Cloudflare values below,
 while local runs may skip cases that need optional values.
 
@@ -75,6 +75,7 @@ CloudflareDNS resource's `spec.zones[]`.
 
 | Option | Behavior and default |
 |--------|----------------------|
+| `CFGATE_E2E_SECRETS_FILE` | Path to a personal encrypted credential file; defaults to `secrets.enc.yaml` |
 | `E2E_PROCS` | Ginkgo process count; local default `4` |
 | `E2E_RUN_ID` | Run identifier of 1 to 20 lowercase alphanumeric characters; generated when unset |
 | `E2E_USE_EXISTING_CLUSTER` | Set `true` to reuse an explicitly selected disposable kind cluster; default `false` |
