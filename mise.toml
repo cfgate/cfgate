@@ -167,7 +167,7 @@ go tool cover -func=out/coverage/unit.coverprofile | tail -1
 
 [tasks.e2e]
 description = "Run E2E tests against live Cloudflare API"
-env = { _.file = ["secrets.enc.yaml", ".env"] }
+env = { _.file = ["{{ env.CFGATE_E2E_SECRETS_FILE | default(value='secrets.enc.yaml') }}", ".env"] }
 run = """
 set -eu
 export E2E_USE_EXISTING_CLUSTER="${E2E_USE_EXISTING_CLUSTER:-false}"
@@ -271,7 +271,7 @@ E2E_FOCUS="${usage_filter?}" mise run e2e
 [tasks."e2e:preflight"]
 hide = true
 description = "Validate release E2E secrets"
-env = { _.file = ["secrets.enc.yaml", ".env"] }
+env = { _.file = ["{{ env.CFGATE_E2E_SECRETS_FILE | default(value='secrets.enc.yaml') }}", ".env"] }
 run = """
 #!/usr/bin/env bash
 set -eu
@@ -288,7 +288,7 @@ echo "Release E2E secret preflight passed"
 [tasks."e2e:cleanup"]
 alias = ["clean"]
 description = "Preview orphaned E2E resources; explicit opt-ins enable deletion"
-env = { _.file = ["secrets.enc.yaml", ".env"] }
+env = { _.file = ["{{ env.CFGATE_E2E_SECRETS_FILE | default(value='secrets.enc.yaml') }}", ".env"] }
 run = "go run ./cmd/cleanup"
 
 [tasks.coverage]

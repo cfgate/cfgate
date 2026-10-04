@@ -52,12 +52,16 @@ After withdrawal, run this chain; a failed deletion stops subsequent steps:
 ```bash
 kubectl delete -f examples/basic/dns.yaml --wait=true --timeout=300s &&
 kubectl delete -f examples/basic/tunnel.yaml --wait=true --timeout=300s &&
-kubectl delete -f examples/basic/gateway.yaml &&
-kubectl delete -f examples/basic/echo-service.yaml &&
-kubectl delete -f examples/basic/namespace.yaml
+kubectl delete gateway cloudflare-tunnel -n cfgate-system &&
+kubectl delete -f examples/basic/echo-service.yaml
 ```
 
-Keep credentials, grants, and the controller until cleanup completes. Delete the
-sample namespace or GatewayClass only if nothing else uses it. See
+The shared `cfgate` GatewayClass and `demo` namespace remain. Before removing
+them, inspect all Gateways for `spec.gatewayClassName: cfgate` and check for any
+other workloads or resources in `demo`. Delete the class only if no Gateway uses
+it, and delete the namespace only if it is dedicated to this example. Those
+optional deletions are separate from the cleanup commands above.
+
+Keep credentials, grants, and the controller until cleanup completes. See
 [decommissioning](../../docs/authorization-and-ownership.md#controller-removal-and-decommissioning)
 for retained resources or blocked finalizers.
