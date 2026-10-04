@@ -1,12 +1,22 @@
 # Authorization and ownership
 
-Creating an object does not itself authorize use of another namespace's credentials, a backend, or a remote resource. cfgate checks the current source object, target namespace, ReferenceGrant, Gateway ownership, and resource identity before performing the corresponding action. Status is diagnostic, not an authorization cache.
+cfgate checks permission to reference Kubernetes objects separately from ownership
+of Cloudflare resources. A ReferenceGrant authorizes a relationship; an ownership
+claim identifies who may mutate a remote object. Neither a matching name nor an old
+Ready condition replaces those checks. Read this guide before granting tenant
+access, adopting existing resources, or moving an installation.
 
 ## Administrator and tenant boundary
 
-CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, CloudflareAccessApplication, GatewayClass, Gateway, ReferenceGrant, credential Secrets, and claim ConfigMaps are administrator-controlled infrastructure. Their creators can spend Cloudflare account authority. In particular, selecting a connector image or arguments authorizes executable code with tunnel credentials and the connector's network access. Do not grant these capabilities to route-only tenants.
+Keep cfgate CRs, Gateways, GatewayClasses, grants, credentials, and claim ConfigMaps
+under administrator control. Their configuration can exercise Cloudflare account
+authority. Connector image and argument selection can execute code with tunnel
+credentials and network access. Route-only tenants should not receive those
+permissions.
 
-A namespace Role for a route author can be limited to the following. Bind it only in that tenant's namespace; this example does not create a RoleBinding or automatically grant access. If tenants also manage Services or application workloads, audit those permissions separately because backend ownership defines which origins they can expose.
+This Role limits a route author to HTTPRoutes. A RoleBinding in the same namespace
+is still required. Audit Service and workload permissions separately: they control
+which origins a tenant can expose.
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -49,23 +59,18 @@ Cross-namespace Gateway-to-Tunnel references need a grant from `gateway.networki
 
 The supported HTTPRoute subset and invalid-backend HTTP 500 behavior are documented in the [Gateway API primer](gateway-api-primer.md#supported-httproute-behavior). Listener/class/hostname rejection prevents attachment. Invalid backend references on an attached route retain their matches as failure responses, preserving valid sibling rules and preventing fallback to broader routes.
 
-## Upgrade from v0.2.0-alpha.5 to v0.2.0-alpha.6
+## Ownership and coordination limits
 
-This upgrade changes authorization, ownership and persisted status as well as the controller image. The stricter defaults intentionally reject ambiguous ownership accepted by alpha.5. Inspect desired objects and remote inventory before rollout; test the following migration in a disposable environment first.
+Installation namespace UID and resource UID distinguish installations and object
+incarnations. Recreating either under the same name changes identity. Back up desired
+resources and observed remote IDs, but do not copy ownership status into a new
+installation as a substitute for a verified transfer.
 
-1. Stop previous cfgate writers for the resources being migrated. Inventory the Kubernetes CR UIDs, connector owner references, Cloudflare account/tunnel IDs, DNS data records, companion TXT records, and relevant token permissions. Back up the desired manifests and ownership records.
-2. Configure one stable installation namespace using the manager's `POD_NAMESPACE` or `--installation-namespace`. Its Kubernetes UID identifies the DNS installation. Add required cross-namespace ReferenceGrants. For local execution, explicitly select the intended cluster and installation namespace.
-3. Existing connector objects must already have the CloudflareTunnel's controller owner UID. If objects are unowned or foreign, inspect them and deliberately migrate/recreate them under that owner; cfgate will not overwrite them automatically. The same rule applies to managed Access service-token Secrets.
-4. For a known, unclaimed remote tunnel, set `cfgate.io/adopt-existing: "true"` on the administrator-owned CloudflareTunnel. cfgate creates an immutable `cfgate-tunnel-<account/tunnel hash>` ConfigMap claim in the installation namespace. A foreign claim or another CR referencing the same account/tunnel ID blocks adoption. Remove the opt-in after successful migration. Never remove a claim while its owner is still active.
-5. DNS now persists `<installation namespace UID>/<CloudflareDNS UID>` in `status.ownerId` and writes exact owner markers on data and TXT records. `spec.ownership.ownerId` cannot override this identity. After stopping the old owner, inspect any legacy TXT claim and deliberately remove that obsolete claim if migrating to a new owner. For legacy data with no exact owner marker, temporarily set `cfgate.io/adopt-existing: "true"`. cfgate can then stamp that unmarked record with the new identity. Existing foreign data markers are never adopted; transfer them manually after verifying both owners are stopped. Remove the opt-in afterward.
-6. Install all four matching CRD schemas and manager RBAC before starting alpha.6. Old schemas must not prune the new ownership, credential selection, lifecycle and Access dependency status fields. Chart users should follow the [1.4.0 to 1.5.0 upgrade](https://github.com/cfgate/helm-chart/blob/main/README.md#upgrade-from-140-to-150); external CRD/RBAC installations require the same updates.
-7. Confirm current conditions, captured remote tunnel configuration, DNS ownership markers, connector availability, and application requests before allowing normal traffic. A policy-skipped DNS update reports `Skipped`, contributes to pending records, and does not report synchronized readiness. `cleanupPolicy.onlyManaged: false` no longer bypasses ownership checks.
-
-Alpha.6 does not automatically require Access on existing routes. Use `cfgate.io/access-required` to make publication depend on a selected Access application; independently managed Access applications can still protect their matching domains. The deprecated `cfgate.io/access-policy` annotation does not enforce authentication; use the [Access-required contract](access-required.md) when protection is intended. Review the supported route subset before rollout: unsupported restrictions are rejected and invalid attached backends produce matching failure responses. Controller Pods now disable Service environment injection to avoid the metrics Service port collision in issue #85; explicit flags continue to take precedence over environment values.
-
-Deleting/recreating the installation namespace or CR changes its UID and requires the same inspected migration. Preserve ownership status for cleanup; do not clear it to bypass a conflict. Explicit `cfgate.io/deletion-policy: orphan` retains external resources; orphaned tunnel claims also remain until an administrator verifies no writer still owns the remote tunnel.
-
-Data records use the exact compact comment `cfgate/owner=<owner-id>` to fit Cloudflare's DNS comment limit. The persisted installation/resource owner identity and companion TXT format do not change; existing exact heritage-prefixed data comments remain recognized. A foreign or ambiguous marker never authorizes adoption or deletion.
+For existing remote resources, stop the previous writer, inventory exact ownership
+markers and claims, and use the supported `cfgate.io/adopt-existing: "true"` path
+only when exclusive authority is established. Remove the annotation after successful
+reconciliation. Foreign or ambiguous ownership remains a conflict. The versioned
+migration sections below describe the legacy resource transitions.
 
 ## Coordination limits
 
@@ -94,35 +99,6 @@ Deployments remain cluster-wide, so this change does not make a compromised
 manager harmless.
 
 DNS operations reread data and companion TXT records, reject foreign or ambiguous observable claims, and verify the record ID before deletion. Cloudflare's DNS API does not offer conditional writes for these operations. A writer can race between the last read and the write; TXT lookup is not a distributed lock. Use a single coordinated writer for a hostname across installations. Tests cover observable competing creations and ownership changes, not a nonexistent global atomic guarantee.
-
-## Upgrade from v0.2.0-alpha.6 to v0.2.0-alpha.7
-
-- install the matching CRDs before upgrading; Access status now retains `ownerId`
-- for existing Access applications, policies and managed tokens, verify exclusive ownership, stop other writers, then set `cfgate.io/adopt-existing: "true"` on their owning Access CRs
-- remove the adoption annotation after reconciliation succeeds; keep the installation namespace and its UID stable
-- new remote policy and token names include an ownership suffix; Kubernetes references and `serviceTokens[].name` stay unchanged
-- over-limit tunnel configurations now serve HTTP 503 until they fit; remove excess entries or raise the relevant limits
-- origin CA Secret updates now roll connector Pods; selected keys must contain PEM certificates
-- new connector defaults are pinned by digest; existing CRs retain their stored image, so set `spec.cloudflared.image` to the [new default](cloudflare-tunnel.md#image) to opt into the pin
-
-Access ownership uses the installation namespace UID and resource UID, plus
-immutable claims keyed by account, resource kind and remote ID. New application
-owner tags and policy/token names distinguish installations and recreated CRs.
-A matching display name alone does not authorize mutation. Existing remote IDs
-and legacy application tags are considered for adoption only with the explicit
-annotation; ambiguous inventories and foreign claims are rejected.
-
-The claims coordinate one installation. They cannot arbitrate deliberate adoption
-of the same legacy remote resource by independent clusters. Verify exclusive
-ownership before adoption. Do not change an Access resource's Cloudflare account
-in place; first delete it normally, or deliberately orphan it and create a new
-resource with the new credentials. Orphaning retains its remote resources and
-claims for administrator review.
-
-Successful remote operations are checkpointed, and retries or deletion recover
-missing observations from the ownership markers. An unrecoverable or ambiguous
-inventory blocks cleanup rather than permitting deletion by name. Keep the
-original credential Secret available until cleanup completes.
 
 ## Controller removal and decommissioning
 
@@ -160,3 +136,51 @@ controller logs while the required credentials and grants still exist. Do not
 remove finalizers or recovery status to force completion: that bypasses cleanup
 and can strand external resources. See the [DNS retention rules](cloudflare-dns.md)
 and [Access-required ordering limits](access-required.md).
+
+## Upgrade from v0.2.0-alpha.5 to v0.2.0-alpha.6
+
+This upgrade changes authorization, ownership and persisted status as well as the controller image. The stricter defaults intentionally reject ambiguous ownership accepted by alpha.5. Inspect desired objects and remote inventory before rollout; test the following migration in a disposable environment first.
+
+1. Stop previous cfgate writers for the resources being migrated. Inventory the Kubernetes CR UIDs, connector owner references, Cloudflare account/tunnel IDs, DNS data records, companion TXT records, and relevant token permissions. Back up the desired manifests and ownership records.
+2. Configure one stable installation namespace using the manager's `POD_NAMESPACE` or `--installation-namespace`. Its Kubernetes UID identifies the DNS installation. Add required cross-namespace ReferenceGrants. For local execution, explicitly select the intended cluster and installation namespace.
+3. Existing connector objects must already have the CloudflareTunnel's controller owner UID. If objects are unowned or foreign, inspect them and deliberately migrate/recreate them under that owner; cfgate will not overwrite them automatically. The same rule applies to managed Access service-token Secrets.
+4. For a known, unclaimed remote tunnel, set `cfgate.io/adopt-existing: "true"` on the administrator-owned CloudflareTunnel. cfgate creates an immutable `cfgate-tunnel-<account/tunnel hash>` ConfigMap claim in the installation namespace. A foreign claim or another CR referencing the same account/tunnel ID blocks adoption. Remove the opt-in after successful migration. Never remove a claim while its owner is still active.
+5. DNS now persists `<installation namespace UID>/<CloudflareDNS UID>` in `status.ownerId` and writes exact owner markers on data and TXT records. `spec.ownership.ownerId` cannot override this identity. After stopping the old owner, inspect any legacy TXT claim and deliberately remove that obsolete claim if migrating to a new owner. For legacy data with no exact owner marker, temporarily set `cfgate.io/adopt-existing: "true"`. cfgate can then stamp that unmarked record with the new identity. Existing foreign data markers are never adopted; transfer them manually after verifying both owners are stopped. Remove the opt-in afterward.
+6. Install all four matching CRD schemas and manager RBAC before starting alpha.6. Old schemas must not prune the new ownership, credential selection, lifecycle and Access dependency status fields. Chart users should follow the [1.4.0 to 1.5.0 upgrade](https://github.com/cfgate/helm-chart/blob/v1.5.0/README.md#upgrade-from-140-to-150); external CRD/RBAC installations require the same updates.
+7. Confirm current conditions, captured remote tunnel configuration, DNS ownership markers, connector availability, and application requests before allowing normal traffic. A policy-skipped DNS update reports `Skipped`, contributes to pending records, and does not report synchronized readiness. `cleanupPolicy.onlyManaged: false` no longer bypasses ownership checks.
+
+Alpha.6 does not automatically require Access on existing routes. Use `cfgate.io/access-required` to make publication depend on a selected Access application; independently managed Access applications can still protect their matching domains. The deprecated `cfgate.io/access-policy` annotation does not enforce authentication; use the [Access-required contract](access-required.md) when protection is intended. Review the supported route subset before rollout: unsupported restrictions are rejected and invalid attached backends produce matching failure responses. Controller Pods now disable Service environment injection to avoid the metrics Service port collision in issue #85; explicit flags continue to take precedence over environment values.
+
+Deleting/recreating the installation namespace or CR changes its UID and requires the same inspected migration. Preserve ownership status for cleanup; do not clear it to bypass a conflict. Explicit `cfgate.io/deletion-policy: orphan` retains external resources; orphaned tunnel claims also remain until an administrator verifies no writer still owns the remote tunnel.
+
+Data records use the exact compact comment `cfgate/owner=<owner-id>` to fit Cloudflare's DNS comment limit. The persisted installation/resource owner identity and companion TXT format do not change; existing exact heritage-prefixed data comments remain recognized. A foreign or ambiguous marker never authorizes adoption or deletion.
+
+
+## Upgrade from v0.2.0-alpha.6 to v0.2.0-alpha.7
+
+- install the matching CRDs before upgrading; Access status now retains `ownerId`
+- for existing Access applications, policies and managed tokens, verify exclusive ownership, stop other writers, then set `cfgate.io/adopt-existing: "true"` on their owning Access CRs
+- remove the adoption annotation after reconciliation succeeds; keep the installation namespace and its UID stable
+- new remote policy and token names include an ownership suffix; Kubernetes references and `serviceTokens[].name` stay unchanged
+- over-limit tunnel configurations now serve HTTP 503 until they fit; remove excess entries or raise the relevant limits
+- origin CA Secret updates now roll connector Pods; selected keys must contain PEM certificates
+- new connector defaults are pinned by digest; existing CRs retain their stored image, so set `spec.cloudflared.image` to the [new default](cloudflare-tunnel.md#image) to opt into the pin
+
+Access ownership uses the installation namespace UID and resource UID, plus
+immutable claims keyed by account, resource kind and remote ID. New application
+owner tags and policy/token names distinguish installations and recreated CRs.
+A matching display name alone does not authorize mutation. Existing remote IDs
+and legacy application tags are considered for adoption only with the explicit
+annotation; ambiguous inventories and foreign claims are rejected.
+
+The claims coordinate one installation. They cannot arbitrate deliberate adoption
+of the same legacy remote resource by independent clusters. Verify exclusive
+ownership before adoption. Do not change an Access resource's Cloudflare account
+in place; first delete it normally, or deliberately orphan it and create a new
+resource with the new credentials. Orphaning retains its remote resources and
+claims for administrator review.
+
+Successful remote operations are checkpointed, and retries or deletion recover
+missing observations from the ownership markers. An unrecoverable or ambiguous
+inventory blocks cleanup rather than permitting deletion by name. Keep the
+original credential Secret available until cleanup completes.

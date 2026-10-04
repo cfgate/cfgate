@@ -1,59 +1,88 @@
-# Rancher Integration
+# Rancher integration
 
-Expose Rancher 2.14+ via cfgate using Gateway API.
+This example connects a Rancher installation to a cfgate tunnel. Cloudflare
+terminates browser-facing TLS, and the connector reaches Rancher over HTTP. Rancher
+retains responsibility for its own authentication.
 
 ## Prerequisites
 
-- cfgate installed (see [basic example](../basic))
-- Rancher Helm chart v2.14.0+ (Gateway API support)
+Install cfgate and Gateway API using [getting started](../../docs/getting-started.md).
+Create `cloudflare-credentials` in `cfgate-system`, then edit the account ID in
+`cfgate/tunnel.yaml` and zone name in `cfgate/dns.yaml`.
 
-## Setup
+The supplied `rancher-values.yaml` targets Rancher charts with Gateway API exposure
+settings. Check those keys against your selected chart version before installation;
+this recipe does not establish compatibility with every Rancher release. In
+particular, inspect the generated Gateway name, listeners, HTTPRoute backend, and
+GatewayClass instead of assuming a fixed resource name.
 
-### 1. Deploy cfgate tunnel + DNS sync
+## Tunnel and chart configuration
+
+From the repository root, create the tunnel and DNS resource:
 
 ```bash
-# Edit tunnel.yaml: set accountId
-# Edit dns.yaml: set zones[].name to your domain
 kubectl apply -k examples/with-rancher/cfgate
 ```
 
-### 2. Install Rancher
+Render your chosen Rancher chart with `rancher-values.yaml` and your real hostname.
+Use a pinned chart version from your configured Rancher repository. The rendered
+GatewayClass must use `cfgate.io/cloudflare-tunnel-controller`. Its Gateway must
+accept the Rancher HTTPRoute on an HTTP listener. Keep `tls: external` only when
+your upstream proxy terminates TLS as intended.
 
-```bash
-helm upgrade --install rancher rancher-alpha/rancher \
-  --namespace cattle-system \
-  --create-namespace \
-  --values examples/with-rancher/rancher-values.yaml \
-  --set hostname=rancher.example.com  # <-- Your domain
+Before applying the Rancher resources, add this annotation to the actual Gateway:
+
+```yaml
+metadata:
+  annotations:
+    cfgate.io/tunnel-ref: cfgate-system/rancher-tunnel
 ```
 
-### 3. Annotate Rancher's Gateway
+A Gateway in `cattle-system` also needs this administrator-owned grant in the
+tunnel's namespace:
 
-Rancher creates its own Gateway. Add the tunnel reference so cfgate can route traffic through the Cloudflare Tunnel:
-
-```bash
-kubectl annotate gateway rancher-gateway -n cattle-system \
-  cfgate.io/tunnel-ref=cfgate-system/rancher-tunnel
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: ReferenceGrant
+metadata:
+  name: allow-rancher-gateway
+  namespace: cfgate-system
+spec:
+  from:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      namespace: cattle-system
+  to:
+    - group: cfgate.io
+      kind: CloudflareTunnel
+      name: rancher-tunnel
 ```
 
-The CloudflareDNS resource discovers hostnames from all HTTPRoutes attached to this Gateway because its `gatewayRoutes` block is present. No per-route annotations are needed unless you use `annotationFilter` to limit which routes get DNS records.
+Apply that grant with the rendered Rancher configuration. DNS discovery is enabled
+by the `gatewayRoutes` block and still requires an admitted route attached to the
+tunnel. Use a namespace selector or annotation filter to narrow discovery further.
 
-### 4. Verify
+## Verification
 
-```bash
-kubectl get gateway rancher-gateway -n cattle-system
-kubectl get cloudflarednses -n cfgate-system
-curl -I https://rancher.example.com
+Inspect the actual Gateway and HTTPRoute conditions in `cattle-system`, the
+`rancher-tunnel` and `rancher-dns` resources in `cfgate-system`, and connector logs.
+Open the configured HTTPS hostname and verify Rancher login and normal application
+requests. A successful Helm installation alone does not verify external access.
+
+The intended request path is:
+
+```text
+Browser -> HTTPS -> Cloudflare -> tunnel -> cloudflared -> HTTP -> Rancher:80
 ```
 
-## How TLS Works
+If Rancher redirects repeatedly, check its external-TLS setting and forwarded
+scheme handling. See [troubleshooting](../../docs/troubleshooting.md) for origin
+connectivity and transport diagnostics.
 
-```
-Browser ──HTTPS──▶ Cloudflare Edge (TLS termination)
-                        │
-                        │ X-Forwarded-Proto: https
-                        ▼
-                   cloudflared ──HTTP──▶ Rancher:80
-```
+## Cleanup
 
-Rancher respects `X-Forwarded-Proto` and skips HTTPS redirect when `tls: external` is set.
+Withdraw the Rancher route and verify the tunnel's published configuration first.
+Delete `rancher-dns`, wait for finalization, then delete `rancher-tunnel` and wait
+again. Retain the controller and credentials throughout. Remove the cross-namespace
+grant only after cleanup; Rancher removal and its persistent data require their own
+application-specific procedure.

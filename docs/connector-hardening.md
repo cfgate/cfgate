@@ -1,10 +1,21 @@
 # Connector hardening
 
-Generated cloudflared Pods run as non-root with the runtime-default seccomp profile, dropped capabilities, disabled privilege escalation, and no automatically mounted Kubernetes service-account token. These settings do not constrain the authority of an administrator who may choose connector images or arguments.
+cfgate generates cloudflared Pods with non-root execution, runtime-default seccomp,
+dropped capabilities, disabled privilege escalation, and no automatic Kubernetes
+service-account token mount. The manager still needs its own API credential.
+Administrators who select connector images or arguments retain the ability to run
+code with tunnel credentials and connector network access.
 
-cloudflared shares one listener for `/metrics`, health probes, and diagnostic endpoints. cfgate keeps this listener reachable on pod interfaces so kubelet HTTP probes work even when `metrics.enabled` is false. The metrics setting controls the declared container port; it is not a network firewall. Origin availability is not established by these probes.
+## Diagnostics listener
 
-Administrators may apply an ingress NetworkPolicy in each connector namespace. The following example permits port44483 only from a namespace named `monitoring`; adjust the namespace selector and port to match the installation. The [Kubernetes NetworkPolicy model](https://kubernetes.io/docs/concepts/services-networking/network-policies/) permits traffic from a Pod's own node, which kubelet probes require. Verify the chosen CNI's behavior, especially host-network traffic, before using this policy.
+cloudflared shares a listener for metrics, probes, and diagnostics. cfgate keeps
+it reachable on Pod interfaces for kubelet probes even when `metrics.enabled` is
+false. That setting controls the declared scrape port; it is not a firewall.
+These probes do not establish origin availability.
+
+## Network isolation
+
+Administrators may apply an ingress NetworkPolicy in each connector namespace. This example permits port 44483 only from a namespace named `monitoring`; adjust the namespace selector and port to match the installation. The [Kubernetes NetworkPolicy model](https://kubernetes.io/docs/concepts/services-networking/network-policies/) permits traffic from a Pod's own node, which kubelet probes require. Verify the chosen CNI's behavior, especially host-network traffic, before using this policy.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -32,3 +43,6 @@ spec:
 NetworkPolicy enforcement requires a supporting CNI. A plain kind cluster without an enforcing network plugin cannot prove this isolation. Validate blocked traffic from an unrelated test namespace, allowed monitoring traffic, and kubelet readiness before adopting the example. This policy is optional guidance and is not installed or claimed to protect deployments by default.
 
 Egress restrictions depend on the configured origins, cluster DNS, Cloudflare edge endpoints, and protocol choice. Define an administrator-owned egress policy for those actual destinations rather than applying a generic deny policy that breaks supported origins. Keep the Cloudflare credentials and connector resources under administrator control; tenant routing permission is not equivalent to permission to execute a connector image.
+
+For connector fields, see [CloudflareTunnel](cloudflare-tunnel.md). For administrator
+permissions, see [authorization and ownership](authorization-and-ownership.md).

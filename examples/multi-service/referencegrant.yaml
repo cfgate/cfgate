@@ -11,3 +11,9 @@ spec:
   to:
     - group: cfgate.io
       kind: CloudflareAccessPolicy
+    - group: cfgate.io
+      kind: CloudflareTunnel
+      name: multi-tunnel
+    - group: ""
+      kind: Secret
+      name: cloudflare-credentials

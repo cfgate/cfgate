@@ -1,14 +1,16 @@
 # Compatibility
 
-cfgate, its CRDs, the connector, Gateway API and Helm chart are separate versioned
-components. Install matching cfgate CRDs before upgrading the controller so the
-API server retains ownership and recovery status.
+cfgate, its CRDs, cloudflared, Gateway API, and the Helm chart have separate
+versions. Use the matching schemas and controller image, and review the stored
+connector image on existing Tunnels. A controller upgrade does not rewrite those
+image references. For a new installation, use [getting started](getting-started.md).
 
 ## Alpha.11 component pins
 
 | Component | Version |
 |---|---|
 | cfgate | 0.2.0-alpha.11 |
+| Helm chart | 1.10.0 |
 | Go | 1.27.1 |
 | Cloudflare SDK | 7.11.0 |
 | Kubernetes Go libraries | 0.37.1 |
@@ -41,17 +43,32 @@ credential Secrets and existing ownership claims until migration or cleanup is
 complete. Adding a namespaced Role does not remove a pre-existing broad
 ClusterRole grant.
 
-Release workflows retain test, scan, source and artifact identity evidence with
-the corresponding run and release assets. The published
-[alpha.6 release](https://github.com/cfgate/cfgate/releases/tag/v0.2.0-alpha.6)
-and [chart 1.5.0 release](https://github.com/cfgate/helm-chart/releases/tag/v1.5.0)
-remain historical references; their results do not certify later source changes.
-Use the run associated with the exact release being deployed.
+Use release assets and workflow evidence from the exact source being installed.
+The [operator alpha.11 release](https://github.com/cfgate/cfgate/releases/tag/v0.2.0-alpha.11)
+and [chart 1.10.0 release](https://github.com/cfgate/helm-chart/releases/tag/v1.10.0)
+identify this version pair. A passing publication workflow does not certify every
+cluster, override, or application protocol.
 
-The operator workflow gates publication on live E2E and quality checks, then builds,
-scans and promotes the same attested images. Publish its chart afterward using the
-published operator digest and matching schemas. Changelogs and release notes are
-generated from Git history; do not duplicate validation logs in user documentation.
+Quality, live E2E, and image build/scan run as release gates. Publication promotes
+the same scanned, attested images after all gates pass; it does not rebuild them.
+The chart releases afterward against the published operator digest and matching
+schemas. Changelogs are generated from Git history. See [release verification](TESTING.md#release-artifact-verification)
+for what each check establishes.
+
+## Upgrade from v0.2.0-alpha.10 to v0.2.0-alpha.11
+
+The alpha.11 controller checks inherited origin settings per route before
+publishing a tunnel configuration. Correct HTTPS+h2c or simultaneous HTTP/2+h2c
+settings; an explicit `false` can disable an inherited transport. Invalid
+combinations retain matching HTTP 503 responses instead of blocking valid
+siblings or leaving the connector on an older configuration. HTTPRoute backends
+must select a TCP Service port; unsupported protocols produce HTTP 500 responses.
+
+DNS namespace label selectors now require label presence even when the selected
+value is empty. Add the intended empty label or use `matchNames` for explicit
+selection. Previously discovered records from excluded namespaces follow the
+DNS resource's existing cleanup policy. No new CRD fields or connector image are
+required by these changes.
 
 ## Upgrade from v0.2.0-alpha.7 to v0.2.0-alpha.8
 
@@ -135,18 +152,3 @@ Use `go mod tidy` and `go mod verify`, then run the repository checks described 
 cfgate uses. The SDK-unknown `h2cOrigin` field, bounded pagination and origin duration
 wire formats have dedicated regressions; changes to the Cloudflare integration
 also require live E2E.
-
-## Upgrade from v0.2.0-alpha.10 to v0.2.0-alpha.11
-
-The alpha.11 controller checks inherited origin settings per route before
-publishing a tunnel configuration. Correct HTTPS+h2c or simultaneous HTTP/2+h2c
-settings; an explicit `false` can disable an inherited transport. Invalid
-combinations retain matching HTTP 503 responses instead of blocking valid
-siblings or leaving the connector on an older configuration. HTTPRoute backends
-must select a TCP Service port; unsupported protocols produce HTTP 500 responses.
-
-DNS namespace label selectors now require label presence even when the selected
-value is empty. Add the intended empty label or use `matchNames` for explicit
-selection. Previously discovered records from excluded namespaces follow the
-DNS resource's existing cleanup policy. No new CRD fields or connector image are
-required by these changes.

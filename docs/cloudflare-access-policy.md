@@ -1,10 +1,36 @@
 # CloudflareAccessPolicy
 
-`CloudflareAccessPolicy` manages one reusable account-level Cloudflare Access policy. It does not target a Gateway or HTTPRoute directly. Attach it to Gateway API host/path targets with [CloudflareAccessApplication](cloudflare-access-application.md).
+`CloudflareAccessPolicy` manages a reusable account-level Access policy and optional service tokens; [CloudflareAccessApplication](cloudflare-access-application.md) attaches it to Gateway API host/path targets.
+
+This namespaced resource uses `cfgate.io/v1alpha1`. It does not select a Gateway or HTTPRoute directly. [Getting started](getting-started.md) covers installation.
 
 ## Spec
 
-Required fields:
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `cloudflareRef` | object | *none* | Required API-token Secret reference and Cloudflare account. See [credential fields](#credential-data-keys). |
+| `name` | string | *none* | Required policy display name, 1 to 255 characters. |
+| `decision` | string | `allow` | `allow`, `deny`, `bypass`, or `non_identity`. |
+| `include` | rule list | *none* | Required, 1 to 25 selectors; any may match. |
+| `exclude` | rule list | *none* | Up to 25 selectors; any match excludes the request. |
+| `require` | rule list | *none* | Up to 25 selectors; all must match. |
+| `sessionDuration` | string | Application duration | Override session lifetime, at most 32 characters, using duration units `ns`, `us`, `ms`, `s`, `m`, or `h`. |
+| `purposeJustificationRequired` | boolean | `false` | Require a user justification. |
+| `purposeJustificationPrompt` | string | *none* | Justification prompt, at most 1024 characters. |
+| `approvalRequired` | boolean | `false` | Require approval. |
+| `approvalGroups` | list | *none* | Up to 10 approver groups; each needs nonempty `emails` or `emailListUuid`. |
+| `approvalGroups[].emails` | string list | *none* | Up to 50 approver addresses. |
+| `approvalGroups[].emailListUuid` | string | *none* | Cloudflare email-list UUID, at most 36 characters. |
+| `approvalGroups[].approvalsNeeded` | integer | `1` | Required approvals, at least 1. |
+| `serviceTokens` | list | *none* | Up to 10 managed tokens with unique names and destination Secrets. |
+| `serviceTokens[].name` | string | *none* | Required declared token name, 1 to 255 characters. |
+| `serviceTokens[].duration` | string | `8760h` | Renewable token lifetime in positive whole hours. |
+| `serviceTokens[].rotationOverlap` | string | `0h` | Previous-secret overlap in whole hours, from `0h` to `720h`. |
+| `serviceTokens[].secretRef.name` | string | *none* | Required destination Secret in the policy namespace. |
+
+## Examples
+
+Use an email-domain rule for users authenticated through an appropriate identity provider:
 
 ```yaml
 apiVersion: cfgate.io/v1alpha1
@@ -23,73 +49,69 @@ spec:
         domain: example.com
 ```
 
-Key fields:
+### Example With Service Token
 
-| Field | Description |
-|---|---|
-| `cloudflareRef` | Secret and account for Cloudflare Access policy operations. |
-| `name` | Cloudflare reusable policy display name. |
-| `decision` | `allow`, `deny`, `bypass`, or `non_identity`. |
-| `include` | Required Access rules. Any include rule can match. |
-| `exclude` | Optional rules that exclude a request when any match. |
-| `require` | Optional rules that must all match. |
-| `sessionDuration` | Go duration format, for example `300ms`, `30m`, `2h45m`. |
-| `purposeJustificationRequired` | Require a user justification. |
-| `approvalRequired` / `approvalGroups` | Require approval by emails or an email list UUID. |
-| `serviceTokens` | Create Cloudflare service tokens and write credentials to Kubernetes Secrets. |
+Reference a managed token by its declared name; cfgate creates it before syncing the policy:
+
+```yaml
+apiVersion: cfgate.io/v1alpha1
+kind: CloudflareAccessPolicy
+metadata:
+  name: ci-service-auth
+  namespace: cfgate-system
+spec:
+  cloudflareRef:
+    name: cloudflare-credentials
+    accountId: "<account-id>"
+  name: ci-service-auth
+  decision: non_identity
+  include:
+    - serviceToken:
+        name: ci-token
+  serviceTokens:
+    - name: ci-token
+      duration: 8760h
+      rotationOverlap: 1h
+      secretRef:
+        name: ci-access-token
+```
 
 ## Rules
 
-Supported rule types include:
+Each item in `include`, `exclude`, and `require` must contain exactly one selector:
 
-- `ip.ranges`
-- `ipList.id` (name lookup is not supported)
-- `country.codes`
-- `everyone`
-- `serviceToken.tokenId` or `serviceToken.name`
-- `anyValidServiceToken`
-- `email.addresses`
-- `emailList.id` (name lookup is not supported)
-- `emailDomain.domain`
-- `oidcClaim`
-- `gsuiteGroup`
-- `group.id`
-
-`serviceToken.name` references an entry in `spec.serviceTokens`; the controller creates the token before syncing the policy and uses the created Cloudflare ID in the policy rule.
-
-Each `include`, `exclude`, and `require` item must specify exactly one selector.
-`everyone` and `anyValidServiceToken` must be `true` when present; remove the whole
-rule to disable it. `false` is not an inverse match. Schema validation rejects
-these values, and the controller checks existing objects before changing policies
-or service tokens.
-
-Decision compatibility:
-
-- `non_identity` requires at least one `include` rule using `serviceToken` or `anyValidServiceToken`.
-- `bypass` cannot use identity selectors such as `email`, `emailList`, `emailDomain`, `oidcClaim`, `gsuiteGroup`, or `group`.
-
-## Status
-
-| Field | Description |
+| Selector | Required fields or value |
 |---|---|
-| `policyId` | Cloudflare reusable policy ID. |
-| `accountId` | Account used for reconciliation. |
-| `reusable` | Whether Cloudflare reports the policy as reusable. |
-| `appCount` | Number of Cloudflare Access Applications linked to the policy. |
-| `serviceTokenIds` | Created token name to Cloudflare token ID. |
-| `credentialSecretRef` | Resolved credentials Secret cached for cleanup. Namespace is always stored explicitly. |
-| `observedGeneration` | Last reconciled generation. |
+| `ip` | `ranges`: source IP CIDR ranges. |
+| `ipList` | `id`: Cloudflare IP-list ID; name lookup is unsupported. |
+| `country` | `codes`: ISO 3166-1 alpha-2 country codes. |
+| `everyone` | `true`. |
+| `serviceToken` | `tokenId` or `name` referencing `spec.serviceTokens`. |
+| `anyValidServiceToken` | `true`. |
+| `email` | `addresses`: authenticated email addresses. |
+| `emailList` | `id`: Access email-list ID; name lookup is unsupported. |
+| `emailDomain` | `domain`: authenticated email domain. |
+| `oidcClaim` | `identityProviderId`, `claimName`, and `claimValue`. |
+| `gsuiteGroup` | `identityProviderId` and Google Workspace group `email`. |
+| `group` | `id`: Cloudflare Access Group ID. |
 
-Conditions:
+`everyone: false` and `anyValidServiceToken: false` are invalid, not inverse matches. Remove the rule to disable it. The schema rejects them, and the controller validates existing objects before modifying policies or tokens.
 
-- `Ready`
-- `CredentialsValid`
-- `ServiceTokensReady`
-- `PolicySynced`
+`non_identity` requires a service-token or any-valid-service-token include rule. `bypass` rejects identity selectors: `email`, `emailList`, `emailDomain`, `oidcClaim`, `gsuiteGroup`, and `group`.
 
-## Deletion
+## Credential data keys
 
-Deletion removes the reusable policy only when Cloudflare reports `appCount == 0`. If the policy is still linked to any application, finalization blocks and retries. Cleanup uses cached `accountId` and `credentialSecretRef` when available, but the referenced credentials Secret must still exist. Restore the Secret or set `cfgate.io/deletion-policy=orphan` before deletion to leave Cloudflare resources in place and remove the Kubernetes finalizer.
+| Field under `cloudflareRef` | Default | Description |
+|---|---|---|
+| `name` | *none* | Required API-token Secret name. |
+| `namespace` | Resource namespace | Secret namespace; a cross-namespace reference requires a Secret ReferenceGrant from this resource kind. |
+| `secretKeys.apiToken` | `CLOUDFLARE_API_TOKEN` | Selected Secret data key. Missing or empty data fails; no other key is tried. |
+| `accountId` | *none* | Cloudflare account ID. Supply this or `accountName`. |
+| `accountName` | *none* | Account name to resolve through the API. |
+
+Account Access Apps and Policies Edit permission is required for policy operations; managed tokens also need Access Service Tokens Edit. Account-name lookup needs Account Settings Read. Clients cached for different selected token keys remain separate.
+
+Cleanup caches the account, resolved Secret reference, and selected key. The Secret must still exist and remain authorized. See [authorization and ownership](authorization-and-ownership.md) for grants and migration.
 
 ## Service token lifecycle
 
@@ -118,6 +140,8 @@ provider failures or after expiration. See [Cloudflare's service token lifecycle
 
 ### Secret distribution
 
+The destination Secret stores `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`. Consumers must read both values.
+
 cfgate rotates a token when its Secret is missing, incomplete, has a different
 client ID, or records an unfinished rotation. The destination must be controlled
 by the same policy UID. An immutable Secret that needs new credentials is rejected
@@ -145,49 +169,26 @@ consumers after cfgate writes the replacement.
 
 ### Service authentication
 
-Use `decision: non_identity` for service-token authentication and send both
-`CF-Access-Client-Id` and `CF-Access-Client-Secret` on each request. Cloudflare's
-strict service-token mode requires Service Auth policies, returns 401/403 for
-failed authentication, and does not issue a reusable authorization cookie.
-Cloudflare documents that new organizations created on or after October 5, 2026
-use strict mode permanently. Existing organizations may enable it separately;
-cfgate does not change that account-wide setting. An Allow policy is not a
-portable replacement for Service Auth. See the
-[provider's authentication contract](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
+Use `decision: non_identity` and send both `CF-Access-Client-Id` and `CF-Access-Client-Secret` on requests. Do not rely on an Allow policy or reusable cookie for service authentication. Account-level strict-mode behavior belongs to Cloudflare; cfgate does not change it. See [Cloudflare's service-token authentication contract](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/).
 
-## Example With Service Token
+## Status
 
-```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareAccessPolicy
-metadata:
-  name: ci-service-auth
-  namespace: cfgate-system
-spec:
-  cloudflareRef:
-    name: cloudflare-credentials
-    accountId: "<account-id>"
-  name: ci-service-auth
-  decision: non_identity
-  include:
-    - serviceToken:
-        name: ci-token
-  serviceTokens:
-    - name: ci-token
-      duration: 8760h
-      rotationOverlap: 1h
-      secretRef:
-        name: ci-access-token
-```
+| Field | Description |
+|---|---|
+| `policyId` | Remote reusable policy ID. |
+| `ownerId` | Installation and resource identity used to verify remote ownership. |
+| `accountId` | Account used for reconciliation and cleanup. |
+| `reusable` | Whether Cloudflare reports the policy as reusable. |
+| `appCount` | Number of applications linked to the policy. |
+| `serviceTokenIds` | Declared token names mapped to Cloudflare IDs. |
+| `credentialSecretRef` | Cleanup Secret reference with explicit namespace. |
+| `credentialSecretKeys` | Token-key selection retained for cleanup. |
+| `observedGeneration` | Last processed generation. |
 
-## Credential data keys
+Conditions are `Ready`, `CredentialsValid`, `ServiceTokensReady`, and `PolicySynced`.
 
-`spec.cloudflareRef.secretKeys.apiToken` selects the Secret data key containing the Cloudflare API token. It defaults to `CLOUDFLARE_API_TOKEN`. A missing or empty selected key is an error; cfgate does not fall back to another token stored in the same Secret. Clients cached for different keys remain separate.
+## Deletion
 
-Credential cleanup preserves `status.credentialSecretKeys` alongside the resolved Secret reference and account. Cross-namespace credential references require a Secret ReferenceGrant from `CloudflareAccessPolicy`; see [authorization and ownership](authorization-and-ownership.md).
+Remote policy deletion waits until Cloudflare reports `appCount == 0`. Detach applications first; otherwise finalization blocks and retries. Restore missing credentials to permit cleanup, or explicitly use `cfgate.io/deletion-policy: orphan` to leave the policy and tokens in Cloudflare.
 
-New remote policies and managed tokens include an installation/CR ownership
-suffix in their names. Continue using the declared `serviceTokens[].name` in
-policy rules; status maps it to the remote token ID. The controller verifies
-account/resource claims before changing, rotating or deleting an existing object.
-Name-only adoption is not supported by reconciliation. See the [alpha.7 migration notes](authorization-and-ownership.md#upgrade-from-v020-alpha6-to-v020-alpha7) for existing resources.
+New policies and managed tokens receive installation/resource ownership suffixes in remote names. Continue using the declared token names in rules; status maps them to remote IDs. cfgate checks account and resource claims before modifying, rotating, or deleting existing objects. Matching names alone never authorize adoption. Follow [ownership migration](authorization-and-ownership.md) for existing resources.

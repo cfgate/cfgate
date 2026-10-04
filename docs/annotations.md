@@ -1,43 +1,34 @@
 # Annotations Reference
 
-Complete reference for all cfgate annotations.
+cfgate annotations configure HTTPRoute origin transport, DNS overrides, Gateway tunnel bindings, and resource lifecycle behavior.
+
+Annotation values are strings; quote booleans and numbers in YAML. Omitted settings inherit where noted. Installation and routing examples are in [Getting started](getting-started.md).
 
 ## Route Annotations
 
-Per-route configuration applied to Gateway API HTTPRoute resources.
+Apply these annotations to Gateway API HTTPRoutes:
 
 | Annotation | Values | Default | Description |
 |---|---|---|---|
-| `cfgate.io/origin-protocol` | `http`, `https` | `http` | Backend protocol |
-| `cfgate.io/origin-ssl-verify` | `true`, `false` | inherited | TLS certificate verification |
-| `cfgate.io/origin-connect-timeout` | Duration string (`30s`, `1m`) | `30s` | Origin connection timeout |
-| `cfgate.io/origin-http-host-header` | Hostname string | *none* | Host header override sent to origin |
-| `cfgate.io/origin-server-name` | Hostname string | *none* | TLS SNI server name |
-| `cfgate.io/origin-ca-pool` | Managed file path | *none* | CA certificate pool path |
-| `cfgate.io/origin-http2` | `true`, `false` | inherited | HTTP/2 to origin |
-| `cfgate.io/origin-h2c` | `true`, `false` | inherited | HTTP/2 cleartext (h2c) to origin |
-| `cfgate.io/ttl` | `1`-`86400` | inherited | DNS record TTL in seconds |
-| `cfgate.io/cloudflare-proxied` | `true`, `false` | `true` | Cloudflare proxy (orange cloud) |
-| `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | Deprecated: resolves a policy reference for status only |
-| `cfgate.io/hostname` | RFC 1123 hostname | *none* | Override the route hostname |
+| `cfgate.io/origin-protocol` | `http`, `https`, case-insensitive | `http` | Protocol from connector to backend. |
+| `cfgate.io/origin-ssl-verify` | Boolean | Tunnel default | Verify the origin certificate; inversely maps to `noTLSVerify`. |
+| `cfgate.io/origin-connect-timeout` | Positive whole-second duration | Tunnel default, otherwise `30s` | Time allowed to connect to the origin. |
+| `cfgate.io/origin-http-host-header` | String | *none* | Override the origin HTTP Host header. |
+| `cfgate.io/origin-server-name` | String | *none* | Override TLS SNI. |
+| `cfgate.io/origin-ca-pool` | `/etc/cfgate/origin-ca-pool/ca.pem` | Tunnel CA configuration | Select the managed origin CA bundle; requires a tunnel CA Secret reference. |
+| `cfgate.io/origin-http2` | Boolean | Tunnel default, otherwise `false` | Enable HTTP/2 origin transport. |
+| `cfgate.io/origin-h2c` | Boolean | Tunnel default, otherwise `false` | Enable cleartext HTTP/2 origin transport. |
+| `cfgate.io/ttl` | Integer from `1` to `86400` | DNS resource default | DNS TTL; `1` explicitly selects Auto. |
+| `cfgate.io/cloudflare-proxied` | Boolean | DNS zone, then resource default | Enable Cloudflare proxying. |
+| `cfgate.io/hostname` | RFC 1123 hostname | `spec.hostnames` | Override route hostnames. |
+| `cfgate.io/access-required` | `namespace/name` | *none* | Require a named Access application before forwarding. |
+| `cfgate.io/access-policy` | `name` or `namespace/name` | *none* | Deprecated policy reference for status and warnings only. |
 
-**Default for `cfgate.io/origin-protocol`:** `http`
+Origin booleans accept `true`, `false`, `1`, `0`, `yes`, and `no`, case-insensitively. Invalid origin settings are rejected. DNS proxy parsing also accepts these spellings; use `true` or `false` for clarity.
 
-### Detailed Annotation Documentation
+### Examples
 
----
-
-#### `cfgate.io/origin-protocol`
-
-Specifies the protocol used to connect from cloudflared to the backend service.
-
-**Valid values:** `http`, `https`
-
-**Default:** `http`
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-Protocol values are case-insensitive: `HTTPS` and `https` both select TLS to the origin. Invalid values are rejected. For a private CA, configure the tunnel's CA Secret and keep certificate verification enabled. See [origin parameters](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/origin-parameters/) for the connector contract.
+Use HTTPS with an origin certificate name and Host header that differ from the public hostname:
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -47,461 +38,10 @@ metadata:
   namespace: default
   annotations:
     cfgate.io/origin-protocol: "https"
-spec:
-  parentRefs:
-    - name: cloudflare-tunnel
-      namespace: cfgate-system
-  hostnames:
-    - secure.example.com
-  rules:
-    - backendRefs:
-        - name: my-service
-          port: 443
-```
-
----
-
-#### `cfgate.io/origin-ssl-verify`
-
-Controls whether cloudflared verifies the TLS certificate presented by the origin server.
-
-**Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
-
-**Default:** inherited from tunnel defaults
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-Omission inherits the tunnel's `originDefaults.noTLSVerify` setting. Without an insecure tunnel default, certificates are verified. Explicit `true` enables verification even under an insecure tunnel default; explicit `false` disables it for this route. Prefer a trusted CA bundle for private certificates.
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/origin-protocol: "https"
-    cfgate.io/origin-ssl-verify: "false"
-```
-
----
-
-#### `cfgate.io/origin-connect-timeout`
-
-Maximum time cloudflared waits to establish a connection to the origin server.
-
-**Valid values:** Go duration string (e.g., `30s`, `1m`, `1h30m`)
-
-**Default:** inherited from tunnel defaults (otherwise `30s`)
-
-Use a positive whole number of seconds, such as `10s` or `1m`. Values that would be rounded or replaced by an SDK fallback are rejected.
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-```yaml
-metadata:
-  annotations:
+    cfgate.io/origin-ssl-verify: "true"
+    cfgate.io/origin-server-name: "origin.internal.example.com"
+    cfgate.io/origin-http-host-header: "origin.internal.example.com"
     cfgate.io/origin-connect-timeout: "10s"
-```
-
----
-
-#### `cfgate.io/origin-http-host-header`
-
-Overrides the HTTP `Host` header sent to the origin server. Useful when the origin expects a specific hostname that differs from the public-facing hostname.
-
-**Valid values:** Hostname string
-
-**Default:** Not set (uses the route hostname)
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/origin-http-host-header: "internal-service.local"
-```
-
----
-
-#### `cfgate.io/origin-server-name`
-
-Specifies the TLS SNI (Server Name Indication) server name for the connection to the origin. Used when the origin's TLS certificate is issued for a different name than the connecting hostname.
-
-**Valid values:** Hostname string
-
-**Default:** Not set
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/origin-server-name: "real-cert-name.internal"
-```
-
----
-
-#### `cfgate.io/origin-ca-pool`
-
-Literal in-container path to a CA certificate pool file used to verify the origin server's TLS certificate. For alpha.5, cfgate accepts only its managed mount path, `/etc/cfgate/origin-ca-pool/ca.pem`, and only when the referenced `CloudflareTunnel` has `spec.originDefaults.caPoolSecretRef` configured.
-
-Use `spec.originDefaults.caPoolSecretRef` on `CloudflareTunnel` when cfgate should mount a Kubernetes Secret. That managed Secret mount is available at `/etc/cfgate/origin-ca-pool/ca.pem`.
-
-**Valid values:** `/etc/cfgate/origin-ca-pool/ca.pem`
-
-**Default:** Not set (system CA pool)
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/origin-ca-pool: "/etc/cfgate/origin-ca-pool/ca.pem"
-```
-
----
-
-#### `cfgate.io/origin-http2`
-
-Enables HTTP/2 for the connection between cloudflared and the origin server.
-
-**Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
-
-**Default:** inherited from tunnel defaults (otherwise `false`)
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/origin-http2: "true"
-```
-
----
-
-#### `cfgate.io/origin-h2c`
-
-Enables HTTP/2 cleartext (h2c) for the connection between cloudflared and the origin server. Use this for backends that speak HTTP/2 without TLS, such as Envoy sidecars or other h2c-speaking services.
-
-**Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
-
-**Default:** inherited from tunnel defaults (otherwise `false`)
-
-**Read by:** CloudflareTunnel controller (via route collection), cloudflared-builder
-
-Explicit `false` disables inherited h2c. When switching from a tunnel-wide HTTP/2 default, also set `cfgate.io/origin-http2: "false"`; both transports cannot be enabled together. Requires the [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared) fork image (the default). Upstream cloudflared silently ignores this field. See [Image](cloudflare-tunnel.md#image).
-
-The effective combination is checked against the referenced tunnel for each parent.
-HTTPS with h2c and simultaneous HTTP/2 plus h2c are invalid. Such routes report
-`Accepted=False` and retain matching HTTP 503 responses, allowing valid sibling
-routes and backend revocations to publish. Invalid forwarding fallbacks also
-become HTTP 503 responses. A stored Cloudflare configuration and a ready connector
-Pod do not alone prove that an origin request succeeds.
-
-HTTPRoute backends require a TCP Service port. UDP-only and SCTP-only ports report
-`ResolvedRefs=False` with reason `UnsupportedProtocol` and retain matching HTTP
-500 responses. An omitted Service protocol uses Kubernetes' TCP default.
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: http2-backend
-  namespace: default
-  annotations:
-    cfgate.io/origin-h2c: "true"
-spec:
-  parentRefs:
-    - name: cloudflare-tunnel
-      namespace: cfgate-system
-  hostnames:
-    - h2c.example.com
-  rules:
-    - backendRefs:
-        - name: http2-service
-          port: 50051
-```
-
----
-
-#### `cfgate.io/ttl`
-
-Sets the DNS record TTL (Time To Live) in seconds. Value `1` is special and means "auto" (Cloudflare-managed TTL). Only relevant when CloudflareDNS discovers this route via `gatewayRoutes`.
-
-**Valid values:** Integer from `1` to `86400`
-
-**Default:** inherits `CloudflareDNS.spec.defaults.ttl` (otherwise Auto)
-
-**Read by:** CloudflareDNS controller (via route hostname collection). See [CloudflareDNS](cloudflare-dns.md#specdefaults) for default TTL configuration.
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/ttl: "300"
-```
-
----
-
-#### `cfgate.io/cloudflare-proxied`
-
-Controls whether Cloudflare proxies traffic for the DNS record (the "orange cloud" toggle). When `true`, traffic passes through Cloudflare's network (DDoS protection, WAF, caching). When `false`, DNS resolves directly to the tunnel domain.
-
-**Valid values:** `true`, `false`, `1`, `0`, `yes`, `no` (case-insensitive)
-
-**Default:** `true`
-
-**Read by:** CloudflareDNS controller (via route hostname collection). See [CloudflareDNS](cloudflare-dns.md#specdefaults) for default proxy configuration.
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/cloudflare-proxied: "false"
-```
-
----
-
-#### `cfgate.io/access-policy`
-
-Deprecated. Resolves a [CloudflareAccessPolicy](cloudflare-access-policy.md) reference for HTTPRoute status and warnings only. It does not create Cloudflare Access Applications and does not link policies. Use [CloudflareAccessApplication](cloudflare-access-application.md) to protect Gateway API targets.
-
-**Valid values:** `name` (same namespace) or `namespace/name`
-
-**Default:** Not set
-
-**Read by:** HTTPRoute controller for deprecated status resolution only
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/access-policy: "my-access-policy"
-```
-
-Or cross-namespace:
-
-```yaml
-metadata:
-  annotations:
-    cfgate.io/access-policy: "cfgate-system/shared-policy"
-```
-
----
-
-#### `cfgate.io/hostname`
-
-Sets or overrides the hostname for an HTTPRoute. When set, it overrides `spec.hostnames`.
-
-**Valid values:** RFC 1123 hostname (max 253 characters, labels max 63 characters, lowercase alphanumeric and hyphens)
-
-**Default:** Not set
-
-**Read by:** HTTPRoute-driven reconciliation paths
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: my-app
-  annotations:
-    cfgate.io/hostname: "app.example.com"
-spec:
-  parentRefs:
-    - name: cloudflare-tunnel
-      namespace: cfgate-system
-  hostnames:
-    - ignored.example.com
-  rules:
-    - backendRefs:
-        - name: my-service
-          port: 80
-```
-
----
-
-## Infrastructure Annotations
-
-Applied to Gateway resources to connect them to CloudflareTunnel resources.
-
-| Annotation | Values | Description |
-|---|---|---|
-| `cfgate.io/tunnel-ref` | `namespace/name` or `name` | References the CloudflareTunnel resource this Gateway should use |
-| `cfgate.io/tunnel-target` | Tunnel domain (e.g., `uuid.cfargotunnel.com`) | Set by controller (read-only) |
-
----
-
-#### `cfgate.io/tunnel-ref`
-
-Connects a Gateway to a [CloudflareTunnel](cloudflare-tunnel.md) resource. This annotation is the link between the [Gateway API](gateway-api-primer.md) layer and cfgate's tunnel management.
-
-**Format:** `namespace/name` (recommended) or `name` (same namespace)
-
-**Read by:** CloudflareTunnel controller (finds Gateways referencing this tunnel), CloudflareDNS controller (finds Gateways for route discovery), CloudflareAccessApplication controller (credential inheritance)
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: cloudflare-tunnel
-  namespace: cfgate-system
-  annotations:
-    cfgate.io/tunnel-ref: cfgate-system/my-tunnel
-spec:
-  gatewayClassName: cfgate
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
-      allowedRoutes:
-        namespaces:
-          from: All
-```
-
----
-
-#### `cfgate.io/tunnel-target`
-
-The tunnel endpoint domain, set automatically by the CloudflareTunnel controller after tunnel creation. Format is `{tunnelID}.cfargotunnel.com`. Do not set this manually.
-
-**Read by:** Gateway controller, DNS controllers
-
----
-
-## Lifecycle Annotations
-
-Applied to CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, and CloudflareAccessApplication resources to control deletion behavior.
-
-| Annotation | Values | Default | Description |
-|---|---|---|---|
-| `cfgate.io/deletion-policy` | `orphan` | Not set (full cleanup) | When set to `orphan`, skips Cloudflare-side cleanup on resource deletion |
-
----
-
-#### `cfgate.io/deletion-policy`
-
-Controls what happens to Cloudflare-side resources when the Kubernetes resource is deleted.
-
-**Valid values:** `orphan`
-
-**Default:** Not set (the controller deletes the corresponding Cloudflare resource during finalization)
-
-**Supported on:**
-- **CloudflareTunnel:** When set to `orphan`, the tunnel remains in Cloudflare but the K8s resource is removed. The controller skips tunnel deletion and proceeds directly to finalizer removal.
-- **CloudflareDNS:** When set to `orphan`, the DNS records remain in Cloudflare but the K8s resource is removed. The controller skips record cleanup and proceeds directly to finalizer removal.
-- **CloudflareAccessPolicy:** When set to `orphan`, the reusable Access policy and service tokens remain in Cloudflare. The controller skips cleanup and proceeds directly to finalizer removal.
-- **CloudflareAccessApplication:** When set to `orphan`, Access Applications and the per-resource owner tag remain in Cloudflare. The controller skips application and tag cleanup and proceeds directly to finalizer removal.
-
-**Use cases:**
-- Migrating resources between clusters (delete from old cluster without destroying the Cloudflare resource)
-- Debugging tunnel or access issues (remove K8s resource without affecting live traffic)
-- Emergency finalizer unblocking (annotate a stuck resource, then delete it)
-
-```bash
-# Annotate before deletion to orphan the tunnel
-kubectl annotate cloudflaretunnel my-tunnel cfgate.io/deletion-policy=orphan
-
-# Now delete: tunnel stays in Cloudflare, K8s resource removed
-kubectl delete cloudflaretunnel my-tunnel
-```
-
-```bash
-# Same for DNS resources
-kubectl annotate cloudflarednses my-dns cfgate.io/deletion-policy=orphan
-kubectl delete cloudflaredns my-dns
-```
-
-```bash
-# Same for access policies
-kubectl annotate cloudflareaccesspolicy my-policy cfgate.io/deletion-policy=orphan
-kubectl delete cloudflareaccesspolicy my-policy
-```
-
-```bash
-# Same for access applications
-kubectl annotate cloudflareaccessapplication my-app cfgate.io/deletion-policy=orphan
-kubectl delete cloudflareaccessapplication my-app
-```
-
-Orphaned Cloudflare resources remain your responsibility. Recreating a Kubernetes object with the same name creates a new UID and does not restore ownership. Follow the [adoption and ownership-transfer procedure](authorization-and-ownership.md) before resuming management, or delete the remote resources manually after verifying that no active owner uses them.
-
----
-
-## DNS Management Annotations
-
-Applied to CloudflareDNS resources to control DNS-specific behavior.
-
-| Annotation | Values | Default | Description |
-|---|---|---|---|
-| `cfgate.io/allow-deep-subdomains` | `true` | Not set (warning emitted) | Suppresses the `DeepSubdomain` warning event for multi-level subdomains |
-
----
-
-#### `cfgate.io/allow-deep-subdomains`
-
-Suppresses the `DeepSubdomain` warning event that the controller emits when a hostname has more than one subdomain level relative to its zone. For example, `api.staging.example.com` in zone `example.com` has two subdomain levels and triggers the warning because Cloudflare Universal SSL certificates cover only single-level wildcards (`*.example.com`). Deeper subdomains require Cloudflare Advanced Certificate Manager or a custom certificate.
-
-**Valid values:** `"true"` to suppress the warning; any other value or absent means the warning is emitted.
-
-**Default:** Not set (warning emitted on each reconciliation)
-
-**Applied to:** CloudflareDNS resources
-
-**Read by:** CloudflareDNS controller (checked in `syncRecords` before emitting the `DeepSubdomain` event)
-
-Set this annotation on the CloudflareDNS resource when you have appropriate TLS coverage for deep subdomains and want to suppress the recurring warning:
-
-```bash
-kubectl annotate cloudflarednses my-dns -n cfgate-system \
-  cfgate.io/allow-deep-subdomains=true
-```
-
-See the [Multi-level Subdomains](cloudflare-dns.md#multi-level-subdomains) section in the CloudflareDNS reference for details on subdomain depth validation.
-
----
-
-## Internal Annotations
-
-These annotations are managed by cfgate controllers and should not be set manually.
-
-| Annotation | Applied To | Description |
-|---|---|---|
-| `cfgate.io/config-hash` | CloudflareTunnel | SHA-256 hash of the last-synced tunnel configuration. Used to skip redundant Cloudflare API updates when the configuration has not changed. |
-
----
-
-## Notes on annotationFilter
-
-The `annotationFilter` field on `CloudflareDNS.spec.source.gatewayRoutes` is **not** itself a cfgate annotation. It is a CRD spec field that accepts any user-chosen annotation key (or key=value pair) as a filter for route discovery.
-
-When set, only HTTPRoutes bearing the specified annotation will be included in DNS sync. The annotation name and value are entirely user-defined.
-
-**Supported formats:**
-- `key=value`: Only syncs routes where the annotation key exists AND the value matches exactly
-- `key`: Only syncs routes where the annotation key exists (any value)
-
-**Example:** Using `cfgate.io/dns-sync=enabled` as a convention (but any annotation works):
-
-```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareDNS
-metadata:
-  name: my-dns
-  namespace: cfgate-system
-spec:
-  tunnelRef:
-    name: my-tunnel
-  zones:
-    - name: example.com
-  source:
-    gatewayRoutes:
-      enabled: true
-      annotationFilter: "cfgate.io/dns-sync=enabled"
-```
-
-Then only HTTPRoutes with the matching annotation are synced:
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: synced-app
-  annotations:
-    cfgate.io/dns-sync: "enabled"  # Matches filter, DNS record created
 spec:
   parentRefs:
     - name: cloudflare-tunnel
@@ -511,7 +51,170 @@ spec:
   rules:
     - backendRefs:
         - name: my-service
-          port: 80
+          port: 443
 ```
 
-Routes without the annotation are ignored by this CloudflareDNS resource, even if they reference the same Gateway and tunnel.
+To override inherited HTTP/2 TLS settings for a cleartext HTTP/2 backend, set both transport flags explicitly:
+
+```yaml
+metadata:
+  annotations:
+    cfgate.io/origin-protocol: "http"
+    cfgate.io/origin-http2: "false"
+    cfgate.io/origin-h2c: "true"
+```
+
+### Detailed Annotation Documentation
+
+#### `cfgate.io/origin-protocol`
+
+Select the connector-to-Service protocol independently of the public URL or Gateway listener port. Service backends must expose a TCP port. UDP-only and SCTP-only ports set `ResolvedRefs=False` with reason `UnsupportedProtocol`; their matches return HTTP 500. An omitted Service protocol uses the Kubernetes TCP default.
+
+#### `cfgate.io/origin-ssl-verify`
+
+Omission inherits `originDefaults.noTLSVerify`. Explicit `true` requires certificate verification even when the tunnel default disables it; `false` disables verification for this route. For private certificates, configure a trusted CA bundle instead of disabling verification.
+
+#### `cfgate.io/origin-connect-timeout`
+
+The duration must resolve to a positive whole number of seconds, such as `10s`, `1m`, or `1h30m`. Values requiring rounding or SDK fallback are rejected.
+
+#### `cfgate.io/origin-http-host-header`
+
+Override the Host header when the origin expects a name different from the request hostname. Omitting it leaves the connector's normal Host behavior in place.
+
+#### `cfgate.io/origin-server-name`
+
+Select the SNI name used for origin TLS when it differs from the connecting hostname. This does not change the public hostname or DNS record.
+
+#### `cfgate.io/origin-ca-pool`
+
+Only the managed mount path is accepted, and only when the referenced tunnel configures `spec.originDefaults.caPoolSecretRef`. Configure the Secret on the tunnel; an annotation cannot mount an arbitrary file. See [origin defaults](cloudflare-tunnel.md#specorigindefaults).
+
+#### `cfgate.io/origin-http2`
+
+Explicit `false` disables an inherited HTTP/2 setting. It cannot be enabled alongside h2c.
+
+#### `cfgate.io/origin-h2c`
+
+h2c requires cleartext HTTP and a compatible connector. The default fork supports it; the known upstream `cloudflare/cloudflared` image is treated as incompatible for h2c forwarding. Custom image compatibility remains the administrator's responsibility. See [connector image selection](cloudflare-tunnel.md#image).
+
+The effective transport is checked against each parent tunnel. HTTPS with h2c or simultaneous HTTP/2 and h2c sets `Accepted=False` and retains matching HTTP 503 responses. Invalid forwarding fallbacks also return 503; valid sibling routes and backend revocations can still publish. A ready Pod and stored remote configuration do not establish origin reachability.
+
+#### `cfgate.io/ttl`
+
+Omission inherits `CloudflareDNS.spec.defaults.ttl`; `"1"` explicitly selects Auto. The annotation parser accepts integers from 1 to 86400, while CloudflareDNS CRD fields restrict explicit TTLs to 60 through 86400 or Auto. Use `"1"` or a value of at least `"60"` for DNS-only records. Proxied records always publish TTL `1` after inheritance and overrides.
+
+#### `cfgate.io/cloudflare-proxied`
+
+An explicit value overrides the selected zone's proxy setting and the DNS resource default. With no override, proxying defaults to `true` unless the zone or DNS defaults disable it. See [DNS defaults](cloudflare-dns.md#specdefaults).
+
+#### `cfgate.io/hostname`
+
+A set value replaces `spec.hostnames`. It must be a lowercase RFC 1123 hostname, at most 253 characters with labels no longer than 63. Listener hostname intersection and route admission still apply.
+
+#### `cfgate.io/access-required`
+
+This namespaced application reference makes forwarding depend on verified Access protection. Use the full `namespace/name` form, including for a same-namespace application. See [Access-required routing](access-required.md) for grants, supported target coverage, withdrawal ordering, and asynchronous limits.
+
+#### `cfgate.io/access-policy`
+
+This deprecated annotation resolves a policy for HTTPRoute status and warnings. It neither creates an Access application nor attaches the policy. Use [CloudflareAccessApplication](cloudflare-access-application.md) and, when required, `cfgate.io/access-required`.
+
+## Infrastructure Annotations
+
+Apply the tunnel binding to a Gateway managed by cfgate:
+
+| Annotation | Values | Default | Description |
+|---|---|---|---|
+| `cfgate.io/tunnel-ref` | `name` or `namespace/name` | *none* | Referenced CloudflareTunnel; unqualified names use the Gateway namespace. |
+| `cfgate.io/tunnel-target` | Reserved | *none* | Legacy declared annotation; current controllers do not use it for routing or DNS. |
+
+#### `cfgate.io/tunnel-ref`
+
+The GatewayClass must select `cfgate.io/cloudflare-tunnel-controller`. A cross-namespace tunnel binding also needs a ReferenceGrant; the annotation alone does not authorize access.
+
+This Gateway admits HTTPRoutes from its own namespace:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: cloudflare-tunnel
+  namespace: cfgate-system
+  annotations:
+    cfgate.io/tunnel-ref: "my-tunnel"
+spec:
+  gatewayClassName: cfgate
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+```
+
+#### `cfgate.io/tunnel-target`
+
+Read the resolved domain from `CloudflareTunnel.status.tunnelDomain`. Do not depend on this annotation being populated. DNS discovery resolves the Gateway's authorized tunnel reference.
+
+## Lifecycle Annotations
+
+| Annotation | Applied to | Values | Default | Description |
+|---|---|---|---|---|
+| `cfgate.io/deletion-policy` | All four cfgate CRDs | `orphan` | Configured cleanup | Skip remote cleanup during deletion. |
+| `cfgate.io/adopt-existing` | All four cfgate CRDs | `"true"` | Adoption disabled | Permit inspected legacy-resource adoption within the ownership rules. |
+
+#### `cfgate.io/deletion-policy`
+
+`orphan` removes the resource finalizer without deleting remote resources. It retains tunnel claims, DNS data/claims, reusable policies/service tokens, or Access applications/owner tags, depending on resource kind. Kubernetes garbage collection of owned local objects remains separate.
+
+For an intentional orphan deletion:
+
+```bash
+kubectl annotate cloudflaretunnel my-tunnel -n cfgate-system \
+  cfgate.io/deletion-policy=orphan
+kubectl delete cloudflaretunnel my-tunnel -n cfgate-system
+```
+
+Orphaned resources remain your responsibility. A recreated Kubernetes object has a new UID and does not regain ownership from a matching name. Review [authorization and ownership](authorization-and-ownership.md) before transfer or adoption.
+
+#### `cfgate.io/adopt-existing`
+
+For tunnels, `"true"` permits acquiring an absent claim after administrator inspection. For DNS, it permits adopting inspected unmarked legacy data. For Access resources, it enables the inspected legacy policy/token name and application-tag migration described in [ownership migration](authorization-and-ownership.md#upgrade-from-v020-alpha6-to-v020-alpha7). It never overrides a foreign ownership claim. Remove the annotation after successful adoption.
+
+## DNS Management Annotations
+
+| Annotation | Applied to | Values | Default | Description |
+|---|---|---|---|---|
+| `cfgate.io/allow-deep-subdomains` | CloudflareDNS | `"true"` | Warning enabled | Suppress the informational `DeepSubdomain` event. |
+
+#### `cfgate.io/allow-deep-subdomains`
+
+The warning reports hostnames more than one label below their selected zone. Suppressing it neither configures certificates nor changes publication. Arrange appropriate edge certificate coverage first; see [multi-level subdomains](cloudflare-dns.md#multi-level-subdomains).
+
+## Internal Annotations
+
+These annotations are controller-managed; do not edit them to bypass reconciliation or recovery:
+
+| Annotation | Applied to | Description |
+|---|---|---|
+| `cfgate.io/config-hash` | CloudflareTunnel | Hash of applied tunnel configuration used to avoid redundant updates. |
+| `cfgate.io/service-token-rotation-pending` | Managed service-token Secret | Checkpoint for unfinished credential creation or rotation; retained until credentials are stored. |
+
+## Notes on annotationFilter
+
+`CloudflareDNS.spec.source.gatewayRoutes.annotationFilter` is a specification field, not a cfgate annotation. It accepts any user-selected annotation key:
+
+| Filter | Match |
+|---|---|
+| `key` | The HTTPRoute contains that annotation, with any value. |
+| `key=value` | The HTTPRoute contains the key with exactly that value. |
+
+For example, this source selects routes with `cfgate.io/dns-sync: "enabled"`:
+
+```yaml
+spec:
+  source:
+    gatewayRoutes:
+      annotationFilter: "cfgate.io/dns-sync=enabled"
+```
+
+The key is a convention chosen by the administrator. Routes must still pass admission and authorization for the referenced tunnel. See [CloudflareDNS](cloudflare-dns.md#specsourcegatewayroutes).

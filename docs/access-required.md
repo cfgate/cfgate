@@ -1,6 +1,15 @@
-# Requiring an Access application before forwarding
+# Access-required routing
 
-`cfgate.io/access-required` is an explicit HTTPRoute dependency on a managed CloudflareAccessApplication. It checks supported Access configuration before publishing that route. It does **not** provide atomic access control or prove that a request authenticated at its origin. Use origin-side authentication, including JWT validation where appropriate, when strict fail-closed protection is required.
+`cfgate.io/access-required` makes an HTTPRoute's forwarding depend on a managed
+CloudflareAccessApplication. Unavailable protection produces matching HTTP 503
+responses. Routes without the annotation keep their public-routing behavior.
+This mechanism orders configuration changes; strict authentication still requires
+an origin-side check, such as validating the Access JWT.
+
+## Configuration
+
+The annotation always names both the namespace and application. There is no
+same-namespace shorthand or Gateway inheritance:
 
 ```yaml
 metadata:
@@ -8,23 +17,37 @@ metadata:
     cfgate.io/access-required: protection/team-app
 ```
 
-The value must contain both namespace and application name. There is no Gateway inheritance or same-namespace shorthand. Routes without this annotation keep their existing public-routing behavior. Configure infrastructure resources and credentials under administrator control; tenant permission to create HTTPRoutes does not imply permission to create Access applications, modify policies, or select connector images.
+Create the policy and application separately, as shown in
+[getting started](getting-started.md#optional-access-protection). Administrators
+control those infrastructure resources and their credentials. Permission to author
+an HTTPRoute does not grant permission to change its protection.
 
 ## Supported initial subset
 
-A required application must be current and Ready, target the route or its Gateway, and belong to the tunnel's Cloudflare account. The initial subset supports exact hostnames and whole-host, root-path `self_hosted` applications. The controller checks actual remote application IDs, root destinations and attached policy IDs, then reads the linked policies. Deleting or stale-generation applications/policies, missing policy attachments, bypass/unknown policy decisions, empty supported Include selectors, and Allow policies containing Include Everyone block forwarding. This is a conservative check; it does not solve policy logic or audit administrators' identity-rule choices. Cloudflare documents [Include Everyone as an Allow-policy misconfiguration](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/#common-cloudflare-access-misconfigurations).
+The selected application must be current, Ready, in the tunnel's Cloudflare
+account, and target the route or its Gateway. Supported destinations use exact
+hostnames and whole-host, root-path `self_hosted` applications. cfgate reads the
+remote application IDs, destinations, policy attachments, and selected policies.
+It rejects stale/deleting resources, missing policy attachments, unsupported
+policy decisions, bypass policies, empty supported Include selectors, and Allow
+policies with Include Everyone. It does not prove an administrator's identity-rule
+logic matches the intended audience.
 
-Wildcard route hostnames, path-scoped applications, OPTIONS preflight bypass, destination overrides and other unsupported destination forms are outside this subset. Another remote application overlapping the hostname also blocks forwarding because more specific application rules can change effective protection. Supported applications on unrelated exact hostnames do not block each other.
+Wildcard route hostnames, path-scoped applications, OPTIONS preflight bypass,
+destination overrides, and explicitly marked gRPC backends are outside this
+subset. HTTP/2 and h2c transport alone do not establish that a backend is gRPC.
+Protect gRPC at the origin; an unmarked Service is not proof of HTTP-only use.
 
-**Account-wide limitation:** an application with unknown or private destination semantics anywhere in the same Cloudflare account blocks this initial opt-in subset. cfgate cannot safely exclude an opaque destination from its overlap check. This restriction affects Access-required routes only; it does not remove ordinary public routes or change existing Access applications.
-
-Ordinary HTTP/2 and h2c transports remain supported. A Service port explicitly marked `appProtocol: grpc` or `grpcs` is outside this Access-required subset. An unmarked backend is not proven to be HTTP-only: Cloudflare Access reverse-proxy configuration does not establish gRPC authentication. Protect gRPC at the origin.
-
-The tunnel's selected Cloudflare credential needs Access application and policy read permissions for these checks, in addition to its tunnel permissions. Access application/policy mutation credentials retain their existing permissions. Withdrawal verification is a read-only observation by the tunnel controller principal: it uses that tunnel's authorized credential and installation ownership claim, does not mutate the tunnel, and does not expose its credential or configuration to the application. Existing application credential inheritance still requires its own App-to-Tunnel and App-to-Secret grants.
+An overlapping remote application blocks forwarding because its precedence can
+change protection. An application with unknown or private destination semantics
+anywhere in the same account also blocks this opt-in path: cfgate cannot safely
+exclude it from the overlap check. Unrelated supported exact-host applications
+can coexist. These checks do not change ordinary unannotated public routes.
 
 ## Cross-namespace authorization
 
-A cross-namespace route reference requires a ReferenceGrant in the application's namespace, even if the application is already Ready:
+A route in `team` referring to `protection/team-app` needs this grant in the
+application namespace:
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1beta1
@@ -43,23 +66,66 @@ spec:
       name: team-app
 ```
 
-Existing grants for the application's route/Gateway target, policies and credentials still apply independently. Removing the route-to-application grant causes matched HTTP503 responses on the next successful configuration reconciliation; stale Ready status cannot authorize forwarding.
+The application's target, policy, tunnel, and credential references require their
+own grants. Removing a route-to-application grant causes denial on the next
+successful configuration publication; old Ready status does not authorize it.
+New coordination edges require an admitted route and a cfgate-managed Gateway.
+Rejected references cannot consume another tunnel's dependency budget or block
+its application cleanup. Previously published receipts remain until withdrawal
+is confirmed.
+
+The tunnel credential needs Access application and policy read permissions as
+well as its tunnel permissions. Withdrawal verification uses that tunnel's
+credential and installation claim; it does not expose credentials or configuration
+to the application. Inherited application credentials still need their separate
+application-to-tunnel and application-to-Secret authorization.
 
 ## Failure and update behavior
 
-Unavailable protection produces HTTP503 rules preserving the route's hostname/path precedence. The backend is absent from those rules, and a broader public fallback cannot receive the protected match. At equal hostname and path precedence, an unavailable Access-required rule precedes public forwarding, including older routes. More specific routes retain normal precedence; administrators must review overlapping route permissions. Other valid public routes remain intact. An `AccessRequiredUnavailable` event explains the blocking dependency. Remote protection is rechecked on every configuration reconciliation, even when the local configuration hash is unchanged. Application/policy changes enqueue tunnels; the normal five-minute reconciliation remains a fallback. A failed Cloudflare configuration write cannot promise that previously published forwarding has been withdrawn.
+A denied protected match retains its hostname/path precedence and has no backend.
+It cannot fall through to a broader public route. At equal hostname/path
+precedence, an unavailable Access-required rule precedes public forwarding, even
+if the public route is older. More specific routes retain normal precedence, so
+administrators must review permitted overlaps.
 
-`CloudflareTunnel.status.accessDependencies` records application identity, protected hosts, linked policy identities and remote account/tunnel identity before publication. `pending: true` means a configuration attempt has not been confirmed. These receipts survive interrupted writes, local route removal and desired-policy-reference changes. Old dependencies clear only after remote configuration readback confirms withdrawal. They contain no tokens or Secret data. Bounds are 256 application dependencies per tunnel, 64 hosts per dependency and 64 retained policy identities per dependency; ordinary application policyRefs retain their existing API limit.
+`AccessRequiredUnavailable` events identify blocking dependencies. Remote
+protection is checked on each configuration reconciliation, including when the
+local configuration hash is unchanged. Application/policy events enqueue tunnel
+work; periodic reconciliation is a fallback. Provider failure can prevent
+withdrawal, so a local denial decision alone is not proof that traffic stopped.
 
-Within one active manager process, selected application/policy changes share sorted, cancellable application locks with tunnel publication. A selected application cannot be removed while an earlier authorized config write is outstanding. Its deletion, stale-domain replacement, or selected policy update, service-token deletion, or service-token rotation waits for blocking tunnel configuration to be confirmed. Reconciliation releases locks while waiting so the tunnel worker can withdraw routes. Failed or cancelled writes keep pending receipts and block removal until a subsequent successful sync.
+`CloudflareTunnel.status.accessDependencies` records application and policy
+identities, protected hosts, and remote account/tunnel identity before publication.
+A pending receipt means a configuration attempt is not confirmed. Receipts survive
+interrupted writes and later route or policy-reference edits. They contain no
+Secret data and clear only after remote configuration confirms withdrawal. Bounds
+are 256 application dependencies per tunnel, 64 hosts per dependency, and 64 retained
+policy identities per dependency.
 
-Deletion is intentionally conservative. An unannotated forwarding rule on the same whole-host scope, or a forwarding catch-all, can block removal of the application's protection; cfgate reports the dependency instead of changing those public routes. Resolve the overlap explicitly. After credential, account and ownership checks, confirmed remote tunnel deletion permits protection changes even when Cloudflare retains the deleted tunnel's old configuration. A present tunnel with status `down` is not considered deleted, and uncertain reads continue blocking changes. Failed credential/configuration reads retain the application finalizer. `cfgate.io/deletion-policy: orphan` leaves remote Access protection in place and removes the Kubernetes finalizer.
+Within one active manager, cancellable application locks coordinate publication
+with selected protection changes. Application deletion, stale-domain replacement,
+policy edits, token deletion, and credential rotation wait for affected forwarding
+to withdraw. Workers release locks while waiting so tunnel reconciliation can
+progress. Healthy expiration-only token renewal preserves forwarding; credential
+replacement and expired-token recovery retain the stricter ordering.
+
+## Deletion
+
+An unannotated forwarding rule for the same whole host, or a forwarding catch-all,
+can block removal of protection. Resolve that overlap explicitly; cfgate does not
+silently delete unrelated public routing. A confirmed deleted remote tunnel can
+release the dependency after credential, account, and ownership checks. A tunnel
+that merely reports `down` is not deleted. Uncertain reads retain the finalizer.
+
+`cfgate.io/deletion-policy: orphan` leaves remote protection in place and releases
+the Kubernetes finalizer according to the resource's lifecycle rules. See
+[decommissioning](authorization-and-ownership.md#controller-removal-and-decommissioning)
+for normal dependency order.
 
 ## Remaining asynchronous risks
 
-The ordering guarantee covers the selected application and its selected policies in the active manager. Creation of a different overlapping Access application, external dashboard edits, manager restart/leader failover, uncertain server completion after a client timeout, and Cloudflare edge propagation can create windows. Remote shadow checks detect conflicting applications during subsequent publication/reconciliation; they cannot retroactively prevent a different controller or administrator from changing the account. No cross-cluster or edge-atomic guarantee is made. Origin authentication remains necessary for strict protection, and live release tests complement rather than eliminate these limits.
-
-New coordination dependencies require an admitted route, a cfgate-managed Gateway,
-and the applicable ReferenceGrants in both directions. Rejected references do not
-consume another tunnel's application budget or delay application cleanup. Previously
-published dependency receipts remain until remote withdrawal is confirmed.
+The locks coordinate one manager process, not unrelated installations or Cloudflare
+edge updates. Dashboard edits, different overlapping applications, leader changes,
+uncertain completion after a timeout, and propagation can create gaps. Later
+reconciliation can detect conflicts but cannot prevent an external writer from
+changing the account. Verify origin authentication independently of cfgate status.

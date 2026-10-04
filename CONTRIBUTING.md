@@ -1,210 +1,184 @@
 # Contributing to cfgate
 
+Use the repository's mise tasks to build, format, and test changes. Unit and
+offline tests need no Cloudflare credentials or Kubernetes cluster. Live E2E tests
+create resources in a Cloudflare account and a disposable kind cluster.
+
 ## Prerequisites
 
-- [Go 1.27.1](https://go.dev/dl/)
-- [mise](https://mise.jdx.dev/) (task runner and tool manager)
-- [Docker](https://docs.docker.com/get-docker/) (container builds and kind clusters)
-- [sops](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age) (secrets management)
-- A Cloudflare account with API token (see [API Token Permissions](#api-token-permissions))
+Install [mise](https://mise.jdx.dev/), then run `mise install` to install the
+versions pinned in [mise.toml](mise.toml), including Go 1.27.1. Docker is needed
+for image builds and kind clusters. Live E2E also needs Cloudflare credentials
+and access to the encrypted secrets loaded by its mise tasks.
 
 ## Getting Started
+
+Clone the repository and run the local checks:
 
 ```bash
 git clone https://github.com/cfgate/cfgate.git
 cd cfgate
 mise install
-mise tasks
-mise run codegen
 mise run build
+mise run format:check
 mise run lint
+mise run test
+mise run test:offline
 ```
+
+`build` regenerates DeepCopy code and CRDs before compiling. Use `mise tasks` to
+list available tasks and [docs/TESTING.md](docs/TESTING.md) for test setup,
+coverage interpretation, and release verification.
 
 ## Task Reference
 
-| Task | Alias | Description |
-|------|-------|-------------|
-| `codegen` | `gen` | Generate DeepCopy and CRD manifests |
-| `build` | `b` | Build manager binary with version info |
-| `lint` | *none* | Run golangci-lint |
-| `lint:fix` | `fix` | Run golangci-lint with auto-fix |
-| `format` | `fmt` | Format Go, shell, and workflow YAML; vet Go code |
-| `format:check` | *none* | Check formatting without rewriting files |
-| `manifests` | `dist` | Generate release manifests to `dist/` |
-| `test` | `t` | Run unit tests |
-| `test:cover` | *none* | Run unit tests with coverage report |
-| `e2e` | *none* | Run local E2E tests against live Cloudflare API |
-| `e2e:filter` | `fe2e` | Run E2E tests with a Ginkgo `--focus` filter |
-| `e2e:cleanup` | `clean` | Preview aged orphaned E2E resources; apply requires explicit opt-ins |
-| `test:offline` | *none* | Test cleanup effects, bounded fuzzing, and build/release helpers without live services |
-| `coverage` | `cov` | Run local unit, E2E, merged coverage, and assurance scoring |
-| `coverage:merge` | *none* | Merge unit and E2E coverage into `out/coverage/merged.coverprofile` |
-| `coverage:report` | *none* | Write `out/coverage/merged-summary.txt` with totals and file deltas |
-| `coverage:score` | *none* | Write `out/reports/assurance-score.json` dual-ledger report |
-| `bench` | *none* | Run benchmark suite with allocation stats |
-| `profile:bench` | *none* | Capture CPU and heap profiles for a benchmark package |
-| `profile:view` | *none* | Open the pprof web UI for a captured profile |
-| `profile:export` | *none* | Export text and proto views for a captured profile |
-| `smoke` | *none* | Run a fast local smoke suite |
-| `cluster:create` | *none* | Create dedicated cfgate dev cluster |
-| `cluster:delete` | *none* | Delete cfgate dev cluster |
-| `cluster:status` | *none* | Check cfgate dev cluster status |
-| `local:install` | *none* | Install Gateway API and cfgate CRDs |
-| `local:deploy` | *none* | Deploy controller to current cluster (kustomize) |
-| `local:undeploy` | *none* | Remove controller from current cluster |
-| `local:uninstall` | *none* | Uninstall CRDs from current cluster |
-| `run` | *none* | Run controller locally (outside cluster) |
-| `docker:build` | `db` | Build Docker image |
-| `docker:push` | `dp` | Push Docker image to registry |
-| `docker:buildx` | *none* | Build multi-arch image (amd64 + arm64) |
+| Task | Purpose |
+|------|---------|
+| `codegen` (`gen`) | Generate DeepCopy code and CRD manifests |
+| `build` (`b`) | Build the manager with version metadata |
+| `format` (`fmt`), `format:check` | Apply or check Go, shell, and selected YAML formatting; `format` also vets Go |
+| `lint`, `lint:fix` (`fix`) | Run golangci-lint, optionally applying fixes |
+| `test` (`t`), `test:cover` | Run race-enabled unit tests, optionally recording coverage |
+| `test:offline` | Check cleanup effects, bounded fuzzing, and build/release helpers without live services |
+| `e2e`, `e2e:filter` (`fe2e`) | Run live E2E, optionally with a required Ginkgo focus regex |
+| `e2e:preflight` | Check presence of all six release E2E credentials |
+| `e2e:cleanup` (`clean`) | Preview aged orphaned test resources; deletion requires explicit opt-ins |
+| `coverage` (`cov`) | Run unit and E2E coverage, merge profiles, and score assurance |
+| `coverage:merge`, `coverage:report`, `coverage:score` | Recompute individual coverage stages from existing artifacts |
+| `bench`, `profile:bench`, `profile:view`, `profile:export` | Run benchmarks and capture or inspect profiles |
+| `smoke` | Build the manager, check its help command, and run package tests |
+| `cluster:create`, `cluster:status`, `cluster:delete` | Manage a local kind cluster selected with `CLUSTER_NAME` |
+| `local:install`, `local:uninstall` | Install or remove CRDs in the current kubeconfig cluster |
+| `local:deploy`, `local:undeploy` | Deploy or remove the controller in the current kubeconfig cluster |
+| `run` | Run the controller outside the cluster using kubeconfig |
+| `docker:build` (`db`), `docker:push` (`dp`), `docker:buildx` | Build, push, or build multi-architecture images |
+| `manifests` (`dist`) | Generate release manifests under `dist/` |
 
 ## Secrets Configuration
 
-cfgate uses [sops](https://github.com/getsops/sops) with [age](https://github.com/FiloSottile/age) encryption for local development secrets. E2E and cleanup tasks load `secrets.enc.yaml` through their task-specific environment; ordinary unit tests do not load Cloudflare credentials.
+E2E, preflight, and cleanup tasks load `secrets.enc.yaml` and `.env`; ordinary
+unit and offline tasks do not load `secrets.enc.yaml`. Local secrets use
+[sops](https://github.com/getsops/sops) with
+[age](https://github.com/FiloSottile/age). Keep plaintext credentials and private
+age keys out of Git and command output.
 
 ### Setting Up Secrets
 
-1. Generate an age keypair:
+Use an age private key authorized to decrypt the repository's encrypted file.
+For a separate development account, create your own age key and configure the
+recipient in `.sops.yaml` before creating your encrypted file. Keep these local
+credential changes out of the contribution.
+
+Create a key only if you do not already have one at this path:
 
 ```bash
+mkdir -p ~/.config/sops/age
 age-keygen -o ~/.config/sops/age/keys.txt
 ```
 
-The output includes your public key (starts with `age1...`). Save it for the next step.
-
-2. Configure sops to use your key by editing `.sops.yaml` in the repo root:
-
-```yaml
-creation_rules:
-  - age: age1your-public-key-here
-```
-
-3. Create and encrypt `secrets.enc.yaml`:
+The command prints a public recipient beginning with `age1`. Configure that
+recipient in `.sops.yaml`, then use the sops editor to enter credentials without
+saving a plaintext secrets file:
 
 ```bash
-cat > secrets.enc.yaml <<'EOF'
-CLOUDFLARE_API_TOKEN: your-api-token
-CLOUDFLARE_ACCOUNT_ID: your-account-id
-CLOUDFLARE_ZONE_NAME: your-zone.com
-EOF
-
-sops -e -i secrets.enc.yaml
+sops secrets.enc.yaml
 ```
+
+Changing the recipient configuration does not grant access to an existing
+ciphertext; you need its authorized private key to edit it.
 
 ### Required Keys
 
 | Key | Purpose |
 |-----|---------|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API token |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID |
+| `CLOUDFLARE_API_TOKEN` | API token with the permissions below |
+| `CLOUDFLARE_ACCOUNT_ID` | Account used for tunnel and Access tests |
 
 ### Additional Release E2E Keys
 
 | Key | Purpose |
 |-----|---------|
-| `CLOUDFLARE_ZONE_NAME` | Zone for DNS and Access E2E tests |
-| `CLOUDFLARE_IDP_ID` | Identity Provider ID for IdP-dependent tests |
-| `CLOUDFLARE_TEST_EMAIL` | Email for email rule tests |
-| `CLOUDFLARE_TEST_GROUP` | Group for GSuite group rule tests |
+| `CLOUDFLARE_ZONE_NAME` | Zone used for DNS and hostname-dependent Access tests |
+| `CLOUDFLARE_IDP_ID` | Identity provider for IdP-dependent rules |
+| `CLOUDFLARE_TEST_EMAIL` | Email rule test value |
+| `CLOUDFLARE_TEST_GROUP` | GSuite group rule test value |
+
+Local tests skip dependent cases when these additional values are absent. Full
+release coverage requires all six values.
 
 ### Verifying Secrets
 
-Validate required variable presence without printing credential values:
+Check required variable presence without printing values:
 
 ```bash
 mise run e2e:preflight
 ```
 
-The preflight requires all six Cloudflare keys listed above for full release coverage. Presence alone does not verify API permissions or expiry.
+Preflight does not verify token permissions, validity, or expiry.
 
 ### API Token Permissions
 
-Create a token at [Cloudflare Dashboard > API Tokens](https://dash.cloudflare.com/profile/api-tokens) with:
+Create a token in the [Cloudflare dashboard](https://dash.cloudflare.com/profile/api-tokens):
 
-| Scope | Permission | Required For |
-|-------|------------|--------------|
+| Scope | Permission | Used by |
+|-------|------------|---------|
 | Account | Cloudflare Tunnel: Edit | Tunnel tests |
 | Account | Access: Apps and Policies: Edit | Access tests |
 | Account | Access: Service Tokens: Edit | Service token tests |
 | Zone | DNS: Edit | DNS tests |
+| Zone | Zone: Read | Resolve the configured zone name |
 
-Scope zone permissions to the zone matching `CLOUDFLARE_ZONE_NAME`.
+Scope zone permissions to `CLOUDFLARE_ZONE_NAME`. Use an account and zone suitable
+for creating and deleting test resources; Kubernetes isolation does not isolate
+Cloudflare resources.
 
 ## Testing
 
-See [docs/TESTING.md](docs/TESTING.md) for the full testing guide.
+Start with `mise run test` and `mise run test:offline`. For reconciler or
+Cloudflare behavior changes, run the relevant live cases with `mise run e2e` or
+`mise run e2e:filter -- '<focus regex>'`.
 
-```bash
-mise run test              # unit tests
-mise run test:offline      # offline cleanup, fuzz, and build/release checks
-mise run test:cover        # unit tests with coverage
-mise run coverage          # local unit + E2E + merged coverage + assurance score
-mise run coverage:merge    # merge unit and E2E profiles
-mise run coverage:report   # write merged coverage summary
-mise run coverage:score    # write dual-ledger assurance score
-mise run cluster:create    # repo-local helper for a dedicated kind cluster
-mise run e2e               # local E2E against live Cloudflare API
-mise run e2e:cleanup       # preview orphaned E2E resources
-mise run bench             # benchmark suite
-mise run smoke             # fast local sanity check
-```
+E2E creates and removes its own kind cluster by default. Start Docker before
+running it. Reusing a cluster requires `E2E_USE_EXISTING_CLUSTER=true` and an
+explicit `CLUSTER_NAME`; that cluster must be disposable because the suite
+installs CRDs and Gateway API resources. See [E2E setup and cleanup](docs/TESTING.md#e2e-tests)
+for kubeconfig checks, interruption behavior, and orphan recovery.
 
-Normal GitHub Actions CI runs lint, unit tests, build validation, and unit coverage. It does not provision a cluster or run Cloudflare-backed E2E.
-
-Changes under `test/` trigger CI, but the live E2E suite is still separate. Manual CI dispatch runs the full lint, unit test, build, and coverage jobs on the selected ref. Pushes to `dev` retain the reduced lint and coverage checks.
-
-A manual GitHub Actions workflow named `Remote Release E2E` exists for release-grade remote E2E timing and Codecov upload without publishing release artifacts.
-
-For local coverage work, treat `out/coverage/merged.coverprofile` as the canonical `100%` ledger and `out/reports/assurance-score.json` as the canonical `200%` dual-ledger artifact. In the assurance artifact, `possible` is the full rubric ceiling and `automated_possible` is the portion the current script can verify. Today that means behavioral automation tops out at `70/100`, not `100/100`.
-
-`mise run smoke` builds `bin/manager`, requires `./bin/manager --help` to exit successfully, then runs the fast package test set. `cmd/cleanup` is not part of the smoke or release CLI contract in this pass.
-
-Two local bootstrap paths are first-class:
-
-```bash
-# Path A: broader local stack bootstrap
-cd ~/production/abaddon
-mise run 000-colima
-mise run 001-kind
-
-# Path B: repo-local convenience helper
-cd ~/production/cfgate/cfgate
-mise run cluster:create
-```
-
-`mise run e2e` creates a disposable kind cluster by default. To reuse an explicitly selected disposable cluster, set `E2E_USE_EXISTING_CLUSTER=true CLUSTER_NAME=<name>`. The task checks that its API server is reachable. Default cleanup is scoped to the current run; `mise run e2e:cleanup` previews aged orphan candidates. See the testing guide before enabling orphan deletion.
+PR CI and manual CI dispatch run formatting, lint, race tests, offline checks,
+build validation, and unit coverage. Pushes to `dev` run the reduced formatting,
+lint, and unit coverage jobs. Normal CI does not run live E2E. The manual
+`Remote Release E2E` workflow tests a selected ref without publishing artifacts;
+release publication has a separate E2E gate.
 
 ## Development Workflow
 
-Local binary and Docker tasks source `hack/build-metadata.sh` for the same tag,
-short commit, UTC build date and optional `VERSION_SUFFIX`. An exact tag uses its
-version without the leading `v`; other commits use `<tag>-dev+<commit>`, or
-`0.0.0-dev+<commit>` when no tag exists. Release workflows retain their separately
-validated tag and full source SHA. Local metadata does not certify a clean tree
-or authorize publication.
+### Making Changes
+
+1. Create a feature branch from `main` and make a focused change.
+2. Run `mise run codegen` after changing CRD types.
+3. Run `mise run format`, `mise run lint`, `mise run build`, `mise run test`, and `mise run test:offline`.
+4. Run relevant E2E cases for reconciler or Cloudflare behavior changes.
+5. Update affected references and examples, review the diff, and open a PR against `main`.
+
+Report the checks you ran and any checks you could not run.
+
+Local binary and Docker tasks use [hack/build-metadata.sh](hack/build-metadata.sh).
+An exact tag supplies its version without `v`; other commits use
+`<tag>-dev+<commit>`, or `0.0.0-dev+<commit>` without a tag. Metadata includes a UTC
+build date and optional `VERSION_SUFFIX`. Release workflows validate the tag and
+full source SHA separately. Local version metadata does not certify a clean tree.
 
 Keep reconciliation dependencies explicit. Access publication passes one
 `accessSyncSession` through route collection and protection verification while
-holding the acquired locks. Its observations and read caches belong to that
-attempt; do not retain them across reconciliations or hide them in context values.
-An absent session permits ordinary public routes but cannot authorize an
-Access-required route. Keep shared route acceptance helpers aligned with both
-status and emitted-configuration tests before adding another resolution layer.
-
-### Making Changes
-
-1. Create a feature branch from `main`
-2. Make changes
-3. Regenerate CRDs if types changed: `mise run codegen`
-4. Lint: `mise run lint`
-5. Build: `mise run build`
-6. Test: `mise run test`
-7. Run local E2E when your change touches reconciler or Cloudflare behavior: `mise run e2e`
-8. Submit PR against `main`
+holding its locks. Its observations and caches belong to that attempt. Do not
+retain them across reconciliations or hide them in context values. An absent
+session permits public routes but cannot authorize Access-required routes. Keep
+shared route acceptance helpers covered by both status and emitted-configuration
+tests.
 
 ### CRD Changes
 
-When modifying files in `api/v1alpha1/`, regenerate and reinstall:
+Regenerate CRDs and install them only in your selected development cluster:
 
 ```bash
 mise run codegen
@@ -213,161 +187,115 @@ mise run local:install
 
 ### Running the Controller Locally
 
+Run the controller against the cluster selected by kubeconfig:
+
 ```bash
 mise run run
 ```
 
-The controller runs outside the cluster but connects via kubeconfig.
+For a reusable disposable kind cluster, choose its name explicitly:
+
+```bash
+CLUSTER_NAME=cfgate-dev mise run cluster:create
+CLUSTER_NAME=cfgate-dev mise run cluster:status
+```
+
+Use the same name with `cluster:delete` when finished. The cluster tasks default
+to `abaddon` when `CLUSTER_NAME` is unset.
 
 ## Project Structure
 
-```
-cfgate/
-  api/v1alpha1/             CRD type definitions
-  cmd/
-    manager/                Controller entrypoint
-    cleanup/                E2E resource cleanup utility
-  internal/
-    accesstags/             Shared Access owner tag helpers
-    controller/             Reconcilers (tunnel, dns, access, gateway, httproute)
-    controller/annotations/ Annotation parsing and validation
-    controller/context/     CRD-to-controller data wrappers
-    controller/features/    Runtime feature gate detection
-    controller/status/      Status condition composition
-    cloudflare/             Cloudflare API client abstraction
-    cloudflared/            cloudflared config and deployment builders
-  config/
-    crd/                    Generated CRD manifests
-    default/                Kustomize overlay for deployment
-    manager/                Controller deployment resources
-    rbac/                   RBAC resources
-  test/e2e/                 E2E test suite
-  examples/                 Applyable YAML examples
-  docs/                     User-facing reference documentation
-  hack/                     Build utilities
-```
+| Path | Contents |
+|------|----------|
+| `api/v1alpha1/` | CRD types |
+| `cmd/manager/`, `cmd/cleanup/` | Controller and test-resource cleanup entrypoints |
+| `internal/controller/` | Reconcilers and route, annotation, status, and feature helpers |
+| `internal/cloudflare/`, `internal/cloudflared/` | API clients and connector configuration/builders |
+| `internal/accesstags/` | Access owner tag helpers |
+| `config/` | Generated CRDs, deployment overlays, and RBAC |
+| `test/e2e/` | Live E2E and offline test helpers |
+| `examples/`, `docs/` | Deployable examples and user documentation |
+| `hack/`, `.github/scripts/` | Build, coverage, and release utilities |
 
 ## Related Repositories
 
-| Repository | Description |
-|------------|-------------|
-| [cfgate/helm-chart](https://github.com/cfgate/helm-chart) | Helm chart (OCI at `oci://ghcr.io/cfgate/charts/cfgate`) |
-| [cfgate/cfgate.io](https://github.com/cfgate/cfgate.io) | Project website |
+The [Helm chart](https://github.com/cfgate/helm-chart) is published at
+`oci://ghcr.io/cfgate/charts/cfgate`. The website lives in
+[cfgate/cfgate.io](https://github.com/cfgate/cfgate.io).
 
 ## Commits
 
-Conventional-style prefixes: `feat:`, `fix:`, `chore:`, `ci:`, `docs:`, `test:`, `refactor:`, `perf:`, `build:`
+Use conventional prefixes such as `feat:`, `fix:`, `docs:`, `test:`, `refactor:`,
+`perf:`, `build:`, `ci:`, or `chore:`. Write an imperative subject under 72
+characters; use the body to explain why. Scopes are optional.
 
-Subject line in imperative mood, under 72 characters. Body explains why, not what. Bullet points for multi-line bodies.
-
-Scopes are optional; use when the change targets a specific subsystem:
-
-```
-fix(controller): correct DNS record drift detection
-test(e2e): add multi-zone ownership verification
-```
-
-For contributor PRs, the maintainer squash-merges with a clean conventional subject line. You do not need to rewrite your branch history.
+Examples: `fix(controller): correct DNS record drift detection` and
+`test(e2e): add multi-zone ownership verification`.
 
 ## Changelog
 
-Release notes are generated via [git-cliff](https://git-cliff.org/) from commit history. Configuration is in `cliff.toml`. Do not edit `CHANGELOG.md` manually; regenerate it locally with `git-cliff` when you need to refresh the repo changelog.
+[git-cliff](https://git-cliff.org/) generates release notes from commit history
+using `cliff.toml`. Do not edit `CHANGELOG.md` manually; run `git-cliff` when a
+local regeneration is needed.
 
 ## Code Style
 
 ### General
 
-Run `mise run format` and `mise run lint` before submitting. Tool versions are
-pinned in `mise.toml`; install them with `mise install`. CI and release quality
-checks run `mise run format:check` and `mise run lint` using the same repository
-configuration. Formatting failures report the command to apply fixes locally;
-CI does not commit changes to contributor branches.
-
-`.golangci.yml` enables the standard golangci-lint rules, the existing
-`ginkgolinter` checks, and `gofmt`. Generated Go files are excluded from formatting;
-regenerate them with `mise run codegen`. `.editorconfig` defines editor whitespace
-settings and the two-space indentation used by shfmt for shell files in `hack/`
-and `.github/scripts/`. `.yamlfmt.yml` limits YAML formatting to GitHub workflows
-and the lint/formatter configuration files. Generated manifests, encrypted
-secrets, and examples are outside that YAML formatting scope. Shell embedded in
-mise tasks or YAML blocks is not automatically reformatted by these commands.
-
-The README's golangci-lint badge links to the tool documentation. The existing
-CI status badge reports the automated checks; there is no external quality grade.
-
-Follow existing patterns in the codebase. When in doubt, match the surrounding code.
+Follow surrounding code and the pinned formatters. `.golangci.yml` configures
+linting, including `ginkgolinter` and `gofmt`. Generated Go files are regenerated,
+not hand-formatted. `.editorconfig` defines whitespace; shell files in `hack/`
+and `.github/scripts/` use two-space indentation. `.yamlfmt.yml` limits YAML
+formatting to workflows and lint/formatter configuration. It excludes generated
+manifests, encrypted secrets, and examples. Embedded shell in mise or YAML is not
+automatically reformatted.
 
 ### Logging
 
-Use structured logging via `logr` (controller-runtime convention). Log at appropriate levels:
-
-- `log.Info()` for reconciler phase transitions and significant state changes
-- `log.V(1).Info()` for per-resource operational detail
-- `log.Error()` for errors that will cause requeue or degraded status
+Use structured `logr` logging: `Info` for significant state changes,
+`V(1).Info` for per-resource details, and `Error` for failures causing a requeue or
+degraded status.
 
 ### Comments
 
-Default to no comments. Code should be self-explanatory through naming and structure. Comment when:
-
-- The "why" is non-obvious (a workaround, an API quirk, a spec requirement)
-- The behavior has surprising side effects
-- A constant comes from an external specification
-
-```go
-// RFC 1035 section 2.3.4: DNS labels must not exceed 63 octets.
-const maxDNSLabelLength = 63
-```
-
-Do not comment what the code already says.
+Explain non-obvious reasons, side effects, workarounds, or external requirements.
+Prefer clear names over comments that repeat the code.
 
 ### Doc Comments
 
-Every exported type, function, and method gets a doc comment. The first sentence is a summary used by godoc. Cover what the symbol does, input expectations, side effects, and error conditions.
-
-Write doc comments with future doc-gen tooling in mind: structured, factual, no marketing language.
-
-```go
-// TunnelService manages Cloudflare Tunnel lifecycle operations including
-// creation, configuration updates, and deletion. It uses idempotent
-// ensure semantics; calling Ensure on an existing tunnel updates its
-// configuration rather than creating a duplicate.
-type TunnelService struct { ... }
-```
+Document every exported type, function, and method. Start with a factual summary,
+then cover relevant input expectations, side effects, and errors.
 
 ### Naming
 
-- Match json tags in user-facing references (`sessionDuration`, not `SessionDuration`)
-- Use descriptive names; avoid single-letter variables outside loop indices
-- Constants use `camelCase` for package-level, `SCREAMING_SNAKE` is not idiomatic Go
+Match JSON field names in user-facing references, such as `sessionDuration`.
+Use descriptive Go names and camelCase package-level constants; reserve short
+variables for limited scopes such as loop indices.
 
 ## Documentation
 
 ### Where Things Live
 
-**README.md** is the hub document: CRD tables, feature matrix, annotation summary, quickstart, and links to `docs/`. Keep it scannable.
-
-**docs/*.md** files are deep reference, one file per topic. These are the source of truth for user-facing field documentation.
-
-**CONTRIBUTING.md** covers development workflow, code style, and writing conventions. Not user-facing.
-
-**examples/** contains applyable YAML. Every example directory should work with `kubectl apply -k examples/<name>` against a cluster with cfgate installed.
+[README.md](README.md) introduces the project and links to installation and
+reference material. [docs/README.md](docs/README.md) indexes the guides and
+references. `examples/` contains Kubernetes examples; `CONTRIBUTING.md` and
+`docs/TESTING.md` cover contributor workflows.
 
 ### When to Update Docs
 
-CRD type changes (`api/v1alpha1/*_types.go`) and annotation changes (`internal/controller/annotations/annotations.go`) are the two sources of truth. When you change either, update the corresponding `docs/` file in the same commit. Treat it like running `mise run codegen`; it is part of the change, not a follow-up.
+When changing CRD types or annotations, update the corresponding reference and
+examples in the same change. Check generated schema defaults and validation
+against `api/v1alpha1/*_types.go` and annotation behavior against
+`internal/controller/annotations/annotations.go`.
 
 ### Writing Style
 
-Use complete sentences with natural compound structure. Technical reference tone; the voice of a well-written man page, not a keynote.
-
-**Prohibited in prose:** em-dashes, en-dashes, double-hyphens. Use semicolons, commas, or colons instead. Double-hyphens in CLI flags (`--leader-elect`), YAML comments, and code are fine.
-
-**Avoid:** superlatives ("powerful," "elegant," "seamless"), fragment-sentence drama ("One operator. Three concerns."), and long-then-short restatement. Say it once, clearly, and move on.
-
-When documenting a field, state what it does, valid values, and the default, in that order. Skip explanation of why unless the behavior is surprising.
-
-YAML snippets in docs must parse cleanly. Introduce code blocks with one sentence explaining when or why to use them, then let the code speak.
+Use complete sentences, direct wording, and a technical reference tone. Avoid
+superlatives, dramatic fragments, repeated summaries, and em-dashes or en-dashes
+in prose. Double-hyphens belong in code and CLI flags, not prose punctuation.
+For a field, state behavior, valid values, and default. Introduce code blocks
+with their purpose and keep YAML examples parseable.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [Apache 2.0 License](LICENSE).
+Contributions use the [Apache 2.0 License](LICENSE).

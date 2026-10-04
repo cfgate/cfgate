@@ -1,44 +1,63 @@
-# Basic Example
+# Single-service example
 
-Single tunnel exposing one service via Cloudflare.
+This example publishes one HTTP service through a Cloudflare Tunnel. The route is
+public. Use the [getting-started guide](../../docs/getting-started.md) for a complete
+installation and an optional Access-protected variant.
 
-## Quick Start
+## Prerequisites
 
-```bash
-# 1. Install Gateway API + cfgate
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml
-kubectl apply -f https://github.com/cfgate/cfgate/releases/latest/download/install.yaml
+Install cfgate and the matching Gateway API CRDs first. Create the
+`cloudflare-credentials` Secret in `cfgate-system` using the token procedure in the
+guide, changing its namespace from `cfgate-demo` to `cfgate-system`. The token needs
+Tunnel edit, DNS edit, and Zone read permissions for the selected account and zone.
 
-# 2. Create credentials
-kubectl create secret generic cloudflare-credentials \
-  -n cfgate-system \
-  --from-literal=CLOUDFLARE_API_TOKEN=<your-token>
-
-# 3. Deploy example (edit files first)
-kubectl apply -k examples/basic
-```
+Run the following commands from the repository root. These manifests create a
+`demo` namespace and a `cfgate` GatewayClass; inspect existing objects with those
+names before applying them. Do not use this example beside another example that
+shares those names.
 
 ## Configuration
 
-Before applying, edit these files:
+Edit the sample values before applying:
 
-| File | What to change |
-|------|----------------|
-| `tunnel.yaml` | Set `accountId` to your Cloudflare account ID |
-| `dns.yaml` | Set `zones[].name` to your domain |
-| `httproute.yaml` | Set `hostnames[]` to your subdomain |
+| File | Configuration |
+| --- | --- |
+| `tunnel.yaml` | Cloudflare account ID and an unused remote tunnel name |
+| `dns.yaml` | Managed zone name |
+| `httproute.yaml` | Hostname in that zone |
 
-## Verify
+Apply the example and inspect current conditions:
 
 ```bash
-kubectl get cloudflaretunnel -n cfgate-system
-kubectl get cloudflarednses -n cfgate-system
+kubectl apply -k examples/basic
+kubectl get cloudflaretunnel demo-tunnel -n cfgate-system
+kubectl get cloudflaredns demo-dns -n cfgate-system
 kubectl get httproute -n demo
-curl https://echo.yourdomain.com
 ```
+
+Request the hostname you configured and check the echo response. A Ready manager
+Pod alone does not verify the route, DNS, or origin connection.
 
 ## Cleanup
 
+Delete the HTTPRoute first and verify its forwarding has been withdrawn. Then
+remove DNS and the tunnel, waiting for each to finalize:
+
 ```bash
-kubectl delete -k examples/basic
+kubectl delete -f examples/basic/httproute.yaml
 ```
+
+After withdrawal, run this chain; a failed deletion stops subsequent steps:
+
+```bash
+kubectl delete -f examples/basic/dns.yaml --wait=true --timeout=300s &&
+kubectl delete -f examples/basic/tunnel.yaml --wait=true --timeout=300s &&
+kubectl delete -f examples/basic/gateway.yaml &&
+kubectl delete -f examples/basic/echo-service.yaml &&
+kubectl delete -f examples/basic/namespace.yaml
+```
+
+Keep credentials, grants, and the controller until cleanup completes. Delete the
+sample namespace or GatewayClass only if nothing else uses it. See
+[decommissioning](../../docs/authorization-and-ownership.md#controller-removal-and-decommissioning)
+for retained resources or blocked finalizers.
