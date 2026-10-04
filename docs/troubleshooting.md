@@ -1,489 +1,219 @@
 # Troubleshooting
 
-## Manager Fails to Start with a Port Environment Error
+Start with the resource's current conditions, then check the next dependency in
+the request path. A healthy manager process does not establish that DNS resolves,
+the connector applied a configuration, or an origin accepted a request.
 
-Kubernetes Service links can inject `CFGATE_METRICS_PORT` or `CFGATE_HEALTH_PORT` as a value such as `tcp://10.96.0.1:8080`. Older cfgate versions try to parse these values as integers and exit before processing command-line flags.
+## Initial observations
 
-The manager resolves each bind address independently. An explicit `--metrics-bind-address` or `--health-probe-bind-address` takes precedence over its corresponding environment variable. Without that flag, a numeric `CFGATE_METRICS_PORT` or `CFGATE_HEALTH_PORT` from 0 through 65535 supplies the port; an unset variable uses `:8080` for metrics or `:8081` for health probes. An environment port of `0` retains an ephemeral bind port (`:0`); `--metrics-bind-address=0` disables metrics. Help flags work without validating environment variables.
-
-A Service-link-shaped value containing `tcp://`, a numeric IPv4 or bracketed IPv6 address, and a port from 1 through 65535 uses the corresponding default bind address. This exception does not accept hostnames, other schemes, credentials, paths, queries, fragments, or scoped IPv6 addresses. Other malformed environment values still produce a usage error unless their corresponding bind flag is supplied.
-
-The bundled manager Deployment sets `spec.template.spec.enableServiceLinks: false` to prevent these collisions. Apply the same setting to custom manager Deployments. Kubernetes Service discovery through DNS remains available.
-
-## HTTPRoute Missing from Tunnel Configuration
-
-Tunnel configuration uses current Kubernetes objects to check the parent GatewayClass, listener protocol, section and port, allowed route kinds and namespaces, hostname intersection, backend Service and port, and cross-namespace ReferenceGrant. A stale HTTPRoute status does not bypass these checks. Routes denied by listener/class authorization are excluded. Attached rules with missing or unauthorized backends return HTTP 500 for their matches, while valid sibling rules remain published. Unsupported match restrictions reject the route. Wildcard route hostnames are narrowed to the matching listener's hostname when necessary.
-
-Check the HTTPRoute's `Accepted` and `ResolvedRefs` conditions, including `RefNotPermitted`, `BackendNotFound`, and `UnsupportedValue` reasons. A route that cannot be translated into cloudflared ingress generates an `HTTPRouteError` warning event on the CloudflareTunnel. Transient Kubernetes read errors abort the configuration update, retain the last remote configuration, and set `ConfigurationSynced=False` with reason `ConfigSyncError`.
-
-Service, Namespace, ReferenceGrant, GatewayClass, relevant annotation, and credential Secret changes enqueue affected tunnel reconciliations. Periodic full reconciliation also verifies remote configuration and repairs dependencies.
-
-## DNS Records Not Syncing
-
-*For full field documentation, see [CloudflareDNS Reference](cloudflare-dns.md).*
-
-### Symptoms
-- CNAME records are not created in Cloudflare for your hostnames
-- `kubectl get cloudflaredns` shows `READY: False` or `SYNCED: 0`
-- Applications are unreachable because DNS does not resolve to the tunnel
-
-### Diagnostic Steps
-
-1. Check CloudflareDNS status:
-   ```bash
-   kubectl get cloudflaredns -A
-   ```
-   Expected output when healthy:
-   ```
-   NAMESPACE       NAME     READY   SYNCED   PENDING   FAILED   AGE
-   cfgate-system   my-dns   True    3        0         0        5m
-   ```
-
-2. Check conditions for details:
-   ```bash
-   kubectl get cloudflaredns my-dns -n cfgate-system -o jsonpath='{.status.conditions}' | jq .
-   ```
-   Look for:
-   - `Ready`: overall health
-   - `CredentialsValid`: API token works
-   - `ZonesResolved`: zone names resolved to zone IDs
-   - `RecordsSynced`: DNS records pushed to Cloudflare
-   - `OwnershipVerified`: TXT ownership records confirmed
-
-3. If using `annotationFilter`, verify HTTPRoutes have the matching annotation.
-
-   The `annotationFilter` field on `spec.source.gatewayRoutes` accepts a user-defined annotation as a filter. It is NOT a fixed cfgate annotation. If your CloudflareDNS has:
-   ```yaml
-   spec:
-     source:
-       gatewayRoutes:
-         enabled: true
-         annotationFilter: "cfgate.io/dns-sync=enabled"
-   ```
-   Then every HTTPRoute you want synced must have:
-   ```yaml
-   metadata:
-     annotations:
-       cfgate.io/dns-sync: "enabled"
-   ```
-   Routes without this annotation are silently skipped.
-
-4. Check that the tunnel is Ready (DNS needs the tunnel domain for the CNAME target):
-   ```bash
-   kubectl get cloudflaretunnel -A
-   ```
-   Expected output:
-   ```
-   NAMESPACE       NAME        READY   TUNNEL ID                              REPLICAS   AGE
-   cfgate-system   my-tunnel   True    abcdef12-3456-7890-abcd-ef1234567890   2          10m
-   ```
-   If `READY` is `False`, resolve the tunnel issue first. CloudflareDNS cannot create CNAMEs without a tunnel domain.
-
-5. Check controller logs:
-   ```bash
-   kubectl logs -n cfgate-system deploy/cfgate -c manager | grep cloudflaredns
-   ```
-
-### Common Causes
-
-| Cause | Solution |
-|---|---|
-| Tunnel not ready | Fix the CloudflareTunnel first. DNS needs `status.tunnelDomain` for the CNAME target. |
-| Zone not configured | Add the zone to `spec.zones[]`. The zone name must match the domain suffix of your hostnames. |
-| API token missing DNS:Edit permission | Add Zone-level `DNS: Edit` permission to your Cloudflare API token. |
-| annotationFilter mismatch | Verify the annotation key and value on your HTTPRoutes matches the filter exactly. See [Annotations Reference](annotations.md#notes-on-annotationfilter). |
-| No routes found | Ensure `spec.source.gatewayRoutes` is present and routes have `parentRefs` pointing to a Gateway with `cfgate.io/tunnel-ref`. |
-| Gateway missing tunnel-ref | Add `cfgate.io/tunnel-ref: namespace/name` annotation to the Gateway resource. |
-
-Route discovery is only available for `tunnelRef`-backed CloudflareDNS resources. In `externalTarget` mode, route discovery is ignored and hostnames must be defined under `spec.source.explicit[]`.
-
----
-
-## GatewayClass Not Accepted
-
-*For Gateway API concepts, see [Gateway API Primer](gateway-api-primer.md).*
-
-### Symptoms
-- `kubectl get gatewayclass cfgate` shows no `Accepted` condition or `Accepted: False`
-- Gateway resources stay in `NotAccepted` state
-
-### Diagnostic Steps
-
-1. Verify the controller name is exact:
-   ```bash
-   kubectl get gatewayclass cfgate -o jsonpath='{.spec.controllerName}'
-   ```
-   Expected output:
-   ```
-   cfgate.io/cloudflare-tunnel-controller
-   ```
-   The controller name must be exactly `cfgate.io/cloudflare-tunnel-controller`. Any typo (extra spaces, wrong prefix) causes the GatewayClass to remain unaccepted.
-
-2. Check the controller is running:
-   ```bash
-   kubectl get pods -n cfgate-system
-   ```
-   Expected output:
-   ```
-   NAME                     READY   STATUS    RESTARTS   AGE
-   cfgate-6b8f9d4c5-x7k2p  1/1     Running   0          5m
-   ```
-
-3. Check controller logs for startup errors:
-   ```bash
-   kubectl logs -n cfgate-system deploy/cfgate -c manager | grep gatewayclass
-   ```
-
-4. Verify Gateway API CRDs are installed:
-   ```bash
-   kubectl get crd gatewayclasses.gateway.networking.k8s.io
-   ```
-   If this returns `NotFound`, install the Gateway API CRDs:
-   ```bash
-   kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml
-   ```
-
-### Common Causes
-
-| Cause | Solution |
-|---|---|
-| Typo in `spec.controllerName` | Must be exactly `cfgate.io/cloudflare-tunnel-controller` |
-| Controller not running | Check pod status, describe pod for crash reasons |
-| Gateway API CRDs not installed | Install Gateway API CRDs before cfgate |
-| Multiple GatewayClasses with same controllerName | cfgate accepts all matching GatewayClasses, but check for conflicts |
-| Kiali KIA1504 warnings on cfgate GatewayClass | Not a real error. See [Service Mesh Integration](service-mesh.md#kiali) to configure Kiali. |
-
----
-
-## Access Policy CredentialsInvalid
-
-*For full field documentation, see [CloudflareAccessPolicy Reference](cloudflare-access-policy.md).*
-
-### Symptoms
-- CloudflareAccessPolicy shows condition `CredentialsValid: False` with reason `CredentialsInvalid`
-- Status message: "set cloudflareRef or ensure targets reference a tunnel"
-
-### Diagnostic Steps
-
-1. Determine which credential path you are using.
-
-   **Explicit credentials** (set directly on the policy):
-   ```bash
-   kubectl get cloudflareaccesspolicy my-policy -n cfgate-system -o jsonpath='{.spec.cloudflareRef}'
-   ```
-   If this returns a value, verify the referenced secret exists and contains `CLOUDFLARE_API_TOKEN`:
-   ```bash
-   kubectl get secret <secret-name> -n <namespace> -o jsonpath='{.data.CLOUDFLARE_API_TOKEN}' | base64 -d | head -c 5
-   ```
-
-   **Inherited credentials** (resolved via target chain):
-
-   The controller walks a chain to find credentials. Verify each step:
-
-   a. For **Gateway** targets: Gateway must have `cfgate.io/tunnel-ref` annotation pointing to a CloudflareTunnel:
-   ```bash
-   kubectl get gateway <gw-name> -n <ns> -o jsonpath='{.metadata.annotations.cfgate\.io/tunnel-ref}'
-   ```
-
-   b. For **HTTPRoute** targets: The controller walks HTTPRoute -> parentRef -> Gateway -> tunnel-ref -> CloudflareTunnel:
-   ```bash
-   # Check the HTTPRoute's parent Gateway
-   kubectl get httproute <route-name> -n <ns> -o jsonpath='{.spec.parentRefs}'
-   # Then check that Gateway's tunnel-ref annotation
-   kubectl get gateway <parent-gw> -n <parent-ns> -o jsonpath='{.metadata.annotations.cfgate\.io/tunnel-ref}'
-   ```
-
-   c. Verify the CloudflareTunnel's secret exists:
-   ```bash
-   kubectl get cloudflaretunnel <tunnel-name> -n <ns> -o jsonpath='{.spec.cloudflare.secretRef.name}'
-   ```
-
-2. Verify the API token has required permissions:
-   - `Access: Apps and Policies: Edit` (Account level)
-   - `Access: Service Tokens: Edit` (Account level, if using service tokens)
-
-3. Check controller logs:
-   ```bash
-   kubectl logs -n cfgate-system deploy/cfgate -c manager | grep accesspolicy
-   ```
-
-### Credential Resolution Chain
-
-```mermaid
-flowchart TD
-    CAP[CloudflareAccessPolicy]
-    CAP --> Q1{cloudflareRef set?}
-    Q1 -- Yes --> USE[Use explicit secret + accountID]
-    Q1 -- No --> Q2{target kind}
-    Q2 -- Gateway --> GW[Gateway cfgate.io/tunnel-ref]
-    GW --> CT1[CloudflareTunnel.spec.cloudflare.secretRef]
-    Q2 -- HTTPRoute --> HR[HTTPRoute.spec.parentRefs]
-    HR --> GW2[Gateway cfgate.io/tunnel-ref]
-    GW2 --> CT2[CloudflareTunnel.spec.cloudflare.secretRef]
-```
-
-### Common Causes
-
-| Cause | Solution |
-|---|---|
-| No `cloudflareRef` and target Gateway has no `tunnel-ref` | Add `cfgate.io/tunnel-ref` to the Gateway, or set `cloudflareRef` explicitly |
-| Secret deleted or missing | Re-create the credentials secret |
-| Wrong secret key | Default key is `CLOUDFLARE_API_TOKEN`. Check secret data keys match. |
-| Token lacks Access permissions | Add `Access: Apps and Policies: Edit` at Account level |
-| Cross-namespace target without ReferenceGrant | Create a ReferenceGrant in the target namespace |
-
----
-
-## Gateway Not Programmed
-
-*For tunnel field documentation, see [CloudflareTunnel Reference](cloudflare-tunnel.md).*
-
-### Symptoms
-- Gateway shows condition `Programmed: False`
-- HTTPRoutes attached to the Gateway show `Accepted: False` in status
-
-### Diagnostic Steps
-
-1. Check the tunnel referenced by the Gateway:
-   ```bash
-   # Get the tunnel reference
-   kubectl get gateway <gw-name> -n <ns> -o jsonpath='{.metadata.annotations.cfgate\.io/tunnel-ref}'
-
-   # Check tunnel status
-   kubectl get cloudflaretunnel -A
-   ```
-   Expected output:
-   ```
-   NAMESPACE       NAME        READY   TUNNEL ID                              REPLICAS   AGE
-   cfgate-system   my-tunnel   True    abcdef12-3456-7890-abcd-ef1234567890   2          10m
-   ```
-
-2. If the tunnel is not Ready, check its conditions:
-   ```bash
-   kubectl get cloudflaretunnel my-tunnel -n cfgate-system -o jsonpath='{.status.conditions}' | jq .
-   ```
-   The tunnel has 5 conditions that must all be True for full health:
-   - `CredentialsValid`: API token works
-   - `TunnelReady`: Tunnel exists in Cloudflare
-   - `CloudflaredDeployed`: cloudflared deployment is running
-   - `ConfigurationSynced`: Ingress config pushed to Cloudflare
-   - `Ready`: Overall health (all above are True)
-
-3. Check the cloudflared deployment:
-   ```bash
-   kubectl get deploy -n cfgate-system -l app.kubernetes.io/managed-by=cfgate
-   ```
-
-4. Check controller logs:
-   ```bash
-   kubectl logs -n cfgate-system deploy/cfgate -c manager | grep gateway
-   ```
-
-### Common Causes
-
-| Cause | Solution |
-|---|---|
-| Missing `cfgate.io/tunnel-ref` annotation | Add annotation pointing to `namespace/name` of CloudflareTunnel |
-| Tunnel not ready | Fix tunnel issues first (credentials, API access) |
-| GatewayClass not accepted | Verify `spec.gatewayClassName` references an accepted GatewayClass |
-| cloudflared pods crashing | Check pod logs: `kubectl logs -n cfgate-system deploy/cloudflared-<tunnel-name> -c cloudflared` |
-
-### Pod Security Admission rejects cloudflared pods
-
-If pod creation fails with `violates PodSecurity "restricted:latest"` and mentions `allowPrivilegeEscalation != false`, `capabilities.drop=["ALL"]`, `runAsNonRoot != true`, or `seccompProfile`, upgrade cfgate to `v0.2.0-alpha.2` or newer. Older cfgate versions can use a less restricted namespace as a temporary workaround.
-
----
-
-## Stuck Finalizers
-
-### Symptoms
-- A CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, or CloudflareAccessApplication is stuck in `Terminating` state
-- `kubectl delete` hangs or the resource does not disappear
-
-### Background
-
-cfgate adds finalizers to CRDs so that Cloudflare-side resources (tunnels, DNS records, Access policies, service tokens, Access applications, and Access application owner tags) are cleaned up before the Kubernetes resource is removed. The finalizer blocks deletion until cleanup completes, which requires working Cloudflare API credentials.
-
-### Diagnostic Steps
-
-1. Check what finalizers are present:
-   ```bash
-   kubectl get <resource-type> <name> -n <namespace> -o jsonpath='{.metadata.finalizers}'
-   ```
-   cfgate finalizers:
-   - `cfgate.io/tunnel-cleanup` (CloudflareTunnel)
-   - `cfgate.io/dns-cleanup` (CloudflareDNS)
-   - `cfgate.io/access-policy-cleanup` (CloudflareAccessPolicy)
-   - `cfgate.io/access-application-cleanup` (CloudflareAccessApplication)
-
-2. Check if credentials are still valid. If the secret was deleted before the resource, the finalizer cannot complete cleanup.
-
-3. Check controller logs for cleanup errors:
-   ```bash
-   kubectl logs -n cfgate-system deploy/cfgate -c manager | grep "deletion\|cleanup\|finalizer"
-   ```
-
-4. The controller blocks indefinitely on cleanup failure and never removes the finalizer automatically. Before the deletion warning threshold, failed attempts emit `CleanupFailed`; afterward they emit `CleanupBlocked`. These thresholds do not stop retries or limit API execution. Cleanup can finish on a later retry or after repairing credentials, permissions, or connectivity. The `cfgate.io/deletion-policy=orphan` annotation explicitly skips remote cleanup and can leave remote resources behind (see Resolution Options below).
-
-   Deletion warning thresholds (age since deletion was requested):
-
-   | Controller | Warning threshold | Requeue Interval |
-   |---|---|---|
-   | CloudflareTunnel | 2 minutes | 10 seconds |
-   | CloudflareDNS | 1 minute | 15 seconds |
-   | CloudflareAccessPolicy | 1 minute | 15 seconds |
-   | CloudflareAccessApplication | 1 minute | 15 seconds |
-
-### Resolution Options
-
-**Option 1: Explicitly orphan remote resources**
-
-This tells the controller to skip Cloudflare cleanup and remove the finalizer immediately:
+Set the namespace and resource name for the affected installation. The examples
+below use the [getting-started guide](getting-started.md):
 
 ```bash
-kubectl annotate cloudflaretunnel my-tunnel cfgate.io/deletion-policy=orphan
-kubectl annotate cloudflarednses my-dns -n cfgate-system \
-  cfgate.io/deletion-policy=orphan
-kubectl annotate cloudflareaccesspolicy my-policy cfgate.io/deletion-policy=orphan
-kubectl annotate cloudflareaccessapplication my-app cfgate.io/deletion-policy=orphan
+kubectl get cloudflaretunnel,cloudflaredns,cloudflareaccesspolicy,cloudflareaccessapplication -n cfgate-demo
+kubectl get gateway,httproute,service,endpointslice -n cfgate-demo
+kubectl get events -n cfgate-demo --sort-by=.metadata.creationTimestamp
+kubectl logs -n cfgate-system deployment/cfgate -c manager --since=10m
 ```
 
-The resource should terminate within seconds. The Cloudflare-side resource remains and must be cleaned up manually.
+For the source installation manifest, use `deployment/controller-manager` in log
+commands. Helm names can differ with release-name or fullname overrides. Check
+`kubectl get deployment -n cfgate-system` instead of assuming a name.
 
-**Option 2: Force-remove the finalizer**
+Read a resource's `status.conditions`, including `observedGeneration`, reason,
+and message. Old conditions may describe an earlier spec. Events help locate a
+failure, but repeated events are not evidence of completed remote cleanup.
 
-If the controller is not running or cannot process the annotation:
+## Manager fails to start with a port environment error
+
+Kubernetes Service links can set `CFGATE_METRICS_PORT` or `CFGATE_HEALTH_PORT` to
+`tcp://<address>:<port>`. Versions before alpha.6 could parse those as integers and
+exit. Current packages set `enableServiceLinks: false`; use the same setting in a
+custom manager Deployment. Cluster DNS service discovery remains available.
+
+Explicit bind flags take precedence over their corresponding environment values.
+Without flags, numeric environment values select ports; unset values use `:8080`
+for metrics and `:8081` for health. Recognized Service-link endpoint values use
+those defaults. Other malformed values fail configuration validation.
+
+An environment port of `0` means an ephemeral `:0` listener. The flag
+`--metrics-bind-address=0` instead disables metrics. Health and metrics listeners
+must not overlap; separate Service-facing ports do not resolve a process bind
+collision. Inspect the actual Pod arguments and environment before changing them.
+
+## HTTPRoute missing from tunnel configuration
+
+Inspect the route and its parent Gateway:
 
 ```bash
-kubectl patch cloudflaretunnel my-tunnel -n cfgate-system \
-  -p '{"metadata":{"finalizers":null}}' --type=merge
+kubectl get httproute echo -n cfgate-demo -o yaml
+kubectl get gateway demo -n cfgate-demo -o yaml
+kubectl get gatewayclass cfgate-quickstart -o yaml
 ```
 
-Replace `cloudflaretunnel` with `cloudflaredns`, `cloudflareaccesspolicy`, or `cloudflareaccessapplication` as needed.
+cfgate checks the current GatewayClass, listener, allowed route kinds/namespaces,
+hostname intersection, backend Service port, and required ReferenceGrants. It does
+not authorize forwarding from a cached `Accepted=True` condition alone.
 
-**Warning:** Both options leave orphaned resources in Cloudflare (tunnels, DNS records, Access policies, service tokens, Access applications, and Access application owner tags) that must be manually deleted in the Cloudflare dashboard.
+| Observation | Check |
+| --- | --- |
+| No cfgate parent status | `controllerName` must be `cfgate.io/cloudflare-tunnel-controller`; verify the parent exists |
+| Listener/class rejection | Listener protocol, section/port, hostname, and `allowedRoutes` |
+| `RefNotPermitted` | Named grant in the referenced resource's namespace |
+| `BackendNotFound` | Service name, namespace, and numeric port |
+| `UnsupportedProtocol` | Backend needs a TCP Service port, not only UDP/SCTP on the same number |
+| `UnsupportedValue` | Supported matches, filters, backend count, and origin annotations |
+| Matching HTTP 500 | Attached rule has an invalid or unavailable backend reference |
+| Matching HTTP 503 | Invalid effective origin transport or unavailable required Access protection |
 
----
+A denied attachment is excluded. Invalid attached backends retain matching error
+rules so traffic cannot fall through to a broader public route. Invalid inherited
+transport likewise keeps a scoped denial while valid siblings can publish.
+Transient Kubernetes or provider failures may retain the last remote configuration;
+check `ConfigurationSynced` and the remote tunnel configuration before assuming a
+withdrawal completed. See [supported routing](gateway-api-primer.md#supported-httproute-behavior).
 
-## Uninstalling cfgate / CRD Deletion
+## DNS records not syncing
 
-### Safe Removal Process
-
-1. **Delete custom resources first** (finalizers need the controller running with API access to clean up Cloudflare-side resources):
-   ```bash
-   kubectl delete cloudflareaccessapplications --all -A
-   kubectl delete cloudflareaccesspolicies --all -A
-   kubectl delete cloudflaredns --all -A
-   kubectl delete cloudflaretunnels --all -A
-   ```
-   Wait for all resources to terminate. Each deletion triggers finalizer cleanup that calls the Cloudflare API to remove tunnels, DNS records, Access policies, service tokens, Access applications, and Access application owner tags.
-
-2. **Uninstall cfgate:**
-   ```bash
-   # Helm
-   helm uninstall cfgate -n cfgate-system
-
-   # Kustomize
-   kubectl delete -f https://github.com/cfgate/cfgate/releases/latest/download/install.yaml
-   ```
-
-3. **Delete CRDs** (optional; only if you want full removal):
-   ```bash
-   kubectl delete crd cloudflaretunnels.cfgate.io cloudflaredns.cfgate.io cloudflareaccesspolicies.cfgate.io cloudflareaccessapplications.cfgate.io
-   ```
-
-### Why Helm Does Not Delete CRDs by Default
-
-CRD deletion in Kubernetes cascades: deleting the CRD deletes ALL custom resources of that type across all namespaces. For cfgate, this would simultaneously delete all tunnels, DNS records, Access policies, and Access applications. These resources have finalizers that need Cloudflare API access for cleanup. If CRDs are deleted before resources, finalizers cannot run, leaving orphaned Cloudflare resources with no automated cleanup path. This is a Helm-wide convention for safety.
-
-### Emergency: Stuck in Terminating
-
-If resources are stuck terminating (credentials gone, controller not running, cannot complete finalizer):
+Inspect the DNS resource's conditions, record inventory, and pending writes:
 
 ```bash
-# Option 1: Use deletion-policy annotation (requires controller running)
-kubectl annotate cloudflaretunnel my-tunnel cfgate.io/deletion-policy=orphan
-
-# Option 2: Force-remove finalizer (works even without controller)
-kubectl patch cloudflaretunnel my-tunnel -n cfgate-system \
-  -p '{"metadata":{"finalizers":null}}' --type=merge
+kubectl get cloudflaredns demo -n cfgate-demo -o yaml
+kubectl get cloudflaretunnel demo -n cfgate-demo -o yaml
 ```
 
-**Warning:** Both options leave orphaned resources in Cloudflare that must be manually deleted in the Cloudflare dashboard.
+| Condition or symptom | Check |
+| --- | --- |
+| `CredentialsValid=False` | Secret, selected data key, token permissions, and cross-namespace grants |
+| `ZonesResolved=False` | Token zone scope and configured zone name or ID |
+| No discovered hostnames | Tunnel reference, admitted routes, namespace selector, and annotation filter |
+| Ownership conflict | Exact data/TXT markers and recorded owner identity; do not delete a foreign claim to force adoption |
+| `RecordsSynced=False` | Failed records, policy-skipped changes, and retained cleanup obligations |
+| `OwnershipVerified=False` | Remote data and TXT state; a successful write is not enough |
+| Ready DNS but failed lookup | Public DNS propagation and the resolver used by the client |
 
----
+A tunnel-backed DNS resource needs a resolved tunnel domain. External-target DNS
+uses explicit hostnames; route discovery has no effect in that mode. Zone selection
+uses the most specific configured suffix. Namespace `matchLabels` requires label
+presence, even for an empty value; `matchNames` adds explicitly named namespaces.
 
-## Checking Controller Logs
+`annotationFilter` is a discovery filter, not a built-in enable annotation. For
+`platform.example.com/publish-dns=true`, the route must have that exact key/value.
+A key-only filter requires presence. These selectors do not grant permission to
+attach to a Gateway. See [DNS discovery and ownership](cloudflare-dns.md).
 
-### Log Commands
+## GatewayClass not accepted
+
+The class must select `cfgate.io/cloudflare-tunnel-controller`. A different
+controller name is intentionally ignored. Verify the manager is running and the
+Gateway API CRDs were installed before manager startup. Restart the manager after
+installing optional APIs; discovery is performed at startup.
+
+Kiali's class-recognition warning is separate from cfgate's conditions. See
+[service mesh integration](service-mesh.md#kiali) before treating that warning as a
+routing failure.
+
+## Access credentials or protection unavailable
+
+CloudflareAccessPolicy requires explicit `spec.cloudflareRef`. It does not inherit
+credentials from Gateway targets. CloudflareAccessApplication can use explicit
+credentials or resolve them through its target's tunnel. Each cross-namespace
+reference needs its own grant, including inherited credential access.
+
+Inspect the configured Secret's key names without decoding its contents:
 
 ```bash
-# All controller logs
-kubectl logs -n cfgate-system deploy/cfgate -c manager
-
-# Follow logs in real time
-kubectl logs -n cfgate-system deploy/cfgate -c manager -f
-
-# Filter by controller/reconciler
-kubectl logs -n cfgate-system deploy/cfgate -c manager | grep tunnel
-kubectl logs -n cfgate-system deploy/cfgate -c manager | grep dns
-kubectl logs -n cfgate-system deploy/cfgate -c manager | grep accesspolicy
-kubectl logs -n cfgate-system deploy/cfgate -c manager | grep gateway
-kubectl logs -n cfgate-system deploy/cfgate -c manager | grep gatewayclass
-kubectl logs -n cfgate-system deploy/cfgate -c manager | grep httproute
+kubectl get secret cloudflare-credentials -n cfgate-demo \
+  -o go-template='{{range $key, $value := .data}}{{$key}}{{"\n"}}{{end}}'
 ```
 
-### Common Log Patterns
+The default key is `CLOUDFLARE_API_TOKEN`; custom keys must match the CR's
+`secretKeys.apiToken`. Check account identity and Access permissions. Do not print
+credential values into logs or support reports.
 
-| Pattern | Meaning |
-|---|---|
-| `"starting reconciliation"` | Normal: controller processing a resource |
-| `"credentials validation failed"` | API token invalid or secret missing |
-| `"tunnel not found on Cloudflare, clearing tunnelID"` | Tunnel was deleted on CF side; controller will re-create |
-| `"cleanup warning threshold reached"` | Cleanup failed beyond the warning threshold (tunnel: 2min, DNS: 1min, Access: 1min). Events escalate from `CleanupFailed` to `CleanupBlocked`. Controller continues retrying indefinitely; set `cfgate.io/deletion-policy=orphan` to skip cleanup. |
-| `"orphaning tunnel due to deletion policy"` | `cfgate.io/deletion-policy: orphan` was set |
-| `"no hostnames discovered with gatewayRoutes enabled"` | DNS controller found no routes; will retry in 10s |
-| `"gatewayRoutes.enabled=true has no effect in externalTarget mode; route discovery requires tunnelRef"` | Route discovery was configured on an `externalTarget` DNS resource and will be ignored. |
-| `"failed to resolve credentials for deletion"` | Credentials unavailable during cleanup; controller blocks and requeues. Set `cfgate.io/deletion-policy=orphan` to proceed. |
+For `access-required` failures, check the application and every selected policy's
+current-generation readiness, ownership, target, and account. Overlapping or
+unsupported remote destinations can block publication. Allow/Everyone and bypass
+policies do not satisfy the supported protection check. A 503 can also be an
+intentional withdrawal before a policy edit or credential replacement. Healthy
+expiration-only token renewal has a separate continuity path. See
+[Access-required behavior](access-required.md) and [token lifecycle](cloudflare-access-policy.md#service-token-lifecycle).
 
-### Event Reasons
+## Gateway not programmed
 
-| Event Reason | Type | Meaning |
-|---|---|---|
-| `CleanupFailed` | Warning | Cloudflare cleanup failed before the deletion warning threshold. The controller will retry at the configured interval. |
-| `CleanupBlocked` | Warning | The deletion warning threshold has elapsed and Cloudflare cleanup is still failing. The controller continues retrying indefinitely. Set `cfgate.io/deletion-policy=orphan` on the resource to skip cleanup and release the finalizer. |
-
-### Common Deployment Names
-
-| Install Method | Deployment Name | Container Name |
-|---|---|---|
-| Helm (`helm install cfgate ...`) | `deploy/cfgate` | `manager` |
-| Kustomize | `deploy/controller-manager` | `manager` |
-
-Adjust the `deploy/cfgate` in log commands above if using kustomize:
+Verify its `cfgate.io/tunnel-ref`, any cross-namespace grant, and the selected
+Tunnel's conditions. `CredentialsValid`, `TunnelReady`, `CloudflaredDeployed`, and
+`ConfigurationSynced` identify different stages. Check the current connector
+Deployment and Pod events; old ready replicas do not prove the newest rollout is
+available.
 
 ```bash
-kubectl logs -n cfgate-system deploy/controller-manager -c manager
+kubectl get deployment,pod -n cfgate-demo -l app.kubernetes.io/managed-by=cfgate
 ```
 
----
+For Pod Security rejection, compare the generated workload to the
+[connector defaults](connector-hardening.md). For origin TLS failure, check the
+actual connector image, selected CA Secret key, certificate names, and effective
+route overrides. Never disable verification merely to hide an unexplained error.
 
-## RBAC Upgrade Notes
+## Stuck finalizers
 
-### Namespace Selector Permissions
+Finalizers retain cleanup obligations on custom resources. Deletion requires the
+controller, its permissions, usable credentials, and remote access. Keep those
+dependencies available while investigating:
 
-The CloudflareDNS `namespaceSelector` feature requires `get`, `list`, and `watch` permissions on `namespaces` in the controller's ClusterRole. Helm chart and kustomize installations include these permissions automatically. If you maintain your own ClusterRole (manual RBAC setup), add the following rule when upgrading to a version with namespace selector support:
-
-```yaml
-- apiGroups: [""]
-  resources: ["namespaces"]
-  verbs: ["get", "list", "watch"]
+```bash
+kubectl get cloudflaretunnel demo -n cfgate-demo -o yaml
+kubectl logs -n cfgate-system deployment/cfgate -c manager --since=10m
 ```
 
-Without this rule, the controller logs a permissions error when a CloudflareDNS resource specifies `spec.source.gatewayRoutes.namespaceSelector`.
+| Resource | Finalizer | Warning threshold | Retry interval |
+| --- | --- | --- | --- |
+| CloudflareTunnel | `cfgate.io/tunnel-cleanup` | 2 minutes | 10 seconds |
+| CloudflareDNS | `cfgate.io/dns-cleanup` | 1 minute | 15 seconds |
+| CloudflareAccessPolicy | `cfgate.io/access-policy-cleanup` | 1 minute | 15 seconds |
+| CloudflareAccessApplication | `cfgate.io/access-application-cleanup` | 1 minute | 15 seconds |
 
----
+The thresholds change `CleanupFailed` warnings to `CleanupBlocked`; they do not
+stop retries or discard the finalizer. Restore missing credentials/grants, resolve
+ownership conflicts, or withdraw dependent forwarding before retrying deletion.
+Pending DNS writes and Access dependency receipts must remain available for recovery.
 
-## See Also
+Deliberate orphaning is a separate administrator decision. Setting
+`cfgate.io/deletion-policy: orphan` asks the running controller to retain remote
+resources and finish local deletion according to that resource's lifecycle rules.
+Inventory remote IDs and retained claims before doing this. Orphaned resources
+need an explicit handoff or manual cleanup; recreating a Kubernetes name does not
+preserve its UID or authority.
 
-- [Service Mesh Integration](service-mesh.md): running cfgate alongside Istio, Envoy Gateway, or other Gateway API implementations; suppressing Kiali KIA1504 warnings
+Force-removing finalizers bypasses cleanup and can lose the only record of remote
+obligations. It is not a routine recovery procedure. If the original controller
+cannot be restored, complete an administrator-led remote inventory and cleanup
+before changing finalizers or deleting CRDs.
+
+## Uninstalling cfgate / CRD deletion
+
+For temporary controller removal, preserve resources, credentials, grants, and
+the installation namespace UID. Existing traffic can continue while updates and
+cleanup stop. For full removal, withdraw routes, finalize DNS and Access resources,
+then finalize tunnels before removing the controller. Use explicit resource names;
+do not delete all cfgate resources across a shared cluster.
+
+Follow [the decommissioning sequence](authorization-and-ownership.md#controller-removal-and-decommissioning).
+Deleting a CRD affects every object of that kind. Deleting the combined source
+`install.yaml` also removes CRDs and RBAC, so it is not a controller-only uninstall.
+
+## RBAC upgrade notes
+
+Custom RBAC must include namespace reads for namespace selectors and the namespaced
+ConfigMap claim Role/Binding in the actual installation namespace. Apply the
+updated ClusterRole as well as new namespaced grants; an added Role cannot revoke
+an old cluster-wide permission. See [claim permissions](authorization-and-ownership.md#claim-permissions-after-alpha6).
+
+## Support information
+
+Include the operator/chart versions, actual connector image, Kubernetes version,
+relevant manifests with Secret values removed, current conditions, and the failing
+request's status. Distinguish a saved configuration from an applied connector
+configuration. Keep timestamps and exact errors; do not replace them with a guessed
+network or controller diagnosis.

@@ -4,229 +4,81 @@
 
 [![Build Status](https://img.shields.io/github/actions/workflow/status/cfgate/cfgate/ci.yml?branch=main&style=flat)](https://github.com/cfgate/cfgate/actions/workflows/ci.yml) [![Coverage](https://codecov.io/gh/cfgate/cfgate/branch/main/graph/badge.svg)](https://codecov.io/gh/cfgate/cfgate) [![golangci-lint](https://img.shields.io/badge/lint-golangci--lint-blue)](https://golangci-lint.run/) [![Go Reference](https://pkg.go.dev/badge/github.com/cfgate/cfgate.svg)](https://pkg.go.dev/cfgate.io/cfgate/)
 
-cfgate is a Kubernetes operator that manages Cloudflare Tunnels, DNS records, reusable Access policies, and Access application bindings through custom resources. It uses [Gateway API](https://gateway-api.sigs.k8s.io/), the CNCF standard replacing Ingress, so routing configuration works the same as Envoy, Istio, or Cilium. Clusters running cfgate need no public IP, no ingress controller, and no load balancer. Traffic reaches services through Cloudflare Tunnels: outbound-only connections from the cluster to Cloudflare's edge.
+cfgate manages Cloudflare Tunnels, DNS records, and Access configuration from
+Kubernetes resources. It uses Gateway API HTTPRoutes to configure a separate
+cloudflared connector, which carries traffic from Cloudflare to your Services.
+The manager handles configuration; it is not an application proxy.
 
-Gateway API is the Kubernetes successor to Ingress. If you're coming from Ingress, see the [Gateway API Primer](docs/gateway-api-primer.md).
+## Getting started
 
-### Why cfgate?
+Follow the [getting-started guide](docs/getting-started.md) to install the
+controller, create credentials, deploy a sample service, publish a hostname, and
+verify a request. It includes optional Access protection and scoped cleanup.
 
-- **Composable CRDs for tunnels, DNS, and access.** CloudflareTunnel, CloudflareDNS, CloudflareAccessPolicy, and CloudflareAccessApplication each manage a distinct piece of Cloudflare infrastructure as Kubernetes resources. Tunnels, DNS records, reusable policies, and app bindings all live in version-controlled YAML instead of the Cloudflare dashboard.
-- **Outbound-only tunnel connections.** Cloudflare Tunnels establish outbound-only connections from the cluster to Cloudflare's edge. Services are never exposed via public IP or load balancer.
-- **Built on Gateway API.** Uses the [Gateway API](https://gateway-api.sigs.k8s.io/) standard, not a proprietary abstraction. Existing community operators use the deprecated Ingress API and lack Access policy management.
-- **Independent, composable resources.** Each CRD operates independently. Use the resources together or pick the ones you need: a tunnel without DNS sync, DNS without Access, Access policies without app bindings, or the full stack.
+For an existing installation, read [compatibility and upgrades](docs/compatibility.md)
+before changing the controller, chart, or CRDs. This documentation describes
+`v0.2.0-alpha.11`; Helm chart `1.10.0` installs that release. Use versioned release
+artifacts rather than assuming GitHub's `latest` endpoint selects an alpha.
 
-## How It Works
+## How it works
 
 ![How cfgate works](docs/images/how-it-works.svg)
 
-Define a CloudflareTunnel, point a Gateway at it, and attach HTTPRoutes to the Gateway. cfgate reconciles each resource against the Cloudflare API: it creates the tunnel, deploys cloudflared pods, syncs DNS records, syncs reusable Access policies, and binds Access Applications to route host/path targets. Traffic flows from Cloudflare's edge through the tunnel directly to in-cluster services. The cluster needs no public IP, no ingress controller, and no load balancer.
+A CloudflareTunnel manages a remote tunnel and its connector Deployment. A Gateway
+selects that tunnel, and HTTPRoutes attach supported hostname/path matches to
+Services. CloudflareDNS publishes hostnames separately. Access policies define
+who may connect; Access applications attach those policies to host/path targets.
+Creating a policy alone does not protect a route.
 
-## Getting Started
+The connector establishes outbound connections, so this path does not require a
+public cluster IP or an inbound LoadBalancer. Other cluster services can still
+have their own exposure. The Gateway API resource model is shared with other
+implementations; cfgate supports a [defined HTTPRoute subset](docs/gateway-api-primer.md#supported-httproute-behavior),
+not every feature implemented by other controllers.
 
-### Install
+## Resource reference
 
-**Kustomize**
-
-```bash
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.2/standard-install.yaml
-
-kubectl apply -f https://github.com/cfgate/cfgate/releases/latest/download/install.yaml
-```
-
-**Helm**
-
-```bash
-helm install cfgate oci://ghcr.io/cfgate/charts/cfgate \
-  --namespace cfgate-system --create-namespace
-```
-
-> Both methods create the `cfgate-system` namespace. CloudflareTunnel and CloudflareDNS resources typically live here. Routes and services can be in any namespace.
-
-### Quick Start
-
-#### 1. Create credentials
-
-```bash
-kubectl create secret generic cloudflare-credentials \
-  -n cfgate-system \
-  --from-literal=CLOUDFLARE_API_TOKEN=<your-token>
-```
-
-#### 2. Create a tunnel
-
-```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareTunnel
-metadata:
-  name: my-tunnel
-  namespace: cfgate-system
-spec:
-  tunnel:
-    name: my-tunnel
-  cloudflare:
-    accountId: "<account-id>"
-    secretRef:
-      name: cloudflare-credentials
-  cloudflared:
-    replicas: 2
-```
-
-#### 3. Create GatewayClass and Gateway
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: GatewayClass
-metadata:
-  name: cfgate
-spec:
-  controllerName: cfgate.io/cloudflare-tunnel-controller
----
-apiVersion: gateway.networking.k8s.io/v1
-kind: Gateway
-metadata:
-  name: cloudflare-tunnel
-  namespace: cfgate-system
-  annotations:
-    cfgate.io/tunnel-ref: cfgate-system/my-tunnel
-spec:
-  gatewayClassName: cfgate
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
-      allowedRoutes:
-        namespaces:
-          from: All
-```
-
-GatewayClass declares the controller (`cfgate.io/cloudflare-tunnel-controller`). Gateway is the runtime instance that binds to a specific CloudflareTunnel via the `cfgate.io/tunnel-ref` annotation. Both are required.
-
-#### 4. Set up DNS sync
-
-```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareDNS
-metadata:
-  name: my-dns
-  namespace: cfgate-system
-spec:
-  tunnelRef:
-    name: my-tunnel
-  zones:
-    - name: example.com
-  source:
-    gatewayRoutes:
-      enabled: true
-```
-
-The presence of `source.gatewayRoutes` enables route discovery. With `enabled: true` and no `annotationFilter`, cfgate syncs DNS records for all routes attached to the referenced tunnel's Gateways. Explicit-only CloudflareDNS resources do not watch routes. To sync specific routes only, use the `annotationFilter` field. See [CloudflareDNS reference](docs/cloudflare-dns.md#specsourcegatewayroutes).
-
-#### 5. Expose a service
-
-```yaml
-apiVersion: gateway.networking.k8s.io/v1
-kind: HTTPRoute
-metadata:
-  name: my-app
-  namespace: default
-spec:
-  parentRefs:
-    - name: cloudflare-tunnel
-      namespace: cfgate-system
-  hostnames:
-    - app.example.com
-  rules:
-    - backendRefs:
-        - name: my-service
-          port: 80
-```
-
-cfgate automatically:
-- Creates a CNAME record `app.example.com` → `{tunnelId}.cfargotunnel.com`
-- Adds a cloudflared ingress rule routing `app.example.com` → `http://my-service.default.svc:80`
-- Manages ownership TXT records for safe multi-cluster deployments
-
-## CRDs
-
-**CloudflareTunnel** manages tunnel lifecycle and cloudflared deployment. A single tunnel serves any number of domains across zones. → [Full reference](docs/cloudflare-tunnel.md)
-
-**CloudflareDNS** syncs DNS records independently from tunnel lifecycle, with multi-zone support and ownership tracking. → [Full reference](docs/cloudflare-dns.md)
-
-**CloudflareAccessPolicy** manages reusable account-level Cloudflare Access policies. → [Full reference](docs/cloudflare-access-policy.md)
-
-**CloudflareAccessApplication** binds reusable policies to `Gateway` and `HTTPRoute` host/path targets. → [Full reference](docs/cloudflare-access-application.md)
-
-Per-route configuration (origin protocol, TLS settings, timeouts, DNS TTL) is set via annotations on Gateway API HTTPRoute resources. → [Full reference](docs/annotations.md)
+| Resource | Responsibility |
+| --- | --- |
+| [CloudflareTunnel](docs/cloudflare-tunnel.md) | Remote tunnel, connector workload, and origin defaults |
+| [CloudflareDNS](docs/cloudflare-dns.md) | Route-derived or explicit DNS records and ownership tracking |
+| [CloudflareAccessPolicy](docs/cloudflare-access-policy.md) | Reusable Access policy and managed service tokens |
+| [CloudflareAccessApplication](docs/cloudflare-access-application.md) | Policy attachment to Gateway or HTTPRoute targets |
+| [Annotations](docs/annotations.md) | Route transport, discovery, lifecycle, and adoption settings |
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [Authorization and ownership](docs/authorization-and-ownership.md) | Administrator/tenant boundaries, grants, and alpha.5 → alpha.6 migration |
-| [Gateway API Primer](docs/gateway-api-primer.md) | Gateway API concepts for Ingress users |
-| [CloudflareTunnel](docs/cloudflare-tunnel.md) | Full CRD reference |
-| [CloudflareDNS](docs/cloudflare-dns.md) | Full CRD reference, annotationFilter, ownership |
-| [CloudflareAccessPolicy](docs/cloudflare-access-policy.md) | Reusable Access policy reference, rule types, service tokens |
-| [CloudflareAccessApplication](docs/cloudflare-access-application.md) | Gateway API target binding, path rules, policyRefs |
-| [Annotations](docs/annotations.md) | Complete annotation reference |
-| [Service Mesh](docs/service-mesh.md) | Istio, Envoy Gateway, and Kiali integration |
-| [Troubleshooting](docs/troubleshooting.md) | Diagnostic steps and solutions |
-| [Testing](docs/TESTING.md) | Unit and E2E test strategy |
-| [Contributing](CONTRIBUTING.md) | Development setup and workflow |
-| [Changelog](CHANGELOG.md) | Release history |
+The [documentation index](docs/README.md) groups installation, configuration,
+operations, and contributor guides. Start with:
+
+- [Gateway API concepts](docs/gateway-api-primer.md) for attachment and supported routing
+- [Authorization and ownership](docs/authorization-and-ownership.md) for administrator boundaries, grants, and adoption
+- [Access-required routing](docs/access-required.md) for explicit protection dependencies and their limits
+- [Troubleshooting](docs/troubleshooting.md) for status, startup, DNS, and cleanup failures
+- [Compatibility](docs/compatibility.md) for version pins and migrations
 
 ## Examples
 
-| Example | Description |
-|---------|-------------|
-| [basic](examples/basic) | Single tunnel + gateway + DNS sync |
-| [multi-service](examples/multi-service) | Multiple services, one tunnel, reusable Access policies and app bindings |
-| [with-rancher](examples/with-rancher) | Rancher 2.14+ integration |
-| [external-target](examples/external-target) | A/AAAA records via ExternalTarget (no tunnel) |
+Examples require a running controller and edited credentials, account IDs, and
+hostnames. Their READMEs describe the required permissions and cleanup order.
 
-## Requirements
-
-### Cloudflare API Token
-
-Create a token at [Cloudflare Dashboard → API Tokens](https://dash.cloudflare.com/profile/api-tokens) with:
-
-| Scope | Permission | Used By |
-|-------|------------|---------|
-| Account | Cloudflare Tunnel: Edit | CloudflareTunnel |
-| Account | Access: Apps and Policies: Edit | CloudflareAccessPolicy, CloudflareAccessApplication |
-| Account | Access: Service Tokens: Edit | CloudflareAccessPolicy |
-| Account | Account Settings: Read | CloudflareTunnel (accountName only)* |
-| Zone | DNS: Edit | CloudflareDNS |
-
-*Only required when using `spec.cloudflare.accountName` instead of `accountId`.
-
-### Kubernetes
-
-- Kubernetes compatible with the installed Gateway API bundle; the standard bundle below requires Kubernetes 1.30 or later
-- Gateway API CRDs installed; this release pins validation to v1.6.2
-- cluster-admin access for CRD installation
-
-The bundle's API minimum is not a cfgate-tested version range. See the [compatibility and release validation policy](docs/compatibility.md) for component pins, tested combinations and upgrade requirements.
-
-## Related Repositories
-
-| Repository | Description |
-|------------|-------------|
-| [cfgate/helm-chart](https://github.com/cfgate/helm-chart) | Helm chart for cfgate |
-| [cfgate/cfgate.io](https://github.com/cfgate/cfgate.io) | Project website |
+| Example | Purpose |
+| --- | --- |
+| [Basic](examples/basic/README.md) | One public service through a tunnel |
+| [Multiple services](examples/multi-service/README.md) | Shared tunnel with public and path-protected routes |
+| [External target](examples/external-target/README.md) | DNS records without a tunnel |
+| [Rancher](examples/with-rancher/README.md) | Integration considerations for a separate Gateway API application |
 
 ## Development
 
-```bash
-brew install mise
-mise install
-mise tasks
-```
+[CONTRIBUTING.md](CONTRIBUTING.md) covers setup and repository conventions.
+[Testing](docs/TESTING.md) separates unit, schema, live API, and packaged-deployment
+checks. Release notes are generated from Git history; see [CHANGELOG.md](CHANGELOG.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for full development setup, secrets configuration, and contribution guidelines.
-
-See [docs/TESTING.md](docs/TESTING.md) for the unit-only CI coverage model, local-only E2E bootstrap paths, environment variables, and test execution.
+Related repositories: [Helm chart](https://github.com/cfgate/helm-chart),
+[website](https://github.com/cfgate/cfgate.io), and
+[cloudflared h2c fork](https://github.com/inherent-design/cloudflared).
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Apache-2.0](LICENSE).

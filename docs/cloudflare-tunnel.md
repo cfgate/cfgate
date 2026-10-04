@@ -1,31 +1,20 @@
 # CloudflareTunnel
 
-Manages the lifecycle of a Cloudflare Tunnel and its cloudflared daemon deployment.
+`CloudflareTunnel` manages a Cloudflare Tunnel, its connector credentials, and the cloudflared Deployment that connects the cluster to Cloudflare.
 
-**API Version:** `cfgate.io/v1alpha1`
-**Kind:** `CloudflareTunnel`
-**Short Names:** `cft`, `cftunnel`
-**Scope:** Namespaced
-
-## Overview
-
-CloudflareTunnel handles tunnel creation or adoption, credential management, and deploys cloudflared pods that establish secure connections to Cloudflare's edge network. It follows a composable architecture where tunnel lifecycle is separate from DNS management. Use CloudflareDNS with a `tunnelRef` to create DNS records pointing to this tunnel's domain.
-
-A tunnel is zone-agnostic: one tunnel can serve any number of domains across different zones. The tunnel itself does not bind to any particular domain; DNS records are created separately via [CloudflareDNS](cloudflare-dns.md) resources.
-
-Tunnel name resolution is idempotent. The controller resolves the tunnel by name and creates it if it does not exist. Multiple CloudflareTunnel resources with the same tunnel name will adopt the same Cloudflare tunnel rather than creating duplicates. The resolved tunnel ID is stored in `.status.tunnelId`.
+The namespaced resource uses `cfgate.io/v1alpha1` and the short names `cft` and `cftunnel`. A tunnel can serve hostnames in multiple zones. [CloudflareDNS](cloudflare-dns.md) manages their DNS records separately; [Getting started](getting-started.md) covers installation and a complete route.
 
 ## Spec Reference
 
 | Field | Type | Default | Required | Description |
 |-------|------|---------|----------|-------------|
-| `spec.tunnel.name` | `string` | *none* | Yes | Tunnel name in Cloudflare. Idempotent: creates if absent, adopts if existing. Must be 1-63 chars, lowercase alphanumeric with hyphens, matching `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`. |
+| `spec.tunnel.name` | `string` | *none* | Yes | Tunnel name in Cloudflare. Creates if absent; existing tunnels require an ownership claim or explicit adoption. Must be 1-63 chars, lowercase alphanumeric with hyphens, matching `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`. |
 | `spec.cloudflare.accountId` | `string` | *none* | No | Cloudflare Account ID. Max 32 chars. Either `accountId` or `accountName` must be specified. |
 | `spec.cloudflare.accountName` | `string` | *none* | No | Cloudflare Account name. Resolved via API lookup (requires Account Settings Read permission). Max 255 chars. Either `accountId` or `accountName` must be specified. |
 | `spec.cloudflare.secretRef.name` | `string` | *none* | Yes | Name of the Secret containing the Cloudflare API token. 1-253 chars. |
 | `spec.cloudflare.secretRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the credentials Secret. Defaults to the tunnel's namespace. Max 63 chars. |
 | `spec.cloudflare.secretKeys.apiToken` | `string` | `CLOUDFLARE_API_TOKEN` | No | Key name within the Secret for the Cloudflare API token. Max 253 chars. |
-| `spec.cloudflared.replicas` | `int32` | `2` | No | Number of cloudflared replicas. Min 1, max 10. Each replica establishes an independent connection for high availability. |
+| `spec.cloudflared.replicas` | `int32` | `2` | No | Number of cloudflared replicas. Min 1, max 10. Each replica connects independently. |
 | `spec.cloudflared.image` | `string` | `ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1@sha256:6c46ca006f9d6af5e973e59f2d71f5d6d3dc138c8a5484380d5797092171e3ad` | No | Container image for the cloudflared daemon. See [Image](#image) below. Max 255 chars. |
 | `spec.cloudflared.imagePullPolicy` | `string` | `IfNotPresent` | No | Image pull policy. One of: `Always`, `Never`, `IfNotPresent`. |
 | `spec.cloudflared.protocol` | `string` | `auto` | No | Tunnel transport protocol. One of: `auto`, `quic`, `http2`. |
@@ -37,7 +26,7 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.cloudflared.metrics.enabled` | `bool` | `true` | No | Declares the metrics container port for scraping; the shared health listener remains enabled. |
 | `spec.cloudflared.metrics.port` | `int32` | `44483` | No | Port for the metrics endpoint. Min 1, max 65535. The pod listener serves both `/metrics` and health probes. |
 | `spec.originDefaults.connectTimeout` | `string` | `30s` | No | Timeout for connecting to origin/backend services. Format: `^[0-9]+(s|m|h)$`. |
-| `spec.originDefaults.noTLSVerify` | `bool` | `false` | No | Disables TLS certificate verification for origin connections. Use with caution in production. |
+| `spec.originDefaults.noTLSVerify` | `bool` | `false` | No | Disables TLS certificate verification for origin connections. Prefer a trusted CA bundle. |
 | `spec.originDefaults.http2Origin` | `bool` | `false` | No | Enables HTTP/2 for connections to origin services. |
 | `spec.originDefaults.h2cOrigin` | `bool` | `false` | No | Enables HTTP/2 cleartext (h2c) for origin connections. Use for origins that speak HTTP/2 without TLS. Mutually exclusive with `http2Origin`. |
 | `spec.originDefaults.caPoolSecretRef.name` | `string` | *none* | Yes (if caPoolSecretRef set) | Name of the Secret containing CA certificates for origin TLS verification. 1-253 chars. |
@@ -46,63 +35,30 @@ Tunnel name resolution is idempotent. The controller resolves the tunnel by name
 | `spec.fallbackCredentialsRef.name` | `string` | *none* | Yes (if fallbackCredentialsRef set) | Name of the Secret containing fallback Cloudflare API credentials. 1-253 chars. |
 | `spec.fallbackCredentialsRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the fallback credentials Secret. Max 63 chars. |
 
-## Detailed Field Documentation
+## Usage Examples
 
-### `spec.tunnel`
+### Minimal tunnel with account ID
 
-Defines the tunnel identity. The controller creates a tunnel when its name does not exist in the account. An existing unclaimed tunnel requires explicit `cfgate.io/adopt-existing: "true"` migration opt-in; a conflicting ownership claim is rejected. The resolved tunnel ID is stored in `.status.tunnelId`. See [authorization and ownership](authorization-and-ownership.md) for the installation-scoped claim and migration requirements.
-
-**Constraints:**
-- Name must be lowercase alphanumeric with hyphens (DNS subdomain-like pattern).
-- Max 63 characters.
-- A tunnel ownership claim admits one resource within the installation namespace; it is not a cross-cluster lock.
+Use an existing API-token Secret in the tunnel's namespace:
 
 ```yaml
+apiVersion: cfgate.io/v1alpha1
+kind: CloudflareTunnel
+metadata:
+  name: prod-tunnel
+  namespace: cfgate-system
 spec:
   tunnel:
-    name: my-cluster-tunnel
-```
-
-### `spec.cloudflare`
-
-Configures Cloudflare API credentials. The controller needs either `accountId` (preferred, no extra API call) or `accountName` (resolved via API lookup, requires Account Settings Read permission on the token). The resolved account ID is cached in `.status.accountId`.
-
-The `secretRef` must point to a Kubernetes Secret containing a Cloudflare API token (not a tunnel token). By default, the token is read from the key `CLOUDFLARE_API_TOKEN`. Override this with `secretKeys.apiToken`.
-
-**Required API token permissions:**
-- Account > Cloudflare Tunnel > Edit (always required)
-- Account > Account Settings > Read (required only when using `accountName`)
-
-```yaml
-spec:
+    name: prod-cluster
   cloudflare:
-    accountId: "abc123def456"
+    accountId: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
     secretRef:
-      name: cloudflare-credentials
-    secretKeys:
-      apiToken: MY_CUSTOM_TOKEN_KEY
+      name: cloudflare-api-token
 ```
 
-Or using account name resolution:
+### Connector scheduling and monitoring
 
-```yaml
-spec:
-  cloudflare:
-    accountName: "My Company"
-    secretRef:
-      name: cloudflare-credentials
-      namespace: shared-secrets
-```
-
-### `spec.cloudflared`
-
-Controls the cloudflared daemon Deployment. The controller creates a Deployment with the specified number of replicas. Each replica establishes an independent connection to Cloudflare's edge network, providing high availability.
-
-**Protocol selection:** The `auto` default lets cloudflared negotiate the best protocol. Use `quic` for UDP-based transport (lower latency, better for unstable connections) or `http2` for environments where UDP is blocked.
-
-**Metrics:** Enabled by default on port 44483. The endpoint serves Prometheus-compatible metrics at `/metrics` on each cloudflared pod. When `metrics.enabled: false`, cfgate omits the declared metrics container port but retains the shared listener and HTTP probes. The listener binds to pod interfaces so kubelet probes remain reachable; disabling scraping does not firewall metrics or diagnostic endpoints. Use `podAnnotations` to configure Prometheus scraping and administrator-managed NetworkPolicies to restrict network access. Generated connector Pods disable service-account-token mounting because they do not use the Kubernetes API.
-
-Generated cloudflared pods are compatible with Kubernetes `restricted` Pod Security by default. cfgate runs them as non-root, uses the runtime-default seccomp profile, disables privilege escalation, and drops all Linux capabilities.
+This fragment configures three connectors and exposes their metrics for scraping:
 
 ```yaml
 spec:
@@ -133,11 +89,31 @@ spec:
       port: 44483
 ```
 
+## Detailed Field Documentation
+
+### `spec.tunnel`
+
+The controller creates a missing tunnel and records its ID in `status.tunnelId`. Existing tunnels require a matching ownership claim. For an inspected, unclaimed legacy tunnel, `cfgate.io/adopt-existing: "true"` permits adoption; a foreign claim always blocks it. Multiple resources cannot share a claimed tunnel identity within one installation.
+
+### `spec.cloudflare`
+
+Provide an API-token Secret and either `accountId` or `accountName`. An ID avoids account lookup; a name requires Account Settings Read permission. Tunnel operations require Cloudflare Tunnel Edit permission. The selected Secret data key defaults to `CLOUDFLARE_API_TOKEN`; a missing or empty selected key is an error.
+
+Cross-namespace Secret references and Gateway-to-Tunnel references require ReferenceGrants. See [authorization and ownership](authorization-and-ownership.md) for grants, installation identity, and migration procedures.
+
+### `spec.cloudflared`
+
+`protocol` selects connector-to-edge transport: `auto` lets cloudflared select it, `quic` uses UDP, and `http2` provides an option where UDP is blocked. This setting is separate from origin transport.
+
+The generated Pods run as non-root with runtime-default seccomp, no privilege escalation, all Linux capabilities dropped, and service-account-token mounting disabled. See [connector hardening](connector-hardening.md) for network isolation.
+
+The metrics and health listener uses port `44483` by default and binds to Pod interfaces for kubelet probes. `metrics.enabled: false` removes the declared metrics container port; it does not disable the listener or restrict access to its endpoints. Configure scraping through `podAnnotations` and restrict network access with administrator-managed NetworkPolicies.
+
 #### Image
 
 The default image is `ghcr.io/inherent-design/cloudflared:2026.9.3-h2c.1@sha256:6c46ca006f9d6af5e973e59f2d71f5d6d3dc138c8a5484380d5797092171e3ad`, a fork of [cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) maintained at [inherent-design/cloudflared](https://github.com/inherent-design/cloudflared). The fork adds `h2cOrigin` support for HTTP/2 cleartext origin connections; upstream cloudflared does not support this feature ([cloudflare/cloudflared#1304](https://github.com/cloudflare/cloudflared/issues/1304)).
 
-Users who do not need h2c can override the image to upstream:
+For an upstream connector without h2c support, override the image:
 
 ```yaml
 spec:
@@ -149,13 +125,13 @@ The upstream image is a no-h2c mode override only. Selecting the known `cloudfla
 
 ### `spec.originDefaults`
 
-Default settings for how cloudflared connects to backend services in the cluster. These apply to all ingress rules unless overridden by route-specific [annotations](annotations.md).
+Origin defaults apply to ingress rules unless [route annotations](annotations.md) override them. `http2Origin` and `h2cOrigin` cannot both be enabled; h2c also requires cleartext HTTP.
 
-**`caPoolSecretRef`:** Use this when your backend services present TLS certificates signed by a private CA. The Secret must contain the CA certificate chain in PEM format. cfgate mounts the selected Secret key into cloudflared at `/etc/cfgate/origin-ca-pool/ca.pem` and sends `originRequest.caPool` with that path in the remote tunnel configuration. If `key` is omitted or empty, cfgate reads `ca.crt`. Without this, connections to services using private CA certificates will fail TLS verification (unless `noTLSVerify` is set, which is not recommended for production).
+For private origin certificates, `caPoolSecretRef` selects a Secret in the tunnel namespace. Its selected key must contain PEM certificates; omitted or empty `key` selects `ca.crt`. cfgate mounts the bundle at `/etc/cfgate/origin-ca-pool/ca.pem` and publishes that path as `originRequest.caPool`. Missing Secrets or keys prevent connector deployment and set `CloudflaredDeployed=False` and `Ready=False`.
 
-The route annotation `cfgate.io/origin-ca-pool` can select that same managed path for a specific ingress rule. Alpha.5 rejects arbitrary annotation paths and rejects the annotation when this Secret ref is not configured, because cfgate cannot guarantee any other file exists inside cloudflared.
+Changes to the selected certificate data roll the connector Pods so transports reload trust. Changes to unrelated Secret keys do not trigger that rollout. The `cfgate.io/origin-ca-pool` annotation accepts only this managed path and requires the Secret reference.
 
-If the referenced Secret or key is missing, cfgate does not deploy cloudflared and marks `CloudflaredDeployed=False` and `Ready=False`.
+This fragment enables TLS HTTP/2 with a private CA:
 
 ```yaml
 spec:
@@ -169,25 +145,11 @@ spec:
 
 ### `spec.fallbackTarget`
 
-The catch-all service for requests that do not match any ingress rule. Defaults to returning HTTP 404. Can be set to any cloudflared-supported origin format (e.g., `http://fallback-svc.default.svc.cluster.local:8080`).
-
-```yaml
-spec:
-  fallbackTarget: "http_status:404"
-```
+Unmatched requests receive `http_status:404` by default. A cloudflared origin URL can forward unmatched requests instead. Effective origin-transport validation and configuration limits also apply to forwarding fallbacks.
 
 ### `spec.fallbackCredentialsRef`
 
-References a Secret containing fallback Cloudflare API credentials. Used during resource deletion when the primary credentials Secret (referenced by `spec.cloudflare.secretRef`) has already been deleted. This enables cleanup of Cloudflare-side resources (tunnel deletion, config removal) even if the per-tunnel credentials Secret is removed first.
-
-The fallback Secret must contain the same key structure as the primary credentials Secret.
-
-```yaml
-spec:
-  fallbackCredentialsRef:
-    name: cloudflare-admin-credentials
-    namespace: cfgate-system
-```
+Deletion can use this Secret when primary credentials are unavailable. It must provide the same selected token key as the primary Secret, with the required permissions. Cross-namespace references still require authorization.
 
 ## Status
 
@@ -212,7 +174,7 @@ The controller checks the full tunnel lifecycle at least every 30 minutes when r
 
 | Condition | Description |
 |-----------|-------------|
-| `Ready` | Tunnel is fully operational: credentials valid, tunnel exists, config synced, pods running. |
+| `Ready` | Credentials, tunnel configuration, and desired connector rollout are ready; origin reachability is not tested. |
 | `CredentialsValid` | API credentials in the referenced Secret have been validated against the Cloudflare API. |
 | `TunnelReady` | Tunnel exists in Cloudflare (either created or adopted). |
 | `ConfigurationSynced` | Ingress configuration has been successfully synced to Cloudflare. |
@@ -227,124 +189,30 @@ The controller checks the full tunnel lifecycle at least every 30 minutes when r
 | Replicas | `.status.readyReplicas` | Number of ready cloudflared replicas. |
 | Age | `.metadata.creationTimestamp` | Age of the resource. |
 
-## Usage Examples
-
-### Minimal tunnel with account ID
-
-```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareTunnel
-metadata:
-  name: prod-tunnel
-  namespace: cfgate-system
-spec:
-  tunnel:
-    name: prod-cluster
-  cloudflare:
-    accountId: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
-    secretRef:
-      name: cloudflare-api-token
-```
-
-### Full-featured tunnel with HA and monitoring
-
-```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareTunnel
-metadata:
-  name: prod-tunnel
-  namespace: cfgate-system
-spec:
-  tunnel:
-    name: prod-cluster
-  cloudflare:
-    accountName: "Acme Corp"
-    secretRef:
-      name: cloudflare-api-token
-    secretKeys:
-      apiToken: CF_TOKEN
-  cloudflared:
-    replicas: 3
-    protocol: quic
-    resources:
-      requests:
-        cpu: 100m
-        memory: 128Mi
-      limits:
-        cpu: 500m
-        memory: 256Mi
-    nodeSelector:
-      topology.kubernetes.io/zone: us-west-2a
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "44483"
-    metrics:
-      enabled: true
-      port: 44483
-  originDefaults:
-    connectTimeout: "10s"
-    http2Origin: true
-    caPoolSecretRef:
-      name: internal-ca
-      key: ca.crt
-  fallbackTarget: "http_status:404"
-  fallbackCredentialsRef:
-    name: cloudflare-admin-credentials
-    namespace: cfgate-system
-```
-
-### Tunnel with custom secret key and namespace isolation
-
-```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareTunnel
-metadata:
-  name: staging-tunnel
-  namespace: staging
-spec:
-  tunnel:
-    name: staging-cluster
-  cloudflare:
-    accountId: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
-    secretRef:
-      name: cf-credentials
-      namespace: shared-secrets
-    secretKeys:
-      apiToken: STAGING_CF_TOKEN
-  cloudflared:
-    replicas: 1
-    protocol: auto
-    tolerations:
-      - key: workload-type
-        value: tunnel
-        effect: NoSchedule
-  originDefaults:
-    noTLSVerify: false
-    connectTimeout: "30s"
-```
-
 ## Deletion Behavior
 
-The controller adds the finalizer `cfgate.io/tunnel-cleanup` to every CloudflareTunnel resource. When the resource is deleted, the controller attempts to delete the Cloudflare tunnel and its credentials Secret before removing the finalizer.
+The `cfgate.io/tunnel-cleanup` finalizer retains the resource until owned connector Pods have stopped and Cloudflare cleanup succeeds. cfgate scales the owned Deployment to zero before deleting remote connections and the tunnel. Matching orphan or foreign Pods block cleanup. The cleanup removes generated connector credentials, not the user-provided API-token Secret.
 
-If cleanup fails, the controller blocks indefinitely and requeues every 10 seconds. It never removes the finalizer automatically. Before deletion has been pending for 2 minutes, the controller emits Warning events with reason `CleanupFailed`. After that warning threshold, failed attempts emit `CleanupBlocked`. This threshold does not bound API calls or stop retries. Cleanup can finish on a later retry or after credentials, permissions, or connectivity are repaired.
+Failed cleanup retries every 10 seconds. Warning events use `CleanupFailed` during the first two minutes of deletion and `CleanupBlocked` afterward; this threshold does not stop retries or remove the finalizer. Restore credentials, permissions, or connectivity to let cleanup finish.
 
-To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate.io/deletion-policy=orphan` annotation on the CloudflareTunnel resource. The controller will leave tunnel resources in Cloudflare and remove the finalizer without attempting cleanup.
+To retain remote resources and skip cleanup, annotate the tunnel before or during deletion:
 
 ```bash
 kubectl annotate cloudflaretunnel my-tunnel -n cfgate-system \
   cfgate.io/deletion-policy=orphan
 ```
 
+Orphan deletion retains the tunnel ownership claim and allows Kubernetes garbage collection of owned objects. Recreating a resource with the same name does not transfer ownership.
+
 ## Runtime checks and cleanup
 
-The manager's `/healthz` checks process responsiveness. Its `/readyz` additionally waits for the controller cache to synchronize; neither endpoint tests Cloudflare or origin reachability. Connector `/healthcheck` and `/ready` distinguish process health from edge connectivity. Tunnel `Ready` additionally requires the current Deployment generation, exactly the desired total and updated replicas, and all desired replicas to be ready and available. Old healthy replicas or extra surge replicas do not establish completion of the current template rollout. A partial token rollout remains unready until these conditions hold.
+Manager `/healthz` checks process responsiveness; `/readyz` also waits for cache synchronization. Connector `/healthcheck` and `/ready` distinguish process health from edge connectivity. None establishes origin reachability.
 
-Connector token changes update the managed Secret before changing a controlled Pod-template revision annotation. The annotation contains only the Secret UID and resource version. An unchanged token does not restart Pods; a failed Secret write does not start a rollout.
+Tunnel readiness requires the current Deployment generation, exactly the desired total and updated replicas, and all desired replicas ready and available. Old healthy replicas, surge replicas, or a partial token rollout do not complete the current rollout.
 
-Normal tunnel deletion first scales the owned connector Deployment to zero and waits for matching Pods to terminate before deleting Cloudflare connections and the tunnel. Matching orphan or foreign Pods block cleanup rather than being deleted. Cleanup remains retryable and failures retain the finalizer. The explicit `cfgate.io/deletion-policy: orphan` escape skips remote cleanup and permits Kubernetes garbage collection of owned resources.
+Connector-token changes update the managed Secret before updating the Pod-template revision annotation. That annotation contains only the Secret UID and resource version. Unchanged tokens do not restart Pods, and failed Secret writes do not trigger rollouts.
 
-ReferenceGrant discovery distinguishes a missing optional API from authorization or connectivity failures. Transient failures receive bounded retries with a five-second request timeout; exhausted failures and missing required Gateway API resources fail startup clearly. Restart the manager after installing or removing Gateway API CRDs.
+ReferenceGrant discovery distinguishes an absent optional API from authorization and connectivity failures. Transient discovery failures receive bounded retries with a five-second request timeout. Missing required Gateway API resources or exhausted discovery failures prevent startup. Restart the manager after installing or removing Gateway API CRDs.
 
 ## Operator settings
 
@@ -362,30 +230,16 @@ See [Connector hardening](connector-hardening.md) for network isolation guidance
 
 ## Ownership and upgrade migration
 
-Existing local connector Secrets and Deployments must carry the expected controller owner UID. cfgate does not overwrite foreign or unowned objects merely because their names match. Existing remote tunnels require an immutable claim ConfigMap in the installation namespace, keyed by account and tunnel ID; conflicting claims or another CloudflareTunnel referencing that identity are rejected. New tunnels acquire claims automatically. A remote lookup failure never permits adoption or deletion.
+Local connector Secrets and Deployments must carry the expected controller owner UID. Remote tunnel claims are immutable ConfigMaps in the installation namespace, keyed by account and tunnel ID. A failed remote lookup never authorizes adoption or deletion. Claims coordinate writers within that installation namespace; they are not cross-cluster locks.
 
-For inspected legacy tunnels, `cfgate.io/adopt-existing: "true"` permits acquiring an absent claim. It cannot replace a foreign claim. Claims serialize ownership only within the same installation namespace; they are not a Cloudflare-wide lock. Normal deletion verifies the claim, drains connectors, confirms remote absence, then deletes the claim with UID/resourceVersion preconditions. Orphan deletion retains the claim for explicit recovery.
+Normal deletion verifies the claim, drains connectors, confirms remote absence, then deletes the claim with UID and resource-version preconditions. Follow [authorization and ownership](authorization-and-ownership.md) before adopting legacy resources or transferring them between installations.
 
-Cross-namespace Gateway-to-Tunnel and credential references require explicit ReferenceGrants. See [authorization and ownership](authorization-and-ownership.md) for administrator RBAC, migration steps, and coordination limits.
+Generated names and labels use a bounded hash suffix when the tunnel metadata name exceeds 63 characters. Existing valid generated names and selectors remain unchanged; owner UIDs determine ownership.
 
 ## Required protection dependency
 
-HTTPRoutes can opt into an explicit `cfgate.io/access-required: namespace/name` dependency. See [Access-required routing](access-required.md) for the supported subset, grants, remote checks, deletion ordering and asynchronous limitations. Existing routes remain public unless explicitly opted in.
+Set `cfgate.io/access-required: namespace/name` on an HTTPRoute to require a named Access application before forwarding. Routes without this annotation have no explicit protection dependency. [Access-required routing](access-required.md) describes grants, supported targets, remote verification, and asynchronous withdrawal limits.
 
 ### Configuration overload
 
-If ingress or Access dependency limits are exceeded, cfgate replaces the tunnel's
-configuration with a single HTTP 503 response. This stops the entire tunnel from
-forwarding until the configuration fits, including any custom fallback target.
-It prevents an oversized update from preserving previously granted access.
-Cleanup receipts are cleared only after Cloudflare confirms withdrawal; an API
-failure can delay withdrawal. Reduce the configuration or raise the appropriate
-limit to restore forwarding.
-
-The selected origin CA Secret key must contain PEM certificates. Changing its
-certificate data rolls the connector Pods so new transports load the updated
-trust pool; changes to other Secret keys do not trigger a rollout.
-
-Tunnel metadata names longer than 63 characters use bounded generated labels and
-resource names with a hash suffix. Existing valid generated names and selectors
-remain unchanged. Kubernetes owner UIDs continue to determine ownership.
+If ingress or Access dependency limits are exceeded, cfgate replaces the entire tunnel configuration, including a custom fallback, with one HTTP 503 response. Forwarding resumes when the configuration fits. Cleanup receipts are cleared only after Cloudflare confirms withdrawal, so an API failure can delay withdrawal. Reduce the configuration or adjust the relevant limit after reviewing its operational cost.

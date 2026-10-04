@@ -1,19 +1,8 @@
 # CloudflareDNS
 
-Manages DNS record synchronization independently from CloudflareTunnel resources.
+`CloudflareDNS` publishes DNS records from explicit hostnames or admitted HTTPRoutes and tracks the records it owns for updates and cleanup.
 
-**API Version:** `cfgate.io/v1alpha1`
-**Kind:** `CloudflareDNS`
-**Short Names:** `cfdns`, `dns`
-**Scope:** Namespaced
-
-## Overview
-
-CloudflareDNS manages DNS record synchronization for Cloudflare zones. It supports two target modes: tunnel references (for tunnel-based CNAME records) and external targets (for non-tunnel DNS records such as A, AAAA, or external CNAMEs). DNS records can be sourced automatically from Gateway API HTTPRoute resources or explicitly defined in the spec.
-
-CloudflareDNS verifies resource-specific ownership markers on data and TXT records before mutation. Cloudflare DNS writes do not support compare-and-swap, so competing installations still require external coordination. Lifecycle behavior is controlled via `spec.policy` (sync, upsert-only, create-only) and `spec.cleanupPolicy`.
-
-When using `tunnelRef`, credentials are inherited from the referenced [CloudflareTunnel](cloudflare-tunnel.md). When using `externalTarget`, the `cloudflare` field must be provided explicitly.
+This namespaced `cfgate.io/v1alpha1` resource has the short names `cfdns` and `dns`. Choose exactly one target: `tunnelRef` for tunnel CNAMEs or `externalTarget` for A, AAAA, or external CNAME records. [Getting started](getting-started.md) covers installation and tunnel-backed routing.
 
 ## Spec Reference
 
@@ -30,7 +19,7 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.policy` | `DNSPolicy` | `sync` | No | DNS record lifecycle policy. One of: `sync`, `upsert-only`, `create-only`. |
 | `spec.source.gatewayRoutes` | `DNSGatewayRoutesSource` | *none* | No | Enables route discovery when the block is present. Explicit-only resources omit this block and do not watch routes. |
 | `spec.source.gatewayRoutes.enabled` | `bool` | `true` | No | Enables automatic hostname discovery from Gateway API routes. |
-| `spec.source.gatewayRoutes.annotationFilter` | `string` | *none* | No | Only sync routes matching this annotation (key=value format). Max 255 chars. |
+| `spec.source.gatewayRoutes.annotationFilter` | `string` | *none* | No | Only sync routes matching this annotation (`key` or `key=value`). Max 255 chars. |
 | `spec.source.gatewayRoutes.namespaceSelector.matchLabels` | `map[string]string` | *none* | No | Select namespaces by label. Max 10 entries. At least one of `matchLabels` or `matchNames` required when `namespaceSelector` is set. |
 | `spec.source.gatewayRoutes.namespaceSelector.matchNames` | `[]string` | *none* | No | Select namespaces by name. Max 50 items. At least one of `matchLabels` or `matchNames` required when `namespaceSelector` is set. |
 | `spec.source.explicit[]` | `[]DNSExplicitHostname` | *none* | No | Explicitly defined hostnames to sync. Max 100 items. |
@@ -45,10 +34,10 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.ownership.txtRecord.prefix` | `string` | `_cfgate` | No | Immutable prefix for TXT record names. Max 63 chars. |
 | `spec.ownership.comment.enabled` | `bool` | `false` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes an exact owner marker. Schema removal is deferred to a future cleanup. |
 | `spec.ownership.comment.template` | `string` | `managed by cfgate` | No | **Deprecated since `v0.1.0-alpha.13`.** Ignored; the controller writes `cfgate/owner=<owner-id>`. Schema removal is deferred to a future cleanup. |
-| `spec.cleanupPolicy.deleteOnRouteRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the source route is deleted. |
+| `spec.cleanupPolicy.deleteOnRouteRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete obsolete discovered or explicit records when policy permits. |
 | `spec.cleanupPolicy.deleteOnResourceRemoval` | `*bool` | `true` (nil defaults to true) | No | Delete DNS records when the CloudflareDNS resource itself is deleted (finalizer cleanup). |
 | `spec.cleanupPolicy.onlyManaged` | `*bool` | `true` (nil defaults to true) | No | Retained for compatibility; ownership checks always apply, including when false. |
-| `spec.cloudflare.accountId` | `string` | *none* | No | Cloudflare Account ID. Required when using `externalTarget`. Inherited from tunnel when using `tunnelRef`. Max 32 chars. |
+| `spec.cloudflare.accountId` | `string` | *none* | No | Cloudflare Account ID. Use this or `accountName` with `externalTarget`; inherited with `tunnelRef`. Max 32 chars. |
 | `spec.cloudflare.accountName` | `string` | *none* | No | Cloudflare Account name (resolved via API). Max 255 chars. |
 | `spec.cloudflare.secretRef.name` | `string` | *none* | Yes (if cloudflare set) | Name of the credentials Secret. 1-253 chars. |
 | `spec.cloudflare.secretRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the credentials Secret. Max 63 chars. |
@@ -56,262 +45,11 @@ When using `tunnelRef`, credentials are inherited from the referenced [Cloudflar
 | `spec.fallbackCredentialsRef.name` | `string` | *none* | Yes (if fallbackCredentialsRef set) | Name of the fallback credentials Secret. 1-253 chars. |
 | `spec.fallbackCredentialsRef.namespace` | `string` | *(resource namespace)* | No | Namespace of the fallback credentials Secret. Max 63 chars. |
 
-## Detailed Field Documentation
-
-### `spec.tunnelRef` / `spec.externalTarget`
-
-These are mutually exclusive. Exactly one must be specified.
-
-**`tunnelRef`:** References a [CloudflareTunnel](cloudflare-tunnel.md) resource. DNS CNAME records are created pointing to the tunnel's domain (`{tunnelId}.cfargotunnel.com`). The controller waits for the tunnel to become ready before creating DNS records. When using `tunnelRef`, Cloudflare API credentials are inherited from the tunnel, so no separate `spec.cloudflare` is needed.
-
-**`externalTarget`:** Points DNS records to an external resource. Supports `CNAME` (external domain), `A` (IPv4 address), and `AAAA` (IPv6 address) record types. When using `externalTarget`, `spec.cloudflare` must be provided since there is no tunnel to inherit credentials from.
-
-```yaml
-# Tunnel-backed DNS
-spec:
-  tunnelRef:
-    name: prod-tunnel
-
-# External CNAME
-spec:
-  externalTarget:
-    type: CNAME
-    value: external-lb.example.com
-  cloudflare:
-    accountId: "a1b2c3d4..."
-    secretRef:
-      name: cloudflare-api-token
-
-# External A record
-spec:
-  externalTarget:
-    type: A
-    value: "203.0.113.10"
-  cloudflare:
-    accountId: "a1b2c3d4..."
-    secretRef:
-      name: cloudflare-api-token
-```
-
-### `spec.zones`
-
-Defines the Cloudflare DNS zones where records are managed. Configure 1 to 10 zones. Each hostname uses the most specific configured zone, matching complete DNS labels and ignoring case and a trailing dot. For example, `api.team.example.com` uses `team.example.com` when both that zone and `example.com` are configured. An apex hostname matches its own zone; `badexample.com` does not match `example.com`.
-
-Configure the zones that Cloudflare actually manages, including any separately delegated child zones. cfgate does not infer zone boundaries from registrable domains. Your API token must permit access to the selected zone. See [Cloudflare subdomain setup](https://developers.cloudflare.com/dns/zone-setups/subdomain-setup/) for provider requirements.
-
-**`id` (optional):** When provided, the controller uses this zone ID directly and skips the API zone lookup. This avoids the extra API call and is useful when the token does not have zone-list permissions or when you want to pin a specific zone ID.
-
-**`proxied` (optional):** Per-zone override for the Cloudflare proxy setting. When `nil`, inherits from `spec.defaults.proxied`. Set to `true` for orange-cloud (Cloudflare proxy), `false` for DNS-only (grey-cloud).
-
-```yaml
-spec:
-  zones:
-    - name: example.com
-      id: "zone123abc"        # skip API lookup
-      proxied: true           # force proxy on
-    - name: internal.dev
-      proxied: false          # DNS-only for this zone
-```
-
-### `spec.policy`
-
-Controls the DNS record lifecycle policy. Aligned with external-dns patterns.
-
-| Policy | Create | Update | Delete | Use Case |
-|--------|--------|--------|--------|----------|
-| `sync` (default) | Yes | Yes | Yes | Full lifecycle management. Records match desired state exactly. |
-| `upsert-only` | Yes | Yes | No | Prevents accidental deletion. Records are created and updated but never removed. |
-| `create-only` | Yes | No | No | Immutable records. Created once, never modified or deleted by the controller. |
-
-```yaml
-spec:
-  policy: upsert-only
-```
-
-### `spec.source.gatewayRoutes`
-
-Automatic DNS publication requires a cfgate-managed Gateway, permission for its tunnel reference, an admitted parent/listener attachment, an intersecting hostname, and valid effective origin transport settings. Namespace and annotation selectors further restrict discovery; they do not grant publication authority. Backend availability is separate: an admitted route may retain DNS while its backend returns an error. Explicit hostnames remain administrator-managed.
-
-Configures automatic hostname discovery from Gateway API HTTPRoute resources. Route discovery is enabled by the presence of this block. If `source.gatewayRoutes` is absent, the resource is explicit-only and does not watch routes. If the block is present and `enabled` is omitted, it defaults to `true`.
-
-**`annotationFilter`:** An opt-in filter that restricts which routes trigger DNS sync. The controller checks this annotation on HTTPRoute resources, never on Gateways. You can use any annotation key=value pair; adding, changing, or removing it triggers discovery and cleanup without waiting for the periodic reconciliation. The format is `key=value`. See [Annotations Reference](annotations.md#notes-on-annotationfilter) for details on how annotation filtering works.
-
-A common convention is `cfgate.io/dns-sync=enabled`, but this is not a controller-defined annotation; it is a user-chosen convention. The controller simply checks whether the route has the specified annotation with the specified value.
-
-**`namespaceSelector`:** Limits route discovery to specific namespaces. Supports `matchLabels` (label selectors) and `matchNames` (explicit namespace names). At least one must be specified when `namespaceSelector` is set. This enables multi-tenant setups where different CloudflareDNS resources manage routes from different namespaces.
-
-```yaml
-spec:
-  source:
-    gatewayRoutes:
-      enabled: true
-      annotationFilter: "cfgate.io/dns-sync=enabled"
-      namespaceSelector:
-        matchLabels:
-          environment: production
-        matchNames:
-          - app-team-a
-          - app-team-b
-```
-
-### `spec.source.explicit`
-
-Defines explicit hostnames independently of Gateway API route discovery. Hostnames are case-insensitive and an optional trailing dot is ignored before merging or recording write intents. An explicit entry overrides the discovered settings for the same hostname. Equivalent explicit entries are deduplicated; settings within the same source are compared after default inheritance and proxied-TTL normalization. Equivalent effective records converge; different targets, proxy settings or effective TTLs are rejected before publication. A later default change can make previously equivalent sources conflict.
-
-The `target` field overrides the resource-level resolved target for that hostname. It supports the `{{ .TunnelDomain }}` template variable, which resolves to the tunnel's CNAME target domain when `tunnelRef` is set. When `target` is omitted, the resource-level resolved target is used.
-
-```yaml
-spec:
-  source:
-    explicit:
-      - hostname: app.example.com
-        target: "{{ .TunnelDomain }}"
-        proxied: true
-        ttl: 1
-      - hostname: api.example.com
-        proxied: false
-        ttl: 300
-```
-
-Mixed sources remain additive. In the example below, route discovery can still add other hostnames, but the explicit `app.example.com` entry wins if a route also advertises that hostname:
-
-```yaml
-spec:
-  source:
-    gatewayRoutes:
-      enabled: true
-    explicit:
-      - hostname: app.example.com
-        target: app-origin.example.net
-        proxied: false
-        ttl: 300
-```
-
-### `spec.defaults`
-
-Fallback values for records that do not have explicit settings. Per-hostname and per-zone settings take precedence.
-
-A TTL of `1` means Auto. DNS-only records accept explicit TTL values from 60 to
-86400 seconds. [Proxied records always use Auto](https://developers.cloudflare.com/dns/manage-dns-records/reference/ttl/),
-currently 300 seconds. cfgate sends the API value `1` whenever the effective record
-is proxied, after applying defaults and overrides. The configured TTL stays in
-your resource and takes effect if proxying is disabled. An omitted per-hostname
-TTL inherits `spec.defaults.ttl`; an explicit `ttl: 1` selects Auto instead. The same rule applies to discovered routes: omit `cfgate.io/ttl` to inherit, or set it to `"1"` for Auto. Proxy settings inherit from the most specific configured zone, then the resource defaults, unless the hostname or route overrides them.
-
-```yaml
-spec:
-  defaults:
-    proxied: true
-    ttl: 1
-```
-
-### `spec.ownership`
-
-Ownership uses `status.ownerId = <installation namespace UID>/<CloudflareDNS UID>`, persisted before external writes. The manager obtains its installation namespace from `POD_NAMESPACE` or `--installation-namespace`; out-of-cluster development must supply that flag. Renames/recreations cannot reuse an old resource identity. Deleting and recreating the installation namespace changes its identity and requires an explicit migration.
-
-Data comments contain the exact marker `cfgate/owner=<owner-id>`. With the persisted namespace UID/resource UID identity, this is 86 characters and fits the 100-character DNS comment limit. Existing exact `heritage=cfgate,cfgate/owner=<owner-id>` data comments remain recognized for owned updates and cleanup. Companion TXT content retains `heritage=cfgate,cfgate/owner=<owner-id>` and also includes `cfgate/resource=CloudflareDNS/<namespace>/<name>`; the default name is `_cfgate.<hostname>`. The default is to create and verify both markers. Disabling TXT creation does not disable data ownership checks or permit existing foreign TXT claims.
-
-`spec.ownership.ownerId` is a deprecated legacy hint; it no longer overrides resource identity. The deprecated comment configuration is also ignored. A cosmetic `managed by cfgate` comment is not ownership evidence. Foreign or ambiguous TXT records, foreign data markers, and unmarked existing records block synchronization. `cfgate.io/adopt-existing: "true"` permits explicitly inspected, unmarked legacy data only; it never overwrites a foreign owner.
-
-Fresh reads detect observable competing claims before writes and deletes. Cloudflare provides no conditional DNS mutation here; a read is not a distributed lock. Coordinate writers across clusters and installations. See [authorization and ownership migration](authorization-and-ownership.md) before upgrading legacy resources.
-
-```yaml
-spec:
-  ownership:
-    txtRecord:
-      enabled: true
-      prefix: "_cfgate"
-```
-
-### `spec.cleanupPolicy`
-
-Controls what happens to DNS records when they are no longer needed. All fields are pointer booleans (`*bool`); `nil` defaults to `true`.
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `deleteOnRouteRemoval` | `true` | Delete obsolete records when their hostname, type, or selected zone leaves the desired configuration. Applies to discovered and explicit hostnames. |
-| `deleteOnResourceRemoval` | `true` | Delete all managed DNS records when the CloudflareDNS resource itself is deleted (finalizer-driven). |
-| `onlyManaged` | `true` | Compatibility field; false does not bypass exact ownership verification. |
-
-With `policy: sync` and route-removal cleanup enabled, cfgate deletes the old record and ownership claim before publishing a replacement in another zone or with another type. This can briefly interrupt DNS availability. Failed cleanup retains the recorded identity in `status.records`, reports a failure, and retries before further publication. A failed record update also retains the previous ID for cleanup.
-
-Deletion uses the recorded `zoneId`, even if that zone is no longer configured. Legacy status without a zone ID falls back to the most specific configured zone and still checks the recorded ID and ownership. If no zone matches, cleanup stops with an error; restore the original zone configuration or explicitly choose orphan deletion after reviewing the remote records.
-
-Disabling route-removal cleanup, or using a policy that prevents deletion, retains obsolete record identities for later cleanup. The status inventory is limited to 1,000 entries; cfgate rejects additions that would exceed this limit before creating remote records. Resource deletion still follows `deleteOnResourceRemoval` and the configured policy.
-
-Use both cleanup settings to remove obsolete records and clean up on resource deletion:
-
-```yaml
-spec:
-  cleanupPolicy:
-    deleteOnRouteRemoval: true
-    deleteOnResourceRemoval: true
-    onlyManaged: true
-```
-
-### `spec.cloudflare`
-
-Cloudflare API credentials. Required when using `externalTarget`. When using `tunnelRef`, credentials are inherited from the referenced CloudflareTunnel and this field can be omitted.
-
-See [CloudflareTunnel `spec.cloudflare`](cloudflare-tunnel.md#speccloudflare) for full credential configuration details.
-
-### `spec.fallbackCredentialsRef`
-
-References a Secret containing fallback Cloudflare API credentials. Used during deletion when the primary credentials (either explicit or inherited from tunnel) are unavailable. This enables cleanup of DNS records even if the credentials Secret has been deleted.
-
-```yaml
-spec:
-  fallbackCredentialsRef:
-    name: cloudflare-admin-credentials
-    namespace: cfgate-system
-```
-
-## Status
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `status.syncedRecords` | `int32` | Number of DNS records successfully synchronized. |
-| `status.pendingRecords` | `int32` | Number of DNS records awaiting synchronization. |
-| `status.ownerId` | `string` | Persisted installation namespace UID/resource UID; used for cleanup. |
-| `status.failedRecords` | `int32` | Number of DNS records that failed to sync. |
-| `status.records[]` | `[]DNSRecordSyncStatus` | Record inventory, including retained records and failed cleanup obligations. Max 1000 entries. |
-| `status.records[].hostname` | `string` | DNS hostname of the record. |
-| `status.records[].type` | `string` | Record type (CNAME, A, AAAA). |
-| `status.records[].target` | `string` | Record target/content value. |
-| `status.records[].proxied` | `bool` | Whether Cloudflare proxy is enabled for this record. |
-| `status.records[].ttl` | `int32` | Record TTL in seconds. |
-| `status.records[].status` | `string` | Sync status: `Synced`, `Pending`, `Skipped`, or `Failed`. |
-| `status.records[].recordId` | `string` | Cloudflare DNS record ID. |
-| `status.records[].zoneId` | `string` | Cloudflare zone ID where the record was created. |
-| `status.records[].error` | `string` | Synchronization or cleanup error when status is `Failed`. |
-| `status.resolvedTarget` | `string` | Resolved CNAME target (tunnel domain or external target value). |
-| `status.observedGeneration` | `int64` | Last `.metadata.generation` observed by the controller. |
-| `status.lastSyncTime` | `metav1.Time` | Last time DNS records were synced to Cloudflare. |
-| `status.conditions` | `[]metav1.Condition` | Standard Kubernetes conditions (see below). |
-
-### Status Conditions
-
-| Condition | Description |
-|-----------|-------------|
-| `Ready` | DNS sync is operational: credentials valid, zones resolved, and records synced. Target resolution failures are surfaced through this condition with reason `TargetResolutionFailed`. |
-| `CredentialsValid` | Cloudflare API credentials have been validated. |
-| `ZonesResolved` | All configured zones have been resolved via the Cloudflare API (or verified by explicit ID). |
-| `RecordsSynced` | DNS records have been synchronized to Cloudflare. |
-| `OwnershipVerified` | TXT ownership records have been verified for all managed DNS records. This condition is diagnostic and does not gate `Ready`. |
-
-### kubectl Output Columns
-
-| Column | JSONPath | Description |
-|--------|----------|-------------|
-| Ready | `.status.conditions[?(@.type=='Ready')].status` | Whether DNS sync is operational (`True`/`False`/`Unknown`). |
-| Synced | `.status.syncedRecords` | Number of successfully synced records. |
-| Pending | `.status.pendingRecords` | Number of records awaiting sync. |
-| Failed | `.status.failedRecords` | Number of records that failed to sync. |
-| Age | `.metadata.creationTimestamp` | Age of the resource. |
-
 ## Usage Examples
 
 ### Tunnel-backed DNS with Gateway API route discovery
+
+Publish hostnames from admitted routes bearing the selected annotation:
 
 ```yaml
 apiVersion: cfgate.io/v1alpha1
@@ -341,6 +79,8 @@ spec:
 
 ### External target with explicit hostnames
 
+Manage an external IP independently of a tunnel, retaining records on deletion:
+
 ```yaml
 apiVersion: cfgate.io/v1alpha1
 kind: CloudflareDNS
@@ -357,7 +97,7 @@ spec:
       name: cloudflare-api-token
   zones:
     - name: example.com
-      id: "zone123abc"
+      id: "0123456789abcdef0123456789abcdef"
   source:
     explicit:
       - hostname: api.example.com
@@ -373,65 +113,142 @@ spec:
     onlyManaged: true
 ```
 
-### Multi-tenant namespace-scoped route discovery
+## Detailed Field Documentation
+
+### `spec.tunnelRef` / `spec.externalTarget`
+
+`tunnelRef` inherits the referenced tunnel's credentials and waits for readiness before creating CNAMEs to `{tunnelId}.cfargotunnel.com`. Explicit hostname entries can override the target, but all records remain CNAMEs.
+
+`externalTarget` requires `spec.cloudflare` credentials and determines the record type for every hostname. Use explicit hostnames in this mode: Gateway route discovery requires a tunnel reference and has no effect with an external target. A and AAAA values are sent to Cloudflare without local IP-address validation.
+
+### `spec.zones`
+
+Each hostname uses the most specific configured zone. Matching ignores case and a trailing dot and requires whole DNS labels: `api.team.example.com` selects `team.example.com` over `example.com`, while `badexample.com` does not match either. An apex hostname matches its own zone.
+
+Configure actual Cloudflare zones, including separately delegated children; cfgate does not infer zone boundaries. An explicit zone `id` skips name lookup. The token must have access to the selected zone.
+
+### `spec.policy`
+
+The lifecycle policy limits operations even when cleanup is enabled:
+
+| Policy | Create | Update | Delete |
+|---|---|---|---|
+| `sync` | Yes | Yes | Yes |
+| `upsert-only` | Yes | Yes | No |
+| `create-only` | Yes | No | No |
+
+### `spec.source.gatewayRoutes`
+
+Omitting this block disables route discovery and its route watches. A present block defaults `enabled` to `true`. Discovery requires a cfgate-managed Gateway, an authorized tunnel reference, an admitted listener attachment, intersecting hostnames, and supported route features and effective origin transport. Backend readiness is separate: an admitted route can retain DNS while its backend returns an error.
+
+`annotationFilter` accepts either `key` for annotation presence or `key=value` for exact equality. It checks HTTPRoutes, not Gateways. Annotation changes trigger discovery and cleanup. `cfgate.io/dns-sync=enabled` is an example convention, not a built-in annotation.
+
+Namespace and annotation filters restrict discovery; they do not grant authority to publish. Explicit entries are administrator-managed and independent of route admission.
+
+### `spec.source.explicit`
+
+Explicit entries add hostnames and override discovered settings for the same hostname. Hostnames are normalized for case and a trailing dot before merging. Equivalent entries within a source are deduplicated after default inheritance and proxied-TTL normalization; conflicting effective targets, proxy values, or TTLs block publication. A default change can make previously equivalent entries conflict.
+
+Omitted `target` uses the resource-level destination. With `tunnelRef`, the template `{{ .TunnelDomain }}` resolves to the tunnel domain. This fragment combines discovery with an explicit override:
 
 ```yaml
-apiVersion: cfgate.io/v1alpha1
-kind: CloudflareDNS
-metadata:
-  name: team-a-dns
-  namespace: cfgate-system
 spec:
-  tunnelRef:
-    name: prod-tunnel
-  zones:
-    - name: example.com
-      proxied: true
   source:
     gatewayRoutes:
       enabled: true
-      annotationFilter: "cfgate.io/dns-sync=enabled"
-      namespaceSelector:
-        matchLabels:
-          team: team-a
-        matchNames:
-          - team-a-apps
-          - team-a-staging
-  defaults:
-    proxied: true
-    ttl: 1
-  policy: sync
-  ownership:
-    txtRecord:
-      enabled: true
-  cleanupPolicy:
-    deleteOnRouteRemoval: true
-    deleteOnResourceRemoval: true
-    onlyManaged: true
-  fallbackCredentialsRef:
-    name: cloudflare-admin-credentials
-    namespace: cfgate-system
+    explicit:
+      - hostname: app.example.com
+        target: app-origin.example.net
+        proxied: false
+        ttl: 300
 ```
+
+### `spec.defaults`
+
+Proxy settings resolve from the explicit hostname or route annotation, then the selected zone, then `defaults.proxied`. TTL resolves from the hostname or route annotation, then `defaults.ttl`. Omitted TTL inherits; explicit `1` selects Auto.
+
+cfgate always sends TTL `1` for proxied records. A configured explicit TTL remains in the resource and takes effect if proxying is disabled. DNS-only CRD TTL values must be `1` or between 60 and 86400 seconds.
+
+### `spec.ownership`
+
+Before external writes, cfgate persists `status.ownerId` as `<installation namespace UID>/<CloudflareDNS UID>`. Recreating either namespace or resource changes identity. The manager gets its installation namespace from `POD_NAMESPACE` or `--installation-namespace`.
+
+Data records carry `cfgate/owner=<owner-id>`. Exact legacy `heritage=cfgate,cfgate/owner=<owner-id>` comments are also recognized. Companion TXT records contain that legacy-form owner marker plus `cfgate/resource=CloudflareDNS/<namespace>/<name>`; their default name is `_cfgate.<hostname>`.
+
+Both markers are created and checked by default. Disabling TXT creation does not disable data ownership checks or permit foreign TXT claims. Deprecated `ownership.ownerId` and comment fields cannot change identity or authorize adoption. An unmarked existing record blocks synchronization unless an administrator explicitly adopts inspected legacy data with `cfgate.io/adopt-existing: "true"`. Foreign and ambiguous claims always block mutation.
+
+Cloudflare DNS writes have no compare-and-swap guard here. Fresh reads detect observable conflicts but are not a distributed lock; coordinate installations sharing an account. See [authorization and ownership](authorization-and-ownership.md).
+
+### `spec.cleanupPolicy`
+
+With `policy: sync` and `deleteOnRouteRemoval: true`, a removed hostname or a change of record type or selected zone deletes the old record and claim before publishing a replacement. This can briefly interrupt availability. Failed cleanup retains the identity in `status.records` and retries before further publication; failed updates also retain the old record ID.
+
+Deletion uses the recorded `zoneId`, even if removed from the specification. Legacy status without an ID falls back to the most specific configured zone and still verifies record ID and ownership. If no zone matches, restore the original zone or inspect the remote records before choosing orphan deletion.
+
+When policy or cleanup settings prevent deletion, obsolete identities remain available for later cleanup. The 1,000-entry status inventory limit is checked before creating additional remote records. `onlyManaged: false` never bypasses ownership checks. Resource deletion also respects `deleteOnResourceRemoval` and the lifecycle policy.
+
+### `spec.cloudflare`
+
+External targets need a credentials Secret and account ID or name. Tunnel targets inherit credentials from the referenced tunnel. [CloudflareTunnel credentials](cloudflare-tunnel.md#speccloudflare) describes account resolution and selected Secret keys; DNS writes additionally require DNS Edit permission for each zone.
+
+### `spec.fallbackCredentialsRef`
+
+During deletion, cfgate can use a fallback API-token Secret if primary or inherited credentials are unavailable. Preserve the selected token key and required account/zone permissions. Cross-namespace references require the grants described in [authorization and ownership](authorization-and-ownership.md).
+
+## Status
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `status.syncedRecords` | `int32` | Number of DNS records successfully synchronized. |
+| `status.pendingRecords` | `int32` | Number of DNS records awaiting synchronization. |
+| `status.ownerId` | `string` | Persisted installation namespace UID/resource UID; used for cleanup. |
+| `status.ownershipPrefix` | `string` | Established TXT prefix retained for publication and cleanup. |
+| `status.pendingWrites[]` | list | Saved write destinations and identifiers awaiting durable results. |
+| `status.failedRecords` | `int32` | Number of DNS records that failed to sync. |
+| `status.records[]` | `[]DNSRecordSyncStatus` | Record inventory, including retained records and failed cleanup obligations. Max 1000 entries. |
+| `status.records[].hostname` | `string` | DNS hostname of the record. |
+| `status.records[].type` | `string` | Record type (CNAME, A, AAAA). |
+| `status.records[].target` | `string` | Record target/content value. |
+| `status.records[].proxied` | `bool` | Whether Cloudflare proxy is enabled for this record. |
+| `status.records[].ttl` | `int32` | Record TTL in seconds. |
+| `status.records[].status` | `string` | Sync status: `Synced`, `Pending`, `Skipped`, or `Failed`. |
+| `status.records[].recordId` | `string` | Cloudflare DNS record ID. |
+| `status.records[].zoneId` | `string` | Cloudflare zone ID where the record was created. |
+| `status.records[].error` | `string` | Synchronization or cleanup error when status is `Failed`. |
+| `status.resolvedTarget` | `string` | Resolved tunnel domain or external target value. |
+| `status.observedGeneration` | `int64` | Last `.metadata.generation` observed by the controller. |
+| `status.lastSyncTime` | `metav1.Time` | Last time DNS records were synced to Cloudflare. |
+| `status.conditions` | `[]metav1.Condition` | Standard Kubernetes conditions (see below). |
+
+### Status Conditions
+
+| Condition | Description |
+|-----------|-------------|
+| `Ready` | DNS sync is operational: credentials valid, zones resolved, and records synced. Target resolution failures are surfaced through this condition with reason `TargetResolutionFailed`. |
+| `CredentialsValid` | Cloudflare API credentials have been validated. |
+| `ZonesResolved` | All configured zones have been resolved via the Cloudflare API (or verified by explicit ID). |
+| `RecordsSynced` | DNS records have been synchronized to Cloudflare. |
+| `OwnershipVerified` | TXT ownership records have been verified for managed records. This check gates `Ready` when TXT ownership is enabled; disabled TXT creation reports this condition false without preventing readiness. |
+
+### kubectl Output Columns
+
+| Column | JSONPath | Description |
+|--------|----------|-------------|
+| Ready | `.status.conditions[?(@.type=='Ready')].status` | Whether DNS sync is operational (`True`/`False`/`Unknown`). |
+| Synced | `.status.syncedRecords` | Number of successfully synced records. |
+| Pending | `.status.pendingRecords` | Number of records awaiting sync. |
+| Failed | `.status.failedRecords` | Number of records that failed to sync. |
+| Age | `.metadata.creationTimestamp` | Age of the resource. |
 
 ## Deletion Behavior
 
-The controller adds the finalizer `cfgate.io/dns-cleanup` to every CloudflareDNS resource. When the resource is deleted, the controller attempts to delete all owned DNS records and their TXT ownership records before removing the finalizer.
+The `cfgate.io/dns-cleanup` finalizer waits for permitted cleanup of owned data records and TXT claims. Recovery inventories zones from both specification and status to find writes that succeeded before their result was saved. Exact-owned unrecorded data is deleted before its claims, including when TXT creation is disabled.
 
-Deletion also inventories zones from the specification and recorded status to
-recover remote writes that succeeded before status was saved. Exact-owned data
-records for unrecorded hostnames are deleted before their companion TXT claims,
-including when older status records already exist. Data recovery also runs when
-TXT creation is disabled. Disabling TXT creation does not orphan existing owned
-claims: both recorded and recovered claims remain subject to normal cleanup.
-Every recovery-zone inventory must succeed before
-unrecorded records are deleted; a failed data deletion or a changed record
-identity retains the claims and finalizer for a fresh attempt. Recorded hostnames
-keep their status-backed record-ID checks. Foreign, ambiguous, and unmarked
-records remain protected by the ownership checks.
+All recovery-zone inventories must succeed before unrecorded deletions begin. A failed deletion or changed identity retains claims and the finalizer for another attempt. Recorded hostnames retain their status-backed record-ID checks; foreign, ambiguous, and unmarked records remain protected.
 
-If cleanup fails, the controller blocks indefinitely and requeues every 15 seconds. It never removes the finalizer automatically. Before deletion has been pending for 1 minute, the controller emits Warning events with reason `CleanupFailed`. After that warning threshold, failed attempts emit `CleanupBlocked`. This threshold does not bound API calls or stop retries. Cleanup can finish on a later retry or after credentials, permissions, or connectivity are repaired.
+Failures retry every 15 seconds. Warning events change from `CleanupFailed` to `CleanupBlocked` after deletion has been pending for one minute. That threshold does not limit API calls or stop retries; repair credentials, permissions, or connectivity to resume cleanup.
 
-To skip Cloudflare cleanup and remove the finalizer immediately, set the `cfgate.io/deletion-policy=orphan` annotation on the CloudflareDNS resource. The controller will leave DNS records in Cloudflare and remove the finalizer without attempting cleanup.
+To retain remote records and remove the finalizer without cleanup, use:
 
 ```bash
 kubectl annotate cloudflarednses my-dns -n cfgate-system \
@@ -440,77 +257,32 @@ kubectl annotate cloudflarednses my-dns -n cfgate-system \
 
 ## Record Types
 
-When using `tunnelRef`, all DNS records are CNAME records pointing to `{tunnelId}.cfargotunnel.com`. The record type is not configurable in tunnel-ref mode.
-
-When using `externalTarget`, the `type` field determines the DNS record type. Valid values are `CNAME`, `A`, and `AAAA`. The `value` field contains the record target: a domain name for CNAME, an IPv4 address for A, or an IPv6 address for AAAA. The controller does not validate that A or AAAA target values are valid IP addresses; values are passed through to the Cloudflare API.
-
-Only A, AAAA, and CNAME records can be proxied by Cloudflare. Setting `proxied: true` on other record types will cause the Cloudflare API to reject the request.
+Tunnel references always produce CNAME records. External targets accept only `CNAME`, `A`, and `AAAA`; per-hostname overrides change the destination, not the record type.
 
 ## Multi-level Subdomains
 
-Cloudflare Universal SSL certificates cover `*.example.com` but not deeper wildcards such as `*.sub.example.com`. Hostnames with more than one subdomain level relative to the zone (for example, `api.staging.example.com` in zone `example.com`) require Cloudflare Advanced Certificate Manager or a custom certificate uploaded to Cloudflare.
+cfgate emits an informational `DeepSubdomain` warning for hostnames more than one label below their selected zone. For example, `api.staging.example.com` is two levels below `example.com`. Record publication continues; the warning does not verify certificate coverage.
 
-The controller emits a `DeepSubdomain` warning event when it encounters a hostname with depth greater than 1 relative to the zone. This warning is informational only; record creation proceeds regardless.
-
-To suppress the warning, set the annotation `cfgate.io/allow-deep-subdomains: "true"` on the CloudflareDNS resource.
-
-```bash
-kubectl annotate cloudflarednses my-dns -n cfgate-system \
-  cfgate.io/allow-deep-subdomains=true
-```
+After arranging appropriate Cloudflare edge certificate coverage, suppress the warning on the DNS resource with `cfgate.io/allow-deep-subdomains: "true"`. See [Cloudflare certificate coverage](https://developers.cloudflare.com/ssl/edge-certificates/universal-ssl/limitations/).
 
 ## Namespace Selector
 
-When `spec.source.gatewayRoutes.namespaceSelector` is set, only routes from matching namespaces are considered for DNS record creation. The selector supports two filters: `matchLabels` and `matchNames`.
-
-`matchLabels` uses AND semantics: all specified labels must be present on the namespace and have the required value. An empty required value matches an explicitly empty label, not a missing label. `matchNames` matches namespaces by name. If both filters are specified, the result is a union (a namespace matching either filter is included).
-
-An empty selector (`namespaceSelector: {}`) matches all namespaces, following the Kubernetes convention used by NetworkPolicy and other resources.
+`matchLabels` requires all listed labels, including explicitly empty values. `matchNames` selects namespace names. When both are provided, matching either includes the namespace. Omit `namespaceSelector` to discover across namespaces; the CRD rejects `namespaceSelector: {}` because at least one selector field must be present.
 
 ### Interrupted writes and ownership changes
 
-Before writing DNS, cfgate records the resolved destination and a write identifier in
-`status.pendingWrites`. New data records carry that identifier alongside their owner
-marker. If Cloudflare accepts a write but Kubernetes cannot save its result, the next
-reconciliation recovers the record from this intent. Later zone or hostname edits do
-not erase the pending destination.
+cfgate saves each destination and write identifier in `status.pendingWrites` before writing DNS. New data includes the write identifier with its owner marker. If the remote write succeeds but status cannot be saved, reconciliation recovers it from this intent, even after zone or hostname edits.
 
-A different record ID is recovered only when the saved intent and ownership evidence
-identify it. An unexplained replacement or foreign ownership claim blocks cleanup
-and keeps the finalizer. Inspect the reported conflict before deciding whether to
-restore the owned record or use the documented orphan deletion policy. Do not remove
-pending status to bypass recovery.
+A changed record ID requires matching saved intent and ownership evidence. Unexplained replacements block cleanup and retain the finalizer. Inspect the conflict rather than removing pending status to bypass recovery.
 
-`spec.ownership.txtRecord.prefix` is immutable. To change it, delete the DNS resource,
-wait for its configured cleanup to finish, then recreate it with the new prefix.
-Disabling `txtRecord.enabled` stops creating companion claims; existing claims remain
-protected and are removed during normal hostname or resource cleanup. Re-enabling it
-uses the same prefix. The controller also retains the established prefix in status,
-so a schema mismatch cannot silently redirect cleanup.
+`ownership.txtRecord.prefix` is immutable. To change it, delete the resource, wait for configured cleanup, then recreate it. Disabling TXT creation retains existing claims for normal cleanup; re-enabling it uses the same prefix. Status also records the established prefix so a schema mismatch cannot redirect cleanup.
 
-For resources created before this change, the first reconciliation records their
-current prefix. cfgate cannot reconstruct prefixes changed before that checkpoint.
-Inspect any older ownership claims during such a migration. Install the matching CRD
-before updating the controller so Kubernetes preserves the recovery fields.
+For older resources, the first reconciliation checkpoints the current prefix and cannot reconstruct earlier changes. Inspect older claims during migration and install the matching CRD before upgrading the controller so recovery fields are preserved.
 
 ### Request budget
 
-The 1,000-entry inventory ceiling bounds stored cleanup state. It is not a tested
-operating capacity. Cloudflare's standard limit is
-[1,200 API requests per five minutes](https://developers.cloudflare.com/fundamentals/api/reference/limits/),
-shared with other calls using the applicable identity.
+The 1,000-entry inventory ceiling bounds cleanup state, not tested operating capacity. Synthetic CNAME tests count approximately 12 provider operations per new hostname, 6 per unchanged hostname, and 8 per cleanup, including TXT claims and excluding zone inventory, SDK retries, extra pages, and other controllers.
 
-The controller's synthetic CNAME tests count about 12 provider operations per new
-hostname, 6 per unchanged hostname, and 8 per hostname during cleanup, plus zone
-inventory reads. Each hostname includes its TXT claim. These counts exclude SDK
-retries, additional pagination, zone resolution, and other controllers. Consequently,
-1,000 unchanged hostnames already exceed the standard window. Smaller resources
-still share the same quota; splitting them does not increase it.
+The quota tests cover two resources with 10, 50, or 100 hostnames each, interrupted publication, and cleanup across renewed shared windows. They establish recovery in that model, not a production capacity recommendation. Measure account request volume and reconciliation latency against [Cloudflare's API limits](https://developers.cloudflare.com/fundamentals/api/reference/limits/). Splitting resources does not create more shared quota. Large inventories need batching and shared-budget scheduling; retries may make no progress if preliminary reads consume the window.
 
-Quota tests cover two resources with 10, 50, or 100 hostnames each, interrupted
-publication, and cleanup across renewed shared windows. They establish recovery in
-that model, not a production capacity recommendation. Measure request volume and
-reconciliation latency for your account before increasing scale. Large inventories
-need additional batching and shared-budget scheduling; retries alone do not guarantee
-progress when preliminary reads consume the entire window. Fresh ownership checks
-remain required before writes.
+See [annotations](annotations.md) for route-level DNS overrides and [troubleshooting](troubleshooting.md) for reconciliation failures.

@@ -1,20 +1,23 @@
 # Gateway API Primer
 
-## Coming from Ingress?
+cfgate uses Gateway API resources to attach HTTPRoutes to Cloudflare Tunnels and translate their host/path matches into cloudflared ingress rules.
 
-Gateway API is the Kubernetes successor to Ingress, providing a role-oriented, portable, and expressive API for service networking. If you are migrating from an Ingress-based Cloudflare operator (such as [STRRL/cloudflare-tunnel-ingress-controller](https://github.com/STRRL/cloudflare-tunnel-ingress-controller) or [adyanth/cloudflare-operator](https://github.com/adyanth/cloudflare-operator)), this page explains the key concepts you need to understand.
-
-Gateway API separates concerns by role: infrastructure providers define GatewayClasses, cluster operators create Gateways, and application developers attach Routes. This maps cleanly to cfgate's architecture.
+For installation and an end-to-end example, start with [Getting started](getting-started.md). This page explains the resource model and the routing behavior cfgate supports.
 
 ## Key Concepts
 
+| Resource | Scope | Role in cfgate |
+|---|---|---|
+| `GatewayClass` | Cluster | Selects the cfgate controller. |
+| `Gateway` | Namespace | Binds listeners and route permissions to a CloudflareTunnel. |
+| `HTTPRoute` | Namespace | Maps hostnames and paths to Kubernetes Service backends. |
+| `CloudflareTunnel` | Namespace | Manages the remote tunnel and connector Deployment. |
+| `CloudflareDNS` | Namespace | Optionally discovers admitted route hostnames and publishes DNS. |
+| `CloudflareAccessApplication` | Namespace | Binds Gateway or HTTPRoute targets to reusable Access policies. |
+
 ### GatewayClass
 
-A GatewayClass defines which controller handles a class of Gateways. It is a cluster-scoped resource (not namespaced).
-
-cfgate registers the controller name `cfgate.io/cloudflare-tunnel-controller`. You create a GatewayClass that references this controller name, and cfgate will handle all Gateways bound to that class.
-
-Think of GatewayClass as the "driver": it tells Kubernetes which software manages Gateways of this type.
+A GatewayClass selects cfgate with `controllerName: cfgate.io/cloudflare-tunnel-controller`. One class is sufficient for Gateways handled by this controller:
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -25,13 +28,9 @@ spec:
   controllerName: cfgate.io/cloudflare-tunnel-controller
 ```
 
-You only need one GatewayClass for cfgate. The controller accepts it automatically when `spec.controllerName` matches.
-
 ### Gateway
 
-A Gateway is a runtime instance bound to a GatewayClass. In cfgate, a Gateway represents a Cloudflare Tunnel endpoint.
-
-The `cfgate.io/tunnel-ref` annotation connects the Gateway to a CloudflareTunnel resource. The GatewayClass tells Kubernetes that cfgate manages this Gateway; the Gateway itself is the runtime binding between the tunnel and the routes.
+A Gateway selects that class and names its tunnel through `cfgate.io/tunnel-ref`. The following Gateway permits HTTPRoutes from any namespace; replace `All` with `Same` or a namespace `Selector` to restrict attachment:
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -52,17 +51,11 @@ spec:
           from: All
 ```
 
-Key points:
-- `gatewayClassName: cfgate` binds this Gateway to the cfgate GatewayClass
-- `cfgate.io/tunnel-ref` links to the CloudflareTunnel that provides the actual tunnel
-- `allowedRoutes.namespaces.from: All` permits routes from any namespace to attach (default is `Same`, which restricts to the Gateway's namespace)
-- The `port` and `protocol` fields satisfy the Gateway API spec but do not determine what cloudflared actually serves. Cloudflared routing is driven by the routes themselves
+Listener fields participate in attachment and hostname validation. They do not create a Kubernetes load-balancer Service or select origin transport. Backend URLs come from route Service references and [origin annotations](annotations.md).
 
 ### Routes (HTTPRoute)
 
-Routes attach to Gateways via `parentRefs` and define routing rules. In cfgate, each route becomes one or more cloudflared ingress rules.
-
-Current route support is **HTTPRoute** only.
+cfgate supports HTTPRoute. A route attaches through `parentRefs`, subject to the selected Gateway listener's `allowedRoutes`. This example forwards an admitted hostname to `http://my-service.default.svc.cluster.local:80`, assuming the Service exists and exposes TCP port 80:
 
 ```yaml
 apiVersion: gateway.networking.k8s.io/v1
@@ -82,103 +75,27 @@ spec:
           port: 80
 ```
 
-This creates a cloudflared ingress rule: `app.example.com` routes to `http://my-service.default.svc.cluster.local:80`.
-
-Per-route behavior is configured via annotations on the Route resource. See [Annotations Reference](annotations.md) for the full list.
+The controller's `--cluster-domain` setting changes the generated Service DNS suffix. DNS publication requires a separate CloudflareDNS resource, and Access protection requires a CloudflareAccessApplication.
 
 ## How cfgate Uses Gateway API
 
-The full chain from infrastructure to application routing:
-
 ```mermaid
 flowchart LR
-    HR["HTTPRoute
-    (namespace: default)
-    parentRefs: cf-tunnel
-    hostnames: app.example.com
-    backendRefs: my-svc:80"]
-
-    GW["Gateway
-    (namespace: cfgate-system)
-    gatewayClassName: cfgate
-    tunnel-ref: .../tun
-    listeners: http/80/All"]
-
-    GC["GatewayClass
-    (cluster-scoped)
-    controllerName:
-    cfgate.io/cloudflare-tunnel-controller"]
-
-    CT["CloudflareTunnel
-    (namespace: cfgate-system)
-    spec.tunnel.name: tun
-    spec.cloudflare: ..."]
-
-    HR -- parentRefs --> GW
-    GW -- gatewayClassName --> GC
-    GW -- tunnel-ref --> CT
+    HR[HTTPRoute] -->|parentRefs| GW[Gateway]
+    GW -->|gatewayClassName| GC[GatewayClass]
+    GW -->|tunnel-ref| CT[CloudflareTunnel]
+    HR -->|backendRefs| SVC[Service]
+    DNS[CloudflareDNS] -->|tunnelRef| CT
+    DNS -.->|discovers admitted hostnames| HR
 ```
 
-1. **GatewayClass** tells Kubernetes that cfgate handles Gateways with `controllerName: cfgate.io/cloudflare-tunnel-controller`.
-2. **Gateway** creates the tunnel binding via the `cfgate.io/tunnel-ref` annotation. The controller sets the Gateway status to `Programmed` when the tunnel is ready.
-3. **Routes** define which hostnames and paths map to which backend services. cfgate collects routes attached to Gateways it manages and pushes them as cloudflared ingress rules.
-4. **CloudflareDNS** (optional) watches routes and creates CNAME records pointing hostnames to the tunnel domain.
+cfgate verifies GatewayClass ownership, the tunnel binding, listener permissions, and route references before publishing ingress. Gateway `Programmed` reports tunnel readiness. Route status exposes admission and backend-reference failures; it is not itself authorization for later reconciliations.
 
 ## The cfgate-system Namespace
 
-cfgate installs into `cfgate-system` by default:
-- **Helm:** `--namespace cfgate-system --create-namespace` creates it automatically
-- **Kustomize:** The `install.yaml` manifest includes the namespace definition
+Installation examples use `cfgate-system` for the controller and infrastructure resources. HTTPRoutes and backend Services may live in other namespaces. Gateway listeners default to same-namespace routes; use `allowedRoutes.namespaces.from: All` or `Selector` for other namespaces.
 
-CloudflareTunnel and CloudflareDNS resources typically live in `cfgate-system` alongside the controller. Routes and the services they reference can be in any namespace.
-
-To allow routes from other namespaces to attach to a Gateway in `cfgate-system`, set `allowedRoutes.namespaces.from: All` on the Gateway listener:
-
-```yaml
-spec:
-  listeners:
-    - name: http
-      protocol: HTTP
-      port: 80
-      allowedRoutes:
-        namespaces:
-          from: All      # Routes from any namespace can attach
-```
-
-Without this, only routes in the same namespace as the Gateway can attach. You can also use `Selector` with label selectors for finer control.
-
-## Comparison with Ingress
-
-| Concept | Ingress | Gateway API (cfgate) |
-|---|---|---|
-| Controller selection | IngressClass | GatewayClass |
-| Runtime instance | Implicit (Ingress resources create it) | Explicit Gateway resource |
-| Routing rules | Ingress resource (host + path rules) | HTTPRoute |
-| Per-route config | Annotations on Ingress | Annotations on Route |
-| Multi-tenancy | Namespace isolation only | Gateway `allowedRoutes` with namespace selectors |
-| Protocol support | HTTP/HTTPS only | HTTPRoute-driven HTTP routing |
-| Role separation | None (one resource does everything) | GatewayClass (infra), Gateway (ops), Route (dev) |
-| Cross-namespace routing | Not supported | Built-in via `parentRefs` with namespace |
-
-### Migration Notes
-
-If you are migrating from an Ingress-based Cloudflare operator:
-
-1. **Create a GatewayClass and Gateway.** These replace the implicit infrastructure that Ingress-based operators manage behind the scenes.
-2. **Convert Ingress resources to HTTPRoutes.** Each Ingress host/path rule becomes an HTTPRoute. The `parentRefs` field replaces the IngressClass binding.
-3. **Move annotations.** Ingress annotations on the Ingress resource move to per-route annotations on HTTPRoute resources. Annotation names may differ; see [Annotations Reference](annotations.md).
-4. **Set up CloudflareDNS.** Ingress operators often handle DNS automatically. With cfgate, DNS management is a separate CRD (CloudflareDNS) that you configure explicitly.
-
-## Further Reading
-
-- [Gateway API documentation](https://gateway-api.sigs.k8s.io/)
-- [CloudflareTunnel Reference](cloudflare-tunnel.md)
-- [CloudflareDNS Reference](cloudflare-dns.md)
-- [CloudflareAccessPolicy Reference](cloudflare-access-policy.md)
-- [CloudflareAccessApplication Reference](cloudflare-access-application.md)
-- [Annotations Reference](annotations.md)
-- [Troubleshooting](troubleshooting.md)
-- [Service Mesh Integration](service-mesh.md)
+Route attachment uses `allowedRoutes`. Cross-namespace Service backends, Gateway-to-Tunnel bindings, credentials, and Access references require the relevant ReferenceGrants. Namespace reachability alone is not permission. See [authorization and ownership](authorization-and-ownership.md) for grant examples.
 
 ## Supported HTTPRoute behavior
 
@@ -189,3 +106,38 @@ Method, header, and query matches, rule or backend filters, request timeouts, re
 Routes are evaluated by current GatewayClass ownership, listener permissions, namespace selectors, hostname intersection, and cross-namespace backend ReferenceGrants. Existing status is not used as authorization. A transient Kubernetes read failure aborts configuration synchronization rather than publishing a partially resolved configuration.
 
 More specific hostnames precede overlapping wildcard hostnames. Within a hostname, exact paths precede regular expressions, followed by prefixes with the longest source path first. Regular-expression precedence is implementation-defined: longer expressions precede shorter expressions. Equal matches use the oldest route creation timestamp, then lexical `namespace/name`, then the first matching rule. Regular expressions remain active ahead of a catch-all prefix. For prefixes, trailing slashes are ignored: `/foo` and `/foo/` both match `/foo` and `/foo/bar`, but not `/foobar`. Exact paths retain trailing-slash significance. Configuration hashing preserves this ordered evaluation.
+
+## Access protection
+
+An HTTPRoute remains independent of Access readiness unless it sets `cfgate.io/access-required: namespace/name`. That dependency names a CloudflareAccessApplication and controls whether protected traffic may forward. See [Access-required routing](access-required.md) for the supported target subset and asynchronous withdrawal limits.
+
+Origin transport failures and incompatible h2c connectors retain matching HTTP 503 responses. Configuration or Access dependency overload replaces the whole tunnel configuration with HTTP 503, including any custom fallback. [CloudflareTunnel](cloudflare-tunnel.md#configuration-overload) describes recovery.
+
+## Comparison with Ingress
+
+| Concern | Ingress | Gateway API in cfgate |
+|---|---|---|
+| Controller selection | IngressClass | GatewayClass |
+| Infrastructure binding | Controller-specific | Gateway with tunnel annotation |
+| Host/path rules | Ingress | HTTPRoute |
+| Per-route options | Controller-specific annotations | cfgate HTTPRoute annotations |
+| Route attachment permissions | Controller-specific | Listener `allowedRoutes` |
+| Backend references across namespaces | Controller-specific extensions | ReferenceGrant-authorized Service references |
+| DNS and Access | Controller-specific | Separate cfgate resources |
+
+### Migration Notes
+
+Create the GatewayClass and Gateway, then translate each Ingress host/path rule into an HTTPRoute with an appropriate `parentRefs` entry. Check the supported features above before translating filters or multiple backends. Move only annotations with a documented cfgate equivalent.
+
+Configure CloudflareDNS separately for hostname publication and CloudflareAccessApplication for protection. Existing remote tunnels and records need explicit ownership migration; creating Kubernetes resources with matching names is insufficient. Follow [authorization and ownership](authorization-and-ownership.md) before switching controllers.
+
+## Further Reading
+
+- [CloudflareTunnel reference](cloudflare-tunnel.md)
+- [CloudflareDNS reference](cloudflare-dns.md)
+- [Access application reference](cloudflare-access-application.md)
+- [Access policy reference](cloudflare-access-policy.md)
+- [Annotations reference](annotations.md)
+- [Troubleshooting](troubleshooting.md)
+- [Service mesh integration](service-mesh.md)
+- [Gateway API documentation](https://gateway-api.sigs.k8s.io/)

@@ -1,50 +1,77 @@
-# Multi-Service Example
+# Multiple services and path-based Access
 
-Multiple services exposed through a single Cloudflare tunnel.
+This example shares one tunnel between an API, a public web service, and two
+Access applications protecting selected web paths. It demonstrates independent,
+path-scoped Access configuration; it does **not** use the whole-host
+`access-required` publication guard.
 
-```
-api.example.com        -> api service
-web.example.com/       -> web service (public)
-web.example.com/admin  -> admin service (Access protected)
-web.example.com/repos  -> api service (Access protected)
-```
+| Destination | Backend | Intended Access scope |
+| --- | --- | --- |
+| `api.example.com` | API | Public |
+| `web.example.com/` | Web | Public |
+| `web.example.com/admin` | Admin | Administrator email |
+| `web.example.com/repos` | API | Company email domain |
 
-## Quick Start
+Access and routing reconcile independently. Do not publish sensitive backends
+until the remote applications are ready and authentication is verified. Origin-side
+authentication remains necessary where uninterrupted enforcement is required. For
+a whole-host guarded example, use [getting started](../../docs/getting-started.md).
+
+## Configuration
+
+Install cfgate and Gateway API first. Create `cloudflare-credentials` in
+`cfgate-system` with Tunnel edit, DNS edit, Zone read, and Access Apps and Policies
+edit permissions. Edit the account IDs in `tunnel.yaml` and `accesspolicy.yaml`,
+the zone in `dns.yaml`, and the hostnames in `httproutes.yaml`. Replace the sample
+email rules before using the applications.
+
+The example uses `cfgate-system` for infrastructure and `demo` for workloads and
+Access applications. `referencegrant.yaml` permits the applications to reference
+central policies, the selected tunnel, and its credential Secret. Those grants
+are administrator-owned; review them before accepting tenant-authored applications.
+
+From the repository root, render the complete configuration before applying it:
 
 ```bash
-# 1. Install cfgate (see basic example)
-
-# 2. Edit configuration files
-# - tunnel.yaml: set accountId
-# - dns.yaml: set zones[].name
-# - httproutes.yaml: set hostnames
-# - accesspolicy.yaml: set accountId and identity rules
-
-# 3. Deploy
+kubectl kustomize examples/multi-service
 kubectl apply -k examples/multi-service
+kubectl get cloudflareaccessapplication -n demo
+kubectl get cloudflareaccesspolicy -n cfgate-system
+kubectl get httproute -n demo
 ```
 
-## Components
+Do not apply this alongside the basic example: both use `demo`, the `cfgate`
+GatewayClass, and shared resource names. The sample workloads are for demonstration.
+Check current application conditions and actual authenticated/unauthenticated
+requests before replacing them with sensitive services.
 
-- One `CloudflareTunnel` with 2 replicas
-- One `Gateway` shared by all routes
-- One `CloudflareDNS` watching all HTTPRoutes
-- Three services: `api`, `web`, and `admin`
-- Two HTTPRoutes: `api` and `web`
-- Two reusable `CloudflareAccessPolicy` resources in `cfgate-system`
-- Two tenant-local `CloudflareAccessApplication` resources protecting named `web` route rules
-- One `ReferenceGrant` allowing tenant app bindings to reference central policies
+## Additional services
 
-> Access policies live in `cfgate-system`. Access applications live in `demo` and attach those policies to the `admin` and `repos` HTTPRoute rules. This cross-namespace policy reference requires a [ReferenceGrant](https://gateway-api.sigs.k8s.io/api-types/referencegrant/) in `cfgate-system`. See `referencegrant.yaml`.
-
-## Adding Services
-
-1. Add deployment + service to `services.yaml`
-2. Add HTTPRoute to `httproutes.yaml`
-3. DNS record created automatically
+Add a Deployment and TCP Service to `services.yaml`, then attach its HTTPRoute to
+the shared Gateway. DNS discovery uses admitted route hostnames. Add a separate
+Access application and appropriate policy references where protection is needed;
+a reusable policy alone does not enforce authentication.
 
 ## Cleanup
 
+Remove the routes first and verify that the tunnel has withdrawn their forwarding:
+
 ```bash
-kubectl delete -k examples/multi-service
+kubectl delete -f examples/multi-service/httproutes.yaml
 ```
+
+Then remove resources in dependency order. This chain stops on a failed deletion:
+
+```bash
+kubectl delete -f examples/multi-service/dns.yaml --wait=true --timeout=300s &&
+kubectl delete -f examples/multi-service/accessapplication.yaml --wait=true --timeout=300s &&
+kubectl delete -f examples/multi-service/accesspolicy.yaml --wait=true --timeout=300s &&
+kubectl delete -f examples/multi-service/tunnel.yaml --wait=true --timeout=300s &&
+kubectl delete -f examples/multi-service/referencegrant.yaml &&
+kubectl delete -f examples/multi-service/gateway.yaml &&
+kubectl delete -f examples/multi-service/services.yaml &&
+kubectl delete -f examples/multi-service/namespace.yaml
+```
+
+Keep the credential Secret and controller until finalization completes. Remove
+shared namespaces or classes only when unused. See [decommissioning](../../docs/authorization-and-ownership.md#controller-removal-and-decommissioning).
