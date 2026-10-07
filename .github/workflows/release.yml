@@ -196,7 +196,9 @@ jobs:
             *,linux/arm64,*) ;;
             *) echo "::error::ARM64 emulation is unavailable after QEMU setup"; exit 1 ;;
           esac
-      - uses: useblacksmith/setup-docker-builder@v1
+      - uses: useblacksmith/setup-docker-builder@v2
+        with:
+          cache-key: Dockerfile
       - name: Install OCI archive tools
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends skopeo
       - id: meta
