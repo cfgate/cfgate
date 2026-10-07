@@ -253,7 +253,7 @@ jobs:
         name: Gate AMD64 image before publication
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          version: v0.74.0 # renovate: depName=aquasecurity/trivy
+          version: v0.75.0 # renovate: depName=aquasecurity/trivy
           input: release-images/amd64
           format: json
           output: trivy-amd64.json
@@ -266,7 +266,7 @@ jobs:
         if: always() && steps.verify.outcome == 'success'
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          version: v0.74.0 # renovate: depName=aquasecurity/trivy
+          version: v0.75.0 # renovate: depName=aquasecurity/trivy
           input: release-images/arm64
           format: json
           output: trivy-arm64.json
