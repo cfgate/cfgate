@@ -24,6 +24,23 @@ from fork source `d40bf36f`. Explicit image overrides remain administrator choic
 Existing CRs keep their stored image references after a CRD default changes.
 A stock cloudflared image cannot substitute for the fork when h2c is configured.
 
+## Unreleased dependency updates
+
+Development builds use Cloudflare Go SDK 7.12.0 and Kubernetes utilities at
+`cf1189d6abe3`. The alpha.11 pins above describe the published release and remain
+unchanged. Kubernetes API libraries, controller-runtime, Gateway API, CRDs, and
+the connector image retain their existing versions.
+
+The SDK migration removes or changes APIs outside cfgate's current adapter calls.
+Tunnel configuration, Access applications, policies, and service-token models
+remain unchanged in this update. Keep the wire-format, pagination, and live
+integration checks when upgrading; compilation alone does not establish provider
+compatibility. See the [SDK migration guide](https://github.com/cloudflare/cloudflare-go/blob/v7.12.0/docs/migration-guides/v7.12.0-migration-guide.md).
+
+Release and scheduled image scans use Trivy 0.75.0. The release builder uses
+Blacksmith v2 with `Dockerfile` as its required cache key. Standard PR checks do
+not execute that release-only builder step; validate it during release testing.
+
 ## Kubernetes requirements
 
 The standard Gateway API v1.6.2 bundle includes stable ValidatingAdmissionPolicy
