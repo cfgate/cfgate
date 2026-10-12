@@ -12,7 +12,7 @@ go = "1.27.1"
 "aqua:mvdan/sh" = "3.14.1"
 "aqua:google/yamlfmt" = "0.21.0"
 "github:kubernetes-sigs/controller-tools[exe=controller-gen]" = "0.22.0"
-"go:github.com/onsi/ginkgo/v2/ginkgo" = "2.33.0"
+"go:github.com/onsi/ginkgo/v2/ginkgo" = "2.33.1"
 
 #
 # Development
