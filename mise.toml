@@ -11,7 +11,7 @@ go = "1.27.1"
 "aqua:golangci/golangci-lint" = "2.14.0"
 "aqua:mvdan/sh" = "3.14.1"
 "aqua:google/yamlfmt" = "0.21.0"
-"github:kubernetes-sigs/controller-tools[exe=controller-gen]" = "0.22.0"
+"github:kubernetes-sigs/controller-tools[exe=controller-gen]" = "0.23.0"
 "go:github.com/onsi/ginkgo/v2/ginkgo" = "2.33.0"
 
 #
