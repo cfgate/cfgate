@@ -4,6 +4,8 @@ package cloudflare
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	cf "github.com/cloudflare/cloudflare-go/v7"
@@ -26,13 +28,63 @@ func tunnelFromAPI(t *zero_trust.CloudflareTunnel) *Tunnel {
 	}
 }
 
+// unquoteTXTContent strips zone-file quoting from TXT content so comparisons see the
+// value rather than its encoding: Cloudflare stores content verbatim, quoted or not,
+// and serves the same character-string either way. Malformed input is returned as-is.
+func unquoteTXTContent(content string) string {
+	if len(content) < 2 || content[0] != '"' || content[len(content)-1] != '"' {
+		return content
+	}
+	var value strings.Builder
+	for rest := content; rest != ""; {
+		if rest[0] == ' ' {
+			rest = rest[1:]
+			continue
+		}
+		quoted, err := strconv.QuotedPrefix(rest)
+		if err != nil {
+			return content
+		}
+		part, err := strconv.Unquote(quoted)
+		if err != nil {
+			return content
+		}
+		value.WriteString(part)
+		rest = rest[len(quoted):]
+	}
+	return value.String()
+}
+
+// quoteTXTContent renders TXT content in the zone-file form Cloudflare documents,
+// so records cfgate writes are stored the way the dashboard stores them and carry
+// no "must be in quotation marks" warning. Content already quoted is left alone.
+func quoteTXTContent(content string) string {
+	if unquoteTXTContent(content) != content {
+		return content
+	}
+	var quoted strings.Builder
+	quoted.WriteByte('"')
+	for i := 0; i < len(content); i++ {
+		if content[i] == '"' || content[i] == '\\' {
+			quoted.WriteByte('\\')
+		}
+		quoted.WriteByte(content[i])
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
+}
+
 // dnsRecordFromSDK converts a cloudflare-go DNS record to a cfgate DNSRecord.
 func dnsRecordFromSDK(r dns.RecordResponse, zoneID string) DNSRecord {
+	content := r.Content
+	if r.Type == dns.RecordResponseTypeTXT {
+		content = unquoteTXTContent(content)
+	}
 	return DNSRecord{
 		ID:      r.ID,
 		Type:    string(r.Type),
 		Name:    r.Name,
-		Content: r.Content,
+		Content: content,
 		TTL:     int(r.TTL),
 		Proxied: r.Proxied,
 		Comment: r.Comment,

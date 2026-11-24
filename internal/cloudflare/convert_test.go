@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/cloudflare/cloudflare-go/v7/dns"
 	"github.com/cloudflare/cloudflare-go/v7/zero_trust"
 
 	"k8s.io/utils/ptr"
@@ -558,5 +559,122 @@ func assertGroup(t *testing.T, group *AccessGroup) {
 	t.Helper()
 	if group == nil || group.ID != "group-1" || group.Name != "group" {
 		t.Fatalf("group = %+v, want group-1/group", group)
+	}
+}
+
+func TestUnquoteTXTContent(t *testing.T) {
+	const owner = "heritage=cfgate,cfgate/owner=a/b,cfgate/resource=CloudflareDNS/ns/name"
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"unquoted stays unchanged", owner, owner},
+		{"quoted loses the quoting", `"` + owner + `"`, owner},
+		{"dashboard-written SPF", `"v=spf1 include:_spf.mx.cloudflare.net ~all"`, "v=spf1 include:_spf.mx.cloudflare.net ~all"},
+		{"multi-string content is joined", `"part-one" "part-two"`, "part-onepart-two"},
+		{"inner quotes are not a wrapper", `v=DKIM1; p="abc"`, `v=DKIM1; p="abc"`},
+		{"unbalanced quoting is left alone", `"unterminated`, `"unterminated`},
+		{"malformed sequence is left alone", `"a" b "c"`, `"a" b "c"`},
+		{"empty", "", ""},
+		{"single quote character", `"`, `"`},
+		{"empty quoted string", `""`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := unquoteTXTContent(tt.content); got != tt.want {
+				t.Errorf("unquoteTXTContent(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDNSRecordFromSDKUnquotesOnlyTXT(t *testing.T) {
+	const owner = "heritage=cfgate,cfgate/owner=o,cfgate/resource=r"
+	txt := dnsRecordFromSDK(dns.RecordResponse{
+		Type:    dns.RecordResponseTypeTXT,
+		Name:    "_cfgate.example.com",
+		Content: `"` + owner + `"`,
+	}, "zone")
+	if txt.Content != owner {
+		t.Errorf("TXT content = %q, want %q", txt.Content, owner)
+	}
+	if !IsOwnedByCfgate(&txt, "o") {
+		t.Error("a quoted ownership record must still be recognized as owned")
+	}
+
+	cname := dnsRecordFromSDK(dns.RecordResponse{
+		Type:    dns.RecordResponseTypeCNAME,
+		Name:    "example.com",
+		Content: `"not-a-txt-value"`,
+	}, "zone")
+	if cname.Content != `"not-a-txt-value"` {
+		t.Errorf("CNAME content must be untouched, got %q", cname.Content)
+	}
+}
+
+// Uses only the API that exists before the fix, so it compiles either way.
+func TestQuotedOwnershipRecordRegression(t *testing.T) {
+	const ownerID = "0f95097a/4b4e9bcf"
+	const resource = "CloudflareDNS/cfgate-edge/seireitei"
+	const prefix = "_cfgate"
+	const host = "canary.example.com"
+
+	claim := BuildOwnershipTXTRecord(host, ownerID, resource, prefix)
+
+	// Same record, as Cloudflare returns it once stored quoted.
+	stored := dnsRecordFromSDK(dns.RecordResponse{
+		Type:    dns.RecordResponseTypeTXT,
+		Name:    prefix + "." + host,
+		Content: `"` + claim.Content + `"`,
+		Comment: claim.Comment,
+	}, "zone")
+
+	if !IsOwnedByCfgate(&stored, ownerID) {
+		t.Error("IsOwnedByCfgate: cfgate does not recognize its own ownership record when stored quoted")
+	}
+	if _, err := ParseOwnershipRecord(stored.Content); err != nil {
+		t.Errorf("ParseOwnershipRecord: %v", err)
+	}
+	// SyncOwnedRecord compares claim content for equality; a mismatch here
+	// means the controller rewrites the same record on every reconcile.
+	if stored.Content != claim.Content {
+		t.Errorf("claimMatches would be false forever:\n stored = %q\n claim  = %q", stored.Content, claim.Content)
+	}
+}
+
+func TestQuoteTXTContent(t *testing.T) {
+	const owner = "heritage=cfgate,cfgate/owner=a/b,cfgate/resource=CloudflareDNS/ns/name"
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"plain content is wrapped", owner, `"` + owner + `"`},
+		{"already quoted is left alone", `"` + owner + `"`, `"` + owner + `"`},
+		{"multi-string is left alone", `"part-one" "part-two"`, `"part-one" "part-two"`},
+		{"inner quotes are escaped", `v=DKIM1; p="abc"`, `"v=DKIM1; p=\"abc\""`},
+		{"backslash is escaped", `a\b`, `"a\\b"`},
+		{"empty", "", `""`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := quoteTXTContent(tt.content); got != tt.want {
+				t.Errorf("quoteTXTContent(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTXTContentRoundTrip(t *testing.T) {
+	for _, content := range []string{
+		"heritage=cfgate,cfgate/owner=a/b,cfgate/resource=CloudflareDNS/ns/name",
+		`v=DKIM1; p="abc"`,
+		`a\b`,
+		"",
+	} {
+		if got := unquoteTXTContent(quoteTXTContent(content)); got != content {
+			t.Errorf("round trip of %q produced %q", content, got)
+		}
 	}
 }
