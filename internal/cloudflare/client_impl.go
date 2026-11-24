@@ -374,7 +374,7 @@ func (c *clientImpl) CreateDNSRecord(ctx context.Context, zoneID string, record 
 			Body: dns.TXTRecordParam{
 				Name:    cf.F(record.Name),
 				Type:    cf.F(dns.TXTRecordTypeTXT),
-				Content: cf.F(record.Content),
+				Content: cf.F(quoteTXTContent(record.Content)),
 				TTL:     cf.F(dns.TTL(record.TTL)),
 				Comment: cf.F(record.Comment),
 			},
@@ -441,7 +441,7 @@ func (c *clientImpl) UpdateDNSRecord(ctx context.Context, zoneID, recordID strin
 			Body: dns.TXTRecordParam{
 				Name:    cf.F(record.Name),
 				Type:    cf.F(dns.TXTRecordTypeTXT),
-				Content: cf.F(record.Content),
+				Content: cf.F(quoteTXTContent(record.Content)),
 				TTL:     cf.F(dns.TTL(record.TTL)),
 				Comment: cf.F(record.Comment),
 			},

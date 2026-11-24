@@ -55,6 +55,25 @@ func unquoteTXTContent(content string) string {
 	return value.String()
 }
 
+// quoteTXTContent renders TXT content in the zone-file form Cloudflare documents,
+// so records cfgate writes are stored the way the dashboard stores them and carry
+// no "must be in quotation marks" warning. Content already quoted is left alone.
+func quoteTXTContent(content string) string {
+	if unquoteTXTContent(content) != content {
+		return content
+	}
+	var quoted strings.Builder
+	quoted.WriteByte('"')
+	for i := 0; i < len(content); i++ {
+		if content[i] == '"' || content[i] == '\\' {
+			quoted.WriteByte('\\')
+		}
+		quoted.WriteByte(content[i])
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
+}
+
 // dnsRecordFromSDK converts a cloudflare-go DNS record to a cfgate DNSRecord.
 func dnsRecordFromSDK(r dns.RecordResponse, zoneID string) DNSRecord {
 	content := r.Content

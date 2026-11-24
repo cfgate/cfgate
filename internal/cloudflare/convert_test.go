@@ -642,3 +642,39 @@ func TestQuotedOwnershipRecordRegression(t *testing.T) {
 		t.Errorf("claimMatches would be false forever:\n stored = %q\n claim  = %q", stored.Content, claim.Content)
 	}
 }
+
+func TestQuoteTXTContent(t *testing.T) {
+	const owner = "heritage=cfgate,cfgate/owner=a/b,cfgate/resource=CloudflareDNS/ns/name"
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"plain content is wrapped", owner, `"` + owner + `"`},
+		{"already quoted is left alone", `"` + owner + `"`, `"` + owner + `"`},
+		{"multi-string is left alone", `"part-one" "part-two"`, `"part-one" "part-two"`},
+		{"inner quotes are escaped", `v=DKIM1; p="abc"`, `"v=DKIM1; p=\"abc\""`},
+		{"backslash is escaped", `a\b`, `"a\\b"`},
+		{"empty", "", `""`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := quoteTXTContent(tt.content); got != tt.want {
+				t.Errorf("quoteTXTContent(%q) = %q, want %q", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTXTContentRoundTrip(t *testing.T) {
+	for _, content := range []string{
+		"heritage=cfgate,cfgate/owner=a/b,cfgate/resource=CloudflareDNS/ns/name",
+		`v=DKIM1; p="abc"`,
+		`a\b`,
+		"",
+	} {
+		if got := unquoteTXTContent(quoteTXTContent(content)); got != content {
+			t.Errorf("round trip of %q produced %q", content, got)
+		}
+	}
+}
